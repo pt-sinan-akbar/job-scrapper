@@ -27,8 +27,7 @@ from .model import Manifest
 from .runner import SequenceRunner
 
 _SUMMARY_ENV_KEYS = (
-    "MONGO_ROOT_USER",
-    "MONGO_ROOT_PASSWORD",
+    "MONGO_URI",
     "DISCORD_CHANNEL_ID",
     "DISCORD_BOT_TOKEN",
 )

@@ -608,7 +608,7 @@ def test_proxy_connection(
 
     Args:
         proxy_url: optional override; when omitted, uses
-            ``SCRAPER_PROXY_URL``. When no proxy is set and this is omitted, returns
+            ``PROXY_URL``. When no proxy is set and this is omitted, returns
             an error.
         url: optional URL to fetch (default: ``PROXY_TEST_URL`` env or
             https://api.ipify.org?format=json). Must be http or https.
@@ -640,7 +640,7 @@ def test_proxy_connection(
             return {
                 "ok": False,
                 "error": (
-                    "no proxy set in SCRAPER_PROXY_URL and proxy_url not passed — "
+                    "no proxy set in PROXY_URL and proxy_url not passed — "
                     "set it or pass proxy_url"
                 ),
             }

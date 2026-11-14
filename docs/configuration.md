@@ -3,7 +3,7 @@
 Job settings live in the `job_settings` Mongo collection, one document per
 environment. Edit them at `/config`, or with the `update_config` MCP tool.
 `config.yaml` holds `concurrency`, `output_dir`, and `bot`. The proxy lives in
-the `SCRAPER_PROXY_URL` env var.
+the `PROXY_URL` env var.
 
 `scraper/config_loader.py::parse` validates all of them into an `AppConfig`
 dataclass. A malformed value raises `ConfigError`. A save with a malformed value
@@ -271,7 +271,7 @@ The loader (`parse`) enforces:
 Route HTTP requests through a proxy server. Useful for bypassing datacenter IP blocks by using residential IPs.
 
 ```bash
-SCRAPER_PROXY_URL="socks5://localhost:1080"
+PROXY_URL="socks5://localhost:1080"
 ```
 
 The var must be set. When it is not, `scrape_jobs` returns `ok: false` and says so. Set it to empty for a direct connection. This stops a missing prod var from turning the proxy off without anyone noticing.
@@ -300,7 +300,7 @@ curl --socks5 localhost:1080 http://httpbin.org/ip
 
 Then set the env var:
 ```bash
-SCRAPER_PROXY_URL="socks5://localhost:1080"
+PROXY_URL="socks5://localhost:1080"
 ```
 
 ### Docker considerations
