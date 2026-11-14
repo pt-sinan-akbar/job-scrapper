@@ -56,7 +56,7 @@ function requestSignOut(): void {
     class="sticky top-0 z-30 border-b border-line bg-surface px-4 md:px-12"
   >
     <div class="mx-auto flex h-16 w-full max-w-content items-center gap-3">
-      <h1 class="min-w-0 truncate text-heading font-bold text-ink">NoNo Scraper</h1>
+      <h1 class="min-w-0 truncate text-heading font-bold text-ink">Job Agent Scraper</h1>
 
       <nav aria-label="Main" class="ml-auto flex items-center gap-1">
         <RouterLink

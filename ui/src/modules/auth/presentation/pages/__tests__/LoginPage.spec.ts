@@ -55,7 +55,7 @@ describe('LoginPage', () => {
   it('names the product in the page heading', async () => {
     const { wrapper } = await mountLogin()
 
-    expect(wrapper.get('h1').text()).toBe('Sign in to NoNo Scraper')
+    expect(wrapper.get('h1').text()).toBe('Sign in to Job Agent Scraper')
   })
 
   it('keeps Sign in disabled until a password is typed', async () => {
