@@ -30,7 +30,7 @@ ALLOWED_URL_HOSTS: frozenset[str] = frozenset(
     }
 )
 
-PROXY_ENV_VAR = "SCRAPER_PROXY_URL"
+PROXY_ENV_VAR = "PROXY_URL"
 
 JOB_SETTINGS_KEYS: frozenset[str] = frozenset(
     {"keywords", "limit", "max_age_hours", "filter", "default_fields", "sites"}

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from .model import CONTAINER_NAMES, Environment
 
-PROXY_ENV_VAR = "SCRAPER_PROXY_URL"
+PROXY_ENV_VAR = "PROXY_URL"
 
 ACTIONS = ("start", "stop", "status", "logs")
 ALL = "all"

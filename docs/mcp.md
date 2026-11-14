@@ -21,7 +21,7 @@ Environment variables:
 | `MCP_HOST`        | `0.0.0.0`     | Bind address                            |
 | `MCP_PORT`        | `8080`        | Bind port                               |
 | `SCRAPER_CONFIG`  | `config.yaml` | Path to the machine settings file (`concurrency`, `output_dir`, `bot`) |
-| `SCRAPER_PROXY_URL` | none, required | Proxy URL for scrapes. Empty means direct connection. Not set stops scrapes |
+| `PROXY_URL` | none, required | Proxy URL for scrapes. Empty means direct connection. Not set stops scrapes |
 | `PROXY_TEST_URL`  | `https://api.ipify.org?format=json` | URL `test_proxy_connection` fetches by default |
 | `PROXY_TEST_TIMEOUT_SEC` | `25` | Per-request timeout for that probe |
 
@@ -242,7 +242,7 @@ URLs work the same as in a scrape).
 }
 ```
 
-- `proxy_url`: when omitted, uses `SCRAPER_PROXY_URL`. If both are missing,
+- `proxy_url`: when omitted, uses `PROXY_URL`. If both are missing,
   returns `{ok: false, error: ...}`.
 - `url`: target URL to fetch (must be `http` or `https`). Default comes from
   `PROXY_TEST_URL` or ipify as in the env table above.
@@ -263,7 +263,7 @@ URLs work the same as in a scrape).
 ```
 
 `proxy_redacted` masks proxy passwords. `source` is present only when the
-proxy URL came from `SCRAPER_PROXY_URL`. On failure, `ok` is false and `error` describes
+proxy URL came from `PROXY_URL`. On failure, `ok` is false and `error` describes
 validation, connection, or non-200 HTTP.
 
 The `docs:/app/docs:ro` mount makes the markdown reference docs (this file,
@@ -338,7 +338,7 @@ entry `{"keyword": "...", "site": "...", "payload": {...}}`:
 
 Without the flag these two keys are not in the response.
 
-When the job settings cannot be loaded (Mongo is down, the document is missing, or `SCRAPER_PROXY_URL` is not set), `scrape_jobs` returns `{"ok": false, "error": "..."}` and scrapes nothing.
+When the job settings cannot be loaded (Mongo is down, the document is missing, or `PROXY_URL` is not set), `scrape_jobs` returns `{"ok": false, "error": "..."}` and scrapes nothing.
 
 ## Operational rules for Claude callers
 

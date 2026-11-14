@@ -16,7 +16,7 @@ async function mountLogin() {
     history: createMemoryHistory(),
     routes: [
       { path: '/login', component: LoginPage },
-      { path: '/runs', component: blank },
+      { path: '/', component: blank },
     ],
   })
   router.push('/login')
@@ -55,7 +55,7 @@ describe('LoginPage', () => {
   it('names the product in the page heading', async () => {
     const { wrapper } = await mountLogin()
 
-    expect(wrapper.get('h1').text()).toBe('Sign in to NoNo Scraper')
+    expect(wrapper.get('h1').text()).toBe('Sign in to Job Agent Scraper')
   })
 
   it('keeps Sign in disabled until a password is typed', async () => {
@@ -98,6 +98,6 @@ describe('LoginPage', () => {
     await flushPromises()
 
     expect(login.execute).toHaveBeenCalledWith('secret')
-    expect(router.currentRoute.value.path).toBe('/runs')
+    expect(router.currentRoute.value.path).toBe('/')
   })
 })
