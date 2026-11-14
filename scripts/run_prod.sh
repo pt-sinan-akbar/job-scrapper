@@ -17,7 +17,7 @@ COMPOSE_ENV="docker-compose.prod.yml"
 PROXY_HOST="localhost"
 PROXY_PORT="1080"
 ARG="${1:-all}"
-export SCRAPER_PROXY_URL="socks5://${PROXY_HOST}:${PROXY_PORT}"
+export PROXY_URL="socks5://${PROXY_HOST}:${PROXY_PORT}"
 
 # --- guards ---
 if ! curl -sf --socks5 "${PROXY_HOST}:${PROXY_PORT}" --max-time 3 https://ifconfig.me -o /dev/null; then

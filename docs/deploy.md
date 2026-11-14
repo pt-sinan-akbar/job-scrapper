@@ -61,7 +61,7 @@ anyone with read access). Use these for non-secret config:
 | `CLAUDE_CONFIG_FILE` | deploy-bot | `/home/ubuntu/.claude.json` (host file mounted into bot) |
 | `UI_DOMAIN` | deploy-ui | Optional. Public domain for the UI, with DNS pointing to the VPS. When it is not set, deploy-ui is skipped and the UI stays offline |
 | `MCP_BIND_HOST` | all deploy jobs | Optional. Docker gateway IP of the VPS, default `172.17.0.1` |
-| `SCRAPER_PROXY_URL` | `deploy-mcp` | Required. Proxy URL for scrapes, such as `socks5://localhost:1080`. A URL with a password belongs in a secret of the same name, because variables are visible in logs. The deploy fails when it is missing or empty |
+| `PROXY_URL` | `deploy-mcp` | Required. Proxy URL for scrapes, such as `socks5://localhost:1080`. A URL with a password belongs in a secret of the same name, because variables are visible in logs. The deploy fails when it is missing or empty |
 
 ## Claude Code authentication
 
@@ -129,7 +129,7 @@ Job settings live in Mongo. The rest is baked in:
 | Want to… | How |
 |---|---|
 | Change keywords, limits, filters, sites | Edit at `/config`. Applies from the next run, no deploy |
-| Change the proxy | Update the `SCRAPER_PROXY_URL` GitHub secret or variable → redeploy |
+| Change the proxy | Update the `PROXY_URL` GitHub secret or variable → redeploy |
 | Change cron schedule | Edit `bot.schedule` in `config.yaml` → push to `main` (bot Dockerfile reads it via `yq` at build time) |
 | Change Discord message format | Edit `bot.message_template` in `config.yaml` → push to `main` (read fresh each run, no rebuild needed) |
 | Change Discord per-message cap | Edit `bot.max_chars` in `config.yaml` → push to `main` |

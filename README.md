@@ -112,19 +112,22 @@ Compose wiring that makes this work:
 
 | Example                         | Copy to                 | Purpose                                                          |
 | ------------------------------- | ----------------------- | ---------------------------------------------------------------- |
-| `.env.example`                  | `.env`                  | local compose env vars: Discord tokens, Mongo creds, `SCRAPER_PROXY_URL` |
+| `.env.example`                  | `.env`                  | local compose env vars: Discord tokens, Mongo creds, `PROXY_URL` |
 | `scripts/ssh-tunnel.sh.example` | `scripts/ssh-tunnel.sh` | reverse SOCKS proxy helper — gitignored, contains real host/user |
 | `claude/mcp.json.example`       | `.mcp.json`             | MCP client config for Claude (update URL for host vs Docker)     |
 
 `.env` is for local Docker Compose only. Production injects all env vars through
 GitHub Actions secrets/variables — it never reads this file.
 
-**MongoDB connection URL:** the app reads `MONGO_URI` (`mcp_server/mongo.py`). You
-don't set it directly — Docker Compose derives it from `MONGO_ROOT_USER` +
-`MONGO_ROOT_PASSWORD`:
+**MongoDB connection URL:** the app reads `MONGO_URI` (`mcp_server/mongo.py`). Set it
+in `.env` locally and in the `MONGO_URI` GitHub secret in prod:
 
 - dev / bridge network (`docker-compose.yml`): `mongodb://<user>:<password>@mongo:27017`
 - prod / host network (`docker-compose.prod.yml`): `mongodb://<user>:<password>@localhost:27017`
+
+The bundled `mongo` service still creates its admin login from `MONGO_ROOT_USER` and
+`MONGO_ROOT_PASSWORD`. They are not in `.env`: export them in your shell before
+`docker compose --profile mcp up`, or set them as GitHub secrets and variables in prod.
 
 Outside Docker the code default is `mongodb://localhost:27017`.
 
@@ -153,7 +156,7 @@ the remote scraper routes its outbound HTTP traffic through **this machine's**
 residential IP, dodging datacenter-IP blocks that jobstreet/glints/linkedin apply
 to cloud VPS addresses.
 
-`SCRAPER_PROXY_URL` is `socks5://localhost:1080` in prod. In prod, `scraper-mcp` runs
+`PROXY_URL` is `socks5://localhost:1080` in prod. In prod, `scraper-mcp` runs
 `network_mode: host`, so `localhost:1080` on the remote server is the tunnel
 endpoint provided by this script.
 
@@ -258,7 +261,7 @@ Settings live in three places, by how they change
 | Place | Holds | Change it |
 | --- | --- | --- |
 | `job_settings` collection | `keywords`, `limit`, `max_age_hours`, `filter`, `default_fields`, `sites` | `/config` page, applies from the next run |
-| `SCRAPER_PROXY_URL` env var | Proxy URL. Empty means direct connection. Not set stops scrapes | `.env` in dev, GitHub variable in prod |
+| `PROXY_URL` env var | Proxy URL. Empty means direct connection. Not set stops scrapes | `.env` in dev, GitHub variable in prod |
 | `config.yaml` | `concurrency`, `output_dir`, `bot.*` | Edit and rebuild the images |
 
 Each host's Mongo has its own document, so dev and prod differ without a patch file. A new environment needs one seed
@@ -495,6 +498,7 @@ Set these in your repository's **Settings → Secrets and variables**.
 | `SSH_USER`            | deploy jobs | SSH login user                         |
 | `SSH_PRIVATE_KEY`     | deploy jobs | Private key for SSH authentication     |
 | `MONGO_ROOT_PASSWORD` | deploy-mcp  | MongoDB root password                  |
+| `MONGO_URI`           | deploy-mcp  | MongoDB connection URL                 |
 | `DISCORD_BOT_TOKEN`   | deploy-bot  | Discord bot application token          |
 | `DISCORD_CHANNEL_ID`  | deploy-bot  | Target channel ID for job posts        |
 | `GITHUB_TOKEN`        | build jobs  | Auto-provided; used to push to ghcr.io |

@@ -166,10 +166,11 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: MCP_IMAGE,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,MCP_BIND_HOST,SCRAPER_PROXY_URL,GHCR_USERNAME,GHCR_PULL_TOKEN
+          envs: MCP_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,MCP_BIND_HOST,PROXY_URL,GHCR_USERNAME,GHCR_PULL_TOKEN
           script: |
             set -euo pipefail
-            : "${SCRAPER_PROXY_URL:?Set the SCRAPER_PROXY_URL GitHub secret or variable}"
+            : "${PROXY_URL:?Set the PROXY_URL GitHub secret or variable}"
+            : "${MONGO_URI:?Set the MONGO_URI GitHub secret}"
             : "${GHCR_PULL_TOKEN:?Set the GHCR_PULL_TOKEN GitHub secret}"
 
             # packages are private; other deploys on this VPS log out, so a saved login is not safe
@@ -199,12 +200,13 @@ jobs:
           GHCR_USERNAME: ${{ github.repository_owner }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           MCP_IMAGE: ${{ needs.build-mcp.outputs.image_tag_sha }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
           MONGO_ROOT_USER: ${{ vars.MONGO_ROOT_USER || 'admin' }}
           MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
           MONGO_DB_NAME: ${{ vars.MONGO_DB_NAME || 'job_scraper' }}
           MONGO_COLLECTION_NAME: ${{ vars.MONGO_COLLECTION_NAME || 'scrape_runs' }}
           MCP_BIND_HOST: ${{ vars.MCP_BIND_HOST || '172.17.0.1' }}
-          SCRAPER_PROXY_URL: ${{ secrets.SCRAPER_PROXY_URL || vars.SCRAPER_PROXY_URL }}
+          PROXY_URL: ${{ secrets.PROXY_URL || vars.PROXY_URL }}
 
   # 4. SSH into VPS → pull new bot image → restart container (runs after build-bot + deploy-mcp)
   deploy-bot:

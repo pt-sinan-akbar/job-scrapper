@@ -13,7 +13,7 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://${MCP_BIND_HOST:-172.17.0.1}:8080/health"]
     environment:
-      - MONGO_URI=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@localhost:27017
+      - MONGO_URI=${MONGO_URI}
       - MCP_HOST=${MCP_BIND_HOST:-172.17.0.1}
 
   # override: use pre-built image from ghcr.io

@@ -1,5 +1,5 @@
 # Machine settings, baked into the images. Job settings live in Mongo: edit them at /config.
-# The proxy lives in the SCRAPER_PROXY_URL env var.
+# The proxy lives in the PROXY_URL env var.
 concurrency: 2
 output_dir: output
 
