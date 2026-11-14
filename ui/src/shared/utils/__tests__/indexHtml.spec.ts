@@ -7,7 +7,7 @@ const INDEX_HTML = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 describe('index.html', () => {
   it('starts with the Loading title and no brand', () => {
     expect(INDEX_HTML).toContain('<title>Loading</title>')
-    expect(INDEX_HTML).not.toContain('NoNo Scraper')
+    expect(INDEX_HTML).not.toContain('Job Agent Scraper')
   })
 
   it('links the ico and svg favicons that ship in public', () => {

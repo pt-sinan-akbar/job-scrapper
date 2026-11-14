@@ -23,7 +23,7 @@ async function submit(): Promise<void> {
 
 <template>
   <AuthLayout>
-    <h1 class="text-center text-display text-ink">Sign in to NoNo Scraper</h1>
+    <h1 class="text-center text-display text-ink">Sign in to Job Agent Scraper</h1>
     <form class="flex flex-col gap-4" :aria-busy="isSubmitting" @submit.prevent="submit">
       <PasswordInput
         v-model="password"

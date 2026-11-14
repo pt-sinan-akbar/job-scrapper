@@ -67,10 +67,10 @@ describe('AppHeader', () => {
     document.body.innerHTML = ''
   })
 
-  it('shows the NoNo Scraper wordmark', async () => {
+  it('shows the Job Agent Scraper wordmark', async () => {
     const wrapper = await mountHeader()
 
-    expect(wrapper.get('[data-slot="app-header"]').text()).toContain('NoNo Scraper')
+    expect(wrapper.get('[data-slot="app-header"]').text()).toContain('Job Agent Scraper')
   })
 
   it('links to the Runs, Config and Discord sections inside the Main navigation', async () => {
@@ -100,7 +100,7 @@ describe('AppHeader', () => {
   it('names the product in the only h1', async () => {
     const wrapper = await mountHeader()
 
-    expect(wrapper.findAll('h1').map((heading) => heading.text())).toEqual(['NoNo Scraper'])
+    expect(wrapper.findAll('h1').map((heading) => heading.text())).toEqual(['Job Agent Scraper'])
   })
 
   it('gives the Admin trigger one accessible name', async () => {
