@@ -33,9 +33,12 @@ def test_cli_runs_with_settings_from_store(tmp_path: Path, monkeypatch: pytest.M
     calls: list[tuple[Any, Any, Any]] = []
     monkeypatch.setenv(PROXY_ENV_VAR, "")
     monkeypatch.setattr(cli, "open_store", lambda: store)
-    monkeypatch.setattr(
-        cli, "run", lambda config, targets, keywords: calls.append((config, targets, keywords)) or 0
-    )
+
+    def fake_run(config: Any, targets: Any, keywords: Any) -> int:
+        calls.append((config, targets, keywords))
+        return 0
+
+    monkeypatch.setattr(cli, "run", fake_run)
 
     code = cli.main(["--config", _config_file(tmp_path), "-k", "python", "upwork"])
 

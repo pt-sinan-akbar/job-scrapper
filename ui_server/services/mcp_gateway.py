@@ -82,7 +82,7 @@ def _raise_on_failed_discord(result: dict[str, Any]) -> dict[str, Any]:
 def _message_arguments(
     mention: bool, text: str | None, jobs: list[dict[str, Any]] | None
 ) -> dict[str, Any]:
-    content = {"text": text} if text is not None else {"jobs": jobs}
+    content: dict[str, Any] = {"text": text} if text is not None else {"jobs": jobs}
     return {"mention": mention, **content}
 
 

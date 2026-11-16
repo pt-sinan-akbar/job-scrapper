@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -40,7 +40,7 @@ def _factory(**kwargs: Any) -> dict[str, Any]:
 def _build(api_cfg: ApiConfig):
     RecordingSource.instances.clear()
     return build_api_callbacks(
-        RecordingSource,
+        cast(Any, RecordingSource),
         api_cfg,
         "devops",
         proxy_url="http://p:1",

@@ -79,11 +79,12 @@ def _lower(value: Any) -> str | None:
 
 def _to_job(item: dict[str, Any]) -> Job | None:
     title = item.get("title")
-    company_data = item.get("company") if isinstance(item.get("company"), dict) else {}
-    company = company_data.get("name")
-    if not title or not company:
+    company = item.get("company")
+    company_data: dict[str, Any] = company if isinstance(company, dict) else {}
+    company_name = company_data.get("name")
+    if not title or not company_name:
         return None
-    job = empty_job("glints", str(title).strip(), str(company).strip())
+    job = empty_job("glints", str(title).strip(), str(company_name).strip())
     job["company_id"] = str(company_data["id"]) if company_data.get("id") else None
     job_id = str(item["id"]) if item.get("id") else None
     job["job_id"] = job_id
