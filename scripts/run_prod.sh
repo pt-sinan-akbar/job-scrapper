@@ -5,9 +5,8 @@ set -euo pipefail
 # Requires a SOCKS5 proxy running on host port 1080.
 #
 # Usage:
-#   ./scripts/run_prod.sh           # both mcp + bot
+#   ./scripts/run_prod.sh           # mcp + ui
 #   ./scripts/run_prod.sh mcp       # MCP server only
-#   ./scripts/run_prod.sh bot       # bot only
 #   ./scripts/run_prod.sh ui        # MCP server + UI + Caddy (needs UI_* values in .env)
 
 # --- config ---
@@ -28,11 +27,10 @@ fi
 # --- resolve profiles ---
 case "$ARG" in
   mcp)  PROFILES="--profile mcp" ;;
-  bot)  PROFILES="--profile bot" ;;
   ui)   PROFILES="--profile mcp --profile ui" ;;
-  all)  PROFILES="--profile mcp --profile bot" ;;
+  all)  PROFILES="--profile mcp --profile ui" ;;
   *)
-    echo "Usage: $0 [mcp|bot|ui]" >&2
+    echo "Usage: $0 [mcp|ui]" >&2
     exit 1
     ;;
 esac

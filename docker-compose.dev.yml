@@ -1,13 +1,5 @@
 services:
 
-  # Delete this to activate the cron schedule job.
-  # Also mounts full config (base removed it; dev needs it, prod uses image-baked config).
-  bot:
-    entrypoint: ["sleep"]
-    command: ["infinity"]
-    volumes:
-      - ./config.yaml:/workspace/config.yaml:ro
-
   # override: run as the host user so output/ui-runs stays writable; local access only
   scraper-ui:
     user: "${UI_UID:-1001}:${UI_GID:-1001}"

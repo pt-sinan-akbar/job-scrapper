@@ -5,9 +5,8 @@ set -euo pipefail
 # First run: ./seed.sh job-settings
 #
 # Usage:
-#   ./scripts/run_dev.sh           # mcp + bot + ui
+#   ./scripts/run_dev.sh           # mcp + ui
 #   ./scripts/run_dev.sh mcp       # MCP server only
-#   ./scripts/run_dev.sh bot       # bot only
 #   ./scripts/run_dev.sh ui        # MCP server + UI with hot reload at http://localhost:5174
 
 # --- config ---
@@ -23,11 +22,10 @@ export UI_UID="$(id -u)" UI_GID="$(id -g)"
 # --- resolve profiles ---
 case "$ARG" in
   mcp)  PROFILES="--profile mcp" ;;
-  bot)  PROFILES="--profile bot" ;;
   ui)   PROFILES="--profile mcp --profile ui" ;;
-  all)  PROFILES="--profile mcp --profile bot --profile ui" ;;
+  all)  PROFILES="--profile mcp --profile ui" ;;
   *)
-    echo "Usage: $0 [mcp|bot|ui]" >&2
+    echo "Usage: $0 [mcp|ui]" >&2
     exit 1
     ;;
 esac
