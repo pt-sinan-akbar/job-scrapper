@@ -2,8 +2,8 @@
 
 Job settings live in the `job_settings` Mongo collection, one document per
 environment. Edit them at `/config`, or with the `update_config` MCP tool.
-`config.yaml` holds `concurrency`, `output_dir`, and `bot`. The proxy lives in
-the `PROXY_URL` env var.
+The proxy lives in the `PROXY_URL` env var. Output always goes to `output/`
+(`OUTPUT_DIR` in `scraper/config_loader.py`), which is not a setting.
 
 `scraper/config_loader.py::parse` validates all of them into an `AppConfig`
 dataclass. A malformed value raises `ConfigError`. A save with a malformed value
@@ -15,14 +15,12 @@ specifically, see [`filters.md`](filters.md).
 ## Top-level keys
 
 The examples below show the keys as YAML, which is the format of
-`seeds/job_settings.yaml`. `concurrency` and `output_dir` go in `config.yaml`,
-and the rest are job settings.
+`seeds/job_settings.yaml`. All of them are job settings.
 
 ```yaml
 keywords: [software engineer, data analyst]   # required
 limit: 2                                       # optional, default 2
 concurrency: 2                                 # optional, default 2
-output_dir: output                             # optional, default 'output'
 max_age_hours: 24                              # optional, no default = no filter
 default_fields: [...]                          # optional, default 4 fields
 filter: {...}                                  # optional, no default = no filter
@@ -63,22 +61,17 @@ limit: 5
 ### `concurrency` (optional, default `2`)
 
 Integer, must be `>= 1`. Maximum number of `(keyword, site)` pairs running
-in parallel through a thread pool.
+in parallel through a thread pool. The default comes from `DEFAULT_CONCURRENCY`
+in `scraper/config_loader.py`.
+
+- Edit it on `/config` (General section, "Sites scraped at once", 1 to 10) or
+  with `update_config`.
 
 - `concurrency: 1` falls back to a sequential loop (no thread overhead).
 - Each Playwright fallback consumes ~250-300MB RAM. Tune for available memory.
 
 ```yaml
 concurrency: 4
-```
-
-### `output_dir` (optional, default `output`)
-
-String path. Where per-site JSON files land. Resolved relative to the
-working directory if not absolute.
-
-```yaml
-output_dir: ./scraper-output
 ```
 
 ### `max_age_hours` (optional, no default)
@@ -257,7 +250,7 @@ The loader (`parse`) enforces:
 |---------------------------|--------------------------------------------------|-------------------|
 | `keywords` / `keyword`    | At least one non-empty string                    | `ConfigError`     |
 | `limit`                   | Integer >= 1                                     | `ConfigError`     |
-| `concurrency`             | Integer >= 1                                     | `ConfigError`     |
+| `concurrency`             | Whole number from 1 to 10                        | `ConfigError`     |
 | `max_age_hours`           | Integer >= 1 or null                             | `ConfigError`     |
 | `sites`                   | Non-empty mapping                                | `ConfigError`     |
 | `sites.<name>.url_template` | Non-empty string with valid placeholders only  | `ConfigError`     |
@@ -313,15 +306,14 @@ When using `--network host` mode (required for localhost proxy):
 ## Loading the resolved config
 
 ```python
-from pathlib import Path
 from scraper.job_settings import load_app_config, open_store
 
-config = load_app_config(Path("config.yaml"), open_store())
+config = load_app_config(open_store())
 
 config.keywords           # tuple[str, ...]
 config.limit              # int
 config.concurrency        # int
-config.output_dir         # Path
+config.output_dir         # Path, always output/
 config.default_fields     # tuple[str, ...]
 config.max_age_hours      # int | None
 config.filter             # dict[str, list[str]]

@@ -89,7 +89,7 @@ class FakeGateway:
             raise McpUnavailableError()
         if tool == "scrape_jobs":
             await asyncio.sleep(self.scrape_delay)
-        return {
+        responses: dict[str, dict[str, Any]] = {
             "list_sites": SITES,
             "get_config": self.config,
             "get_config_history": {"entries": HISTORY},
@@ -106,7 +106,8 @@ class FakeGateway:
                     {"kind": "summary", "status": "sent"},
                 ],
             },
-        }[tool]
+        }
+        return responses[tool]
 
 
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
@@ -375,6 +376,24 @@ def test_config_read_returns_values_and_version(client: TestClient):
     assert data["is_stale"] is False
     assert data["values"]["filter"] == {"location": ["jakarta"]}
     assert "proxy_url" not in data["values"]
+
+
+def test_config_read_returns_concurrency(client: TestClient, gateway: FakeGateway):
+    data = client.get("/api/config").json()["data"]
+
+    assert data["values"]["concurrency"] is None
+
+
+def test_config_update_sends_concurrency(client: TestClient, gateway: FakeGateway):
+    response = client.put("/api/config", json={"version": 4, "concurrency": 3})
+
+    assert response.status_code == 200
+    assert gateway.arguments["update_config"]["patch"] == {"concurrency": 3}
+
+
+@pytest.mark.parametrize("value", [0, 11, 2.5])
+def test_config_update_refuses_concurrency_out_of_range(client: TestClient, value: float):
+    assert client.put("/api/config", json={"version": 4, "concurrency": value}).status_code == 422
 
 
 def test_config_read_lists_job_fields_and_the_always_saved_ones(client: TestClient):

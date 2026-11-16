@@ -408,7 +408,7 @@ def run(
         keyword, name = pair
         site_cfg = config.site(name)
         if site_cfg is None:
-            _LOG.warning("[runner] '%s' has no entry in config.yaml; skipping", name)
+            _LOG.warning("[runner] '%s' has no entry in the job settings; skipping", name)
             return
         scraper_cls = SCRAPERS[name]
         url = site_cfg.url_for(keyword)

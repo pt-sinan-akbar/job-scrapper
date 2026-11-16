@@ -5,7 +5,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from pymongo import DESCENDING, MongoClient, ReturnDocument
@@ -15,7 +14,6 @@ from .config_loader import (
     AppConfig,
     ConfigError,
     parse,
-    read_machine_settings,
     resolve_proxy_url,
     validate_job_settings,
 )
@@ -221,6 +219,5 @@ def open_store() -> JobSettingsStore:
     return JobSettingsStore(MongoClient(uri, serverSelectionTimeoutMS=timeout)[db_name])
 
 
-def load_app_config(path: Path, store: JobSettingsStore) -> AppConfig:
-    machine = read_machine_settings(path)
-    return parse({**machine, **store.read().settings}, resolve_proxy_url())
+def load_app_config(store: JobSettingsStore) -> AppConfig:
+    return parse(store.read().settings, resolve_proxy_url())

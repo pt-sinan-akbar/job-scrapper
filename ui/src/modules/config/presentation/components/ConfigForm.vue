@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { toast } from 'vue-sonner'
-import { toOptionalNumber, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
+import {
+  BOT_SCHEDULE,
+  toOptionalNumber,
+  type SiteSetting,
+} from '@/modules/config/domain/entities/ScraperConfig'
 import ConfigHistory from '@/modules/config/presentation/components/ConfigHistory.vue'
 import FilterFields from '@/modules/config/presentation/components/FilterFields.vue'
 import JobFieldsInput from '@/modules/config/presentation/components/JobFieldsInput.vue'
@@ -91,6 +95,23 @@ async function save(): Promise<void> {
                   min="1"
                   @update:model-value="store.values!.maxAgeHours = toOptionalNumber($event)"
                 />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label for="concurrency">Sites scraped at once</Label>
+                <Input
+                  id="concurrency"
+                  placeholder="Sites scraped at once"
+                  :model-value="store.values.concurrency ?? ''"
+                  type="number"
+                  :required="store.snapshot?.values.concurrency !== null"
+                  min="1"
+                  max="10"
+                  @update:model-value="store.values!.concurrency = toOptionalNumber($event)"
+                />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label for="bot-schedule">Bot schedule (cron), turned off for now</Label>
+                <Input id="bot-schedule" :model-value="BOT_SCHEDULE" disabled readonly />
               </div>
             </div>
           </div>

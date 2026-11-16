@@ -69,18 +69,17 @@ def test_search_falls_back_to_default_delay():
 
 def test_run_wires_api_callbacks_into_run_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     raw_config = yaml.safe_load(
-        f"""
+        """
 keywords: [devops]
-output_dir: {tmp_path / "out"}
 sites:
   jobstreet:
-    url_template: "https://id.jobstreet.com/id/{{keyword_slug}}-jobs"
+    url_template: "https://id.jobstreet.com/id/{keyword_slug}-jobs"
     api:
       locations: [Jakarta Raya]
       delay_seconds: [4, 6]
   glints:
     enabled: false
-    url_template: "https://glints.com/id/opportunities/jobs/explore?keyword={{keyword}}"
+    url_template: "https://glints.com/id/opportunities/jobs/explore?keyword={keyword}"
 """
     )
     built: list[tuple[str, tuple[str, ...], tuple[float, float] | None]] = []
@@ -103,6 +102,6 @@ sites:
     monkeypatch.setattr(runner, "build_api_callbacks", fake_build)
     monkeypatch.setattr(runner, "run_one", fake_run_one)
 
-    assert runner.run(parse(raw_config, None)) == 0
+    assert runner.run(parse(raw_config, None), output_dir=tmp_path / "out") == 0
     assert built == [("devops", ("Jakarta Raya",), (4.0, 6.0))]
     assert received == [{"api_search": search, "api_detail": detail}]

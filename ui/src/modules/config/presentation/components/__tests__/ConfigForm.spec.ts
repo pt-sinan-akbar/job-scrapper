@@ -16,6 +16,7 @@ const SNAPSHOT: ConfigSnapshot = {
   values: {
     keywords: ['django'],
     limit: 3,
+    concurrency: 2,
     maxAgeHours: 72,
     filter: EMPTY_FILTER,
     defaultFields: ['title'],

@@ -23,6 +23,7 @@ const SITE: SiteSetting = {
 const ORIGINAL: ConfigValues = {
   keywords: ['django'],
   limit: 3,
+  concurrency: 2,
   maxAgeHours: 72,
   filter: { ...EMPTY_FILTER, location: ['jakarta'] },
   defaultFields: ['title'],
@@ -74,8 +75,14 @@ describe('toConfigChanges', () => {
     })
   })
 
+  it('sends a changed concurrency', () => {
+    expect(toConfigChanges({ ...ORIGINAL, concurrency: 4 }, ORIGINAL)).toEqual({ concurrency: 4 })
+  })
+
   it('leaves out emptied global numbers', () => {
-    expect(toConfigChanges({ ...ORIGINAL, limit: null, maxAgeHours: null }, ORIGINAL)).toEqual({})
+    expect(
+      toConfigChanges({ ...ORIGINAL, limit: null, maxAgeHours: null, concurrency: null }, ORIGINAL),
+    ).toEqual({})
   })
 })
 

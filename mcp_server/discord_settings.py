@@ -5,13 +5,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, TypeGuard
 
-import yaml
 from pymongo.errors import PyMongoError
 
-from scraper.config_loader import ConfigError, read_machine_settings
+from scraper.config_loader import ConfigError
 
 DISCORD_COLLECTION = "discord_settings"
 DISCORD_ID = "discord"
@@ -27,7 +25,15 @@ TOKEN_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 SNOWFLAKE_PATTERN = re.compile(r"[0-9]{17,20}")
 DEFAULT_MAX_CHARS = 1900
 MAX_CHARS_LIMIT = 2000
-DEFAULT_MESSAGE_TEMPLATE = "## {title}\n{company} | {location}\n{url}"
+DEFAULT_MESSAGE_TEMPLATE = (
+    "## {title}\n"
+    "{company} | {location}\n"
+    "\n"
+    "**Details**\n"
+    "Link: [link]({url})\n"
+    "Source: {site}\n"
+    "Diposting: {posted_date}\n"
+)
 TOKEN_HINT_MASK = "••••"
 TOKEN_HINT_LENGTH = 4
 
@@ -62,22 +68,6 @@ def _mongo_errors() -> Iterator[None]:
 
 def is_snowflake(value: Any) -> bool:
     return isinstance(value, str) and SNOWFLAKE_PATTERN.fullmatch(value) is not None
-
-
-def _message_defaults(config_path: Path) -> tuple[str, int]:
-    try:
-        bot = read_machine_settings(config_path).get("bot")
-    except (ConfigError, OSError, yaml.YAMLError):
-        return DEFAULT_MESSAGE_TEMPLATE, DEFAULT_MAX_CHARS
-    if not isinstance(bot, dict):
-        return DEFAULT_MESSAGE_TEMPLATE, DEFAULT_MAX_CHARS
-    template = bot.get("message_template")
-    max_chars = bot.get("max_chars")
-    if not isinstance(template, str) or not template.strip():
-        template = DEFAULT_MESSAGE_TEMPLATE
-    if not _is_valid_max_chars(max_chars):
-        max_chars = DEFAULT_MAX_CHARS
-    return template, max_chars
 
 
 def _is_valid_max_chars(value: Any) -> TypeGuard[int]:
@@ -159,20 +149,18 @@ def to_payload(settings: StoredDiscordSettings) -> dict[str, Any]:
 
 
 class DiscordSettingsStore:
-    def __init__(self, database: Any, config_path: Path) -> None:
+    def __init__(self, database: Any) -> None:
         self._collection = database[DISCORD_COLLECTION]
-        self._config_path = config_path
 
     def read(self) -> StoredDiscordSettings:
         with _mongo_errors():
             document = self._collection.find_one({"_id": DISCORD_ID}) or {}
-        template, max_chars = _message_defaults(self._config_path)
         return StoredDiscordSettings(
             token=document.get("token"),
             default_channel_id=document.get("default_channel_id"),
             mention_user_id=document.get("mention_user_id"),
-            message_template=document.get("message_template") or template,
-            max_chars=document.get("max_chars") or max_chars,
+            message_template=document.get("message_template") or DEFAULT_MESSAGE_TEMPLATE,
+            max_chars=document.get("max_chars") or DEFAULT_MAX_CHARS,
             updated_at=document.get("updated_at"),
         )
 

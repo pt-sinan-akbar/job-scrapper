@@ -42,6 +42,7 @@ export interface ConfigModel {
   values: {
     keywords: string[]
     limit: number | null
+    concurrency?: number | null
     max_age_hours: number | null
     filter: FilterModel
     default_fields: string[]
@@ -68,6 +69,7 @@ export interface SiteChangesModel {
 export interface ConfigChangesModel {
   keywords?: string[]
   limit?: number
+  concurrency?: number
   max_age_hours?: number
   filter?: FilterModel
   default_fields?: string[]
@@ -142,6 +144,7 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     values: {
       keywords: model.values.keywords,
       limit: model.values.limit,
+      concurrency: model.values.concurrency ?? null,
       maxAgeHours: model.values.max_age_hours,
       filter: toFilterSetting(model.values.filter),
       defaultFields: pickFields(model.values.default_fields),

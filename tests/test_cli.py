@@ -21,12 +21,6 @@ SETTINGS: dict[str, Any] = {
 }
 
 
-def _config_file(tmp_path: Path) -> str:
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 1\n")
-    return str(path)
-
-
 def test_cli_runs_with_settings_from_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store = JobSettingsStore(mongomock.MongoClient()["job_scraper"])
     store.seed(deepcopy(SETTINGS))
@@ -40,7 +34,7 @@ def test_cli_runs_with_settings_from_store(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(cli, "run", fake_run)
 
-    code = cli.main(["--config", _config_file(tmp_path), "-k", "python", "upwork"])
+    code = cli.main(["-k", "python", "upwork"])
 
     assert code == 0
     assert calls[0][0].keywords == ("devops",)
@@ -55,5 +49,5 @@ def test_cli_reports_missing_settings(
     monkeypatch.setenv(PROXY_ENV_VAR, "")
     monkeypatch.setattr(cli, "open_store", lambda: store)
 
-    assert cli.main(["--config", _config_file(tmp_path)]) == 2
+    assert cli.main([]) == 2
     assert "seed.sh" in capsys.readouterr().err

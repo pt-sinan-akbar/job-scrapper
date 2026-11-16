@@ -56,6 +56,14 @@ describe('toConfigSnapshot', () => {
     expect(snapshot.values.defaultFields).toEqual(['title'])
   })
 
+  it('reads concurrency, or null when the settings have none', () => {
+    expect(toConfigSnapshot(MODEL).values.concurrency).toBeNull()
+    expect(
+      toConfigSnapshot({ ...MODEL, values: { ...MODEL.values, concurrency: 3 } }).values
+        .concurrency,
+    ).toBe(3)
+  })
+
   it('lists the job fields and the always-saved ones', () => {
     const snapshot = toConfigSnapshot(MODEL)
 

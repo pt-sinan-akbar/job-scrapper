@@ -122,8 +122,12 @@ Higher `limit` increases scrape time and block risk. Tighten
 
 User: "scrape faster" or "running too hot, slow it down"
 
-`concurrency` is not a job setting, so `update_config` refuses it. Change
-`concurrency` in `config.yaml` and rebuild the images.
+```json
+{"patch": {"concurrency": 4}}
+```
+
+`concurrency` is how many `(keyword, site)` pairs run at once. Default is 2. The UI
+(`/config`, General section, "Sites scraped at once") allows 1 to 10.
 
 Each Playwright fallback consumes ~250-300MB RAM. On a 2GB host, stay at
 2; on a bigger host, 4 is safe.
@@ -213,7 +217,7 @@ For a higher-level view (resolved sample URLs, enabled list):
 | Error fragment                                    | Cause                                              |
 |---------------------------------------------------|----------------------------------------------------|
 | `'limit' must be >= 1`                            | Sent `0` or negative integer                       |
-| `not a job setting: concurrency`                  | Sent `concurrency` or `proxy`, which are not job settings |
+| `not a job setting: proxy`                        | Sent `proxy` or another key that is not a job setting |
 | `'max_age_hours' must be a positive integer`      | Sent `0`, negative, or non-integer                 |
 | `'keywords' must be a non-empty list of strings`  | Empty list or non-string entries                   |
 | `url_template uses unknown placeholder ...`       | URL has `{x}` not in `keyword/keyword_slug/keyword_plus` |

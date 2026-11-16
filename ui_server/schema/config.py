@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 MAX_LIMIT = 200
+MAX_CONCURRENCY = 10
 MAX_AGE_HOURS = 720
 MAX_LIST_ITEMS = 100
 MAX_DELAY_SECONDS = 60
@@ -52,6 +53,7 @@ class ConfigUpdateRequest(BaseModel):
     version: int = Field(ge=1)
     keywords: list[Keyword] | None = Field(default=None, min_length=1, max_length=MAX_LIST_ITEMS)
     limit: int | None = Field(default=None, ge=1, le=MAX_LIMIT)
+    concurrency: int | None = Field(default=None, ge=1, le=MAX_CONCURRENCY)
     max_age_hours: int | None = Field(default=None, ge=1, le=MAX_AGE_HOURS)
     filter: FilterSettings | None = None
     default_fields: FieldList | None = None

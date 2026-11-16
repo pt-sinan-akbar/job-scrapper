@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -226,14 +225,13 @@ def test_mongo_failure_hides_connection_details():
     assert "secret-host" not in str(caught.value)
 
 
-def test_load_app_config_joins_file_store_and_proxy(
-    store: JobSettingsStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_load_app_config_joins_store_and_proxy(
+    store: JobSettingsStore, monkeypatch: pytest.MonkeyPatch
 ):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 5\n")
+    store.save({"concurrency": 5}, None, "ui")
     monkeypatch.setenv(PROXY_ENV_VAR, "socks5://localhost:1080")
 
-    config = load_app_config(path, store)
+    config = load_app_config(store)
 
     assert config.concurrency == 5
     assert config.keywords == ("devops",)
@@ -243,11 +241,9 @@ def test_load_app_config_joins_file_store_and_proxy(
 
 
 def test_load_app_config_stops_when_proxy_is_unset(
-    store: JobSettingsStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    store: JobSettingsStore, monkeypatch: pytest.MonkeyPatch
 ):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 5\n")
     monkeypatch.delenv(PROXY_ENV_VAR, raising=False)
 
     with pytest.raises(ConfigError, match=PROXY_ENV_VAR):
-        load_app_config(path, store)
+        load_app_config(store)

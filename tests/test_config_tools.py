@@ -73,6 +73,29 @@ def test_update_config_saves_patch(database: Any):
     assert server.get_config()["updated_by"] == "ui"
 
 
+@pytest.mark.parametrize("value", [0, 11])
+def test_update_config_refuses_concurrency_out_of_range(database: Any, value: int):
+    result = server.update_config({"concurrency": value})
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid"
+    assert "concurrency" in result["message"]
+
+
+def test_update_config_saves_concurrency_and_clears_it_back_to_default(
+    database: Any, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PROXY_URL", "")
+    saved = server.update_config({"concurrency": 4}, expected_version=1)
+    assert saved["settings"]["concurrency"] == 4
+    assert server._load_config().concurrency == 4
+
+    cleared = server.update_config({"concurrency": None}, expected_version=2)
+
+    assert "concurrency" not in cleared["settings"]
+    assert server._load_config().concurrency == 2
+
+
 def test_update_config_reports_conflict(database: Any):
     result = server.update_config({"limit": 9}, expected_version=5)
 

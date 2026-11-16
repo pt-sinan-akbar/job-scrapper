@@ -16,7 +16,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from mcp_server import mongo
-from mcp_server.config_path import DEFAULT_CONFIG_PATH
 from mcp_server.discord_tools import DISCORD_TOOLS
 from scraper.api.locations import location_options_payload
 from scraper.config import ACCEPT_LANGUAGE, USER_AGENT
@@ -72,8 +71,8 @@ def _settings_store() -> JobSettingsStore:
     return JobSettingsStore(mongo.get_database())
 
 
-def _load_config(path: Path) -> AppConfig:
-    return load_app_config(path, _settings_store())
+def _load_config() -> AppConfig:
+    return load_app_config(_settings_store())
 
 
 def _read_site_output(config: AppConfig, keyword: str, name: str) -> dict[str, Any] | None:
@@ -339,7 +338,7 @@ def list_sites() -> dict[str, Any]:
     against the first configured keyword. The full keyword list is also returned.
     """
     try:
-        config = _load_config(DEFAULT_CONFIG_PATH)
+        config = _load_config()
     except ConfigError as exc:
         return {"error": str(exc)}
     sample_keyword = config.keywords[0] if config.keywords else ""
@@ -632,7 +631,7 @@ def test_proxy_connection(
     used_config_proxy = False
     if not resolved_proxy:
         try:
-            config = _load_config(DEFAULT_CONFIG_PATH)
+            config = _load_config()
         except ConfigError as exc:
             log.warning("test_proxy_connection config error: %s", exc)
             return {"ok": False, "error": str(exc)}
@@ -640,8 +639,7 @@ def test_proxy_connection(
             return {
                 "ok": False,
                 "error": (
-                    "no proxy set in PROXY_URL and proxy_url not passed — "
-                    "set it or pass proxy_url"
+                    "no proxy set in PROXY_URL and proxy_url not passed — set it or pass proxy_url"
                 ),
             }
         resolved_proxy = config.proxy.url
@@ -746,7 +744,7 @@ def scrape_jobs(
     t_start = time.monotonic()
 
     try:
-        config = _load_config(DEFAULT_CONFIG_PATH)
+        config = _load_config()
     except ConfigError as exc:
         log.error("scrape_jobs config error: %s", exc)
         return {"ok": False, "error": str(exc)}

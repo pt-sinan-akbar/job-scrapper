@@ -35,6 +35,7 @@ def _to_values(settings: dict[str, Any]) -> dict[str, Any]:
     return {
         "keywords": settings.get("keywords", []),
         "limit": settings.get("limit"),
+        "concurrency": settings.get("concurrency"),
         "max_age_hours": settings.get("max_age_hours"),
         "filter": _to_filter(settings.get("filter")) or {},
         "default_fields": settings.get("default_fields", []),

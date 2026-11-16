@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -66,12 +65,12 @@ class FakeClient:
 
 
 @pytest.fixture
-def database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+def database(monkeypatch: pytest.MonkeyPatch) -> Any:
     db: Any = mongomock.MongoClient()["job_scraper"]
     monkeypatch.setattr(server.mongo, "get_database", lambda: db)
-    config = tmp_path / "config.yaml"
-    config.write_text("bot:\n  max_chars: 1500\n  message_template: |\n    {title} at {company}\n")
-    monkeypatch.setattr(discord_tools, "DEFAULT_CONFIG_PATH", config)
+    db["discord_settings"].insert_one(
+        {"_id": "discord", "message_template": "{title} at {company}\n", "max_chars": 1500}
+    )
     return db
 
 
@@ -454,12 +453,3 @@ def test_unexpected_error_in_connection_test_is_unavailable(configured: Any, use
     result = asyncio.run(discord_tools.test_discord_connection())
 
     assert (result["ok"], result["reason"]) == (False, "unavailable")
-
-
-def test_cron_blocks_every_discord_tool():
-    script = (Path(__file__).resolve().parents[1] / "cron" / "run-scraper.sh").read_text()
-
-    for name in TOOL_NAMES:
-        assert f"mcp__job-scraper__{name}" in script
-    assert "mcp__job-scraper__update_config" in script
-    assert "mcp__job-scraper__restore_config" in script

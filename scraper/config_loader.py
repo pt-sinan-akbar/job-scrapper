@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-import yaml
-
 from .types import CANONICAL_FIELDS, MANDATORY_FIELDS
 
 DEFAULT_FIELDS: tuple[str, ...] = ("title", "company", "location", "url")
@@ -32,8 +30,14 @@ ALLOWED_URL_HOSTS: frozenset[str] = frozenset(
 
 PROXY_ENV_VAR = "PROXY_URL"
 
+OUTPUT_DIR = Path("output")
+
+DEFAULT_CONCURRENCY = 2
+
+MAX_CONCURRENCY = 10
+
 JOB_SETTINGS_KEYS: frozenset[str] = frozenset(
-    {"keywords", "limit", "max_age_hours", "filter", "default_fields", "sites"}
+    {"keywords", "limit", "concurrency", "max_age_hours", "filter", "default_fields", "sites"}
 )
 
 
@@ -304,16 +308,6 @@ def _parse_delay(raw: object, source: str) -> tuple[float, float] | None:
     return (low, high)
 
 
-def read_machine_settings(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise ConfigError(f"config file not found: {path}")
-
-    raw = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(raw, dict):
-        raise ConfigError(f"config root must be a mapping, got {type(raw).__name__}")
-    return raw
-
-
 def resolve_proxy_url() -> str | None:
     value = os.environ.get(PROXY_ENV_VAR)
     if value is None:
@@ -401,15 +395,14 @@ def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
     if limit < 1:
         raise ConfigError(f"'limit' must be >= 1, got {limit}")
 
-    concurrency_raw = raw.get("concurrency", 2)
-    try:
-        concurrency = int(concurrency_raw)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"'concurrency' must be an integer, got {concurrency_raw!r}") from exc
-    if concurrency < 1:
-        raise ConfigError(f"'concurrency' must be >= 1, got {concurrency}")
-
-    output_dir = Path(str(raw.get("output_dir", "output")))
+    concurrency = raw.get("concurrency")
+    if concurrency is None:
+        concurrency = DEFAULT_CONCURRENCY
+    is_whole = isinstance(concurrency, int) and not isinstance(concurrency, bool)
+    if not is_whole or not 1 <= concurrency <= MAX_CONCURRENCY:
+        raise ConfigError(
+            f"'concurrency' must be a whole number from 1 to {MAX_CONCURRENCY}, got {concurrency!r}"
+        )
 
     max_age_hours = _parse_max_age(raw.get("max_age_hours"), "max_age_hours")
 
@@ -423,7 +416,7 @@ def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
         keywords=keywords,
         limit=limit,
         concurrency=concurrency,
-        output_dir=output_dir,
+        output_dir=OUTPUT_DIR,
         default_fields=default_fields,
         filter=global_filter,
         max_age_hours=max_age_hours,
