@@ -7,7 +7,7 @@ config edits that touch unfamiliar areas, or when adding a new site.
 
 ```
 scraper/                    # CLI + library
-├── __main__.py             # `python -m scraper [--config PATH] [--keyword KW] [sites...]`
+├── __main__.py             # `python -m scraper [--keyword KW] [sites...]`
 ├── runner.py               # orchestrates (keyword, site) pairs through a thread pool
 ├── config_loader.py        # settings dict → AppConfig dataclass + validation
 ├── job_settings.py         # JobSettingsStore: Mongo job settings, versions, history
@@ -32,10 +32,15 @@ scraper/                    # CLI + library
 
 mcp_server/                 # MCP HTTP server
 ├── server.py               # FastMCP, tools: list_sites, get_config, update_config, get_config_history, restore_config, get_scrape_status, test_proxy_connection, scrape_jobs
+├── discord_tools.py        # Discord tools: settings, test, channels, preview_discord_message, send_discord_message
 └── __init__.py             # (empty)
 ```
 
 ## Scraper UI API (`ui_server/`)
+
+The UI calls the MCP tool functions in its own process through `LocalGateway`
+(`ui_server/services/mcp_gateway.py`), not over HTTP. Sync tools run in a worker
+thread with `asyncio.to_thread`, async ones are awaited.
 
 - `GET /api/config`: the job settings plus `location_options`, the same
   `{site: [{label, value}]}` map `get_config` returns.
@@ -48,7 +53,7 @@ mcp_server/                 # MCP HTTP server
 ## Request flow (per scrape run)
 
 ```
-config.yaml   seeds/job_settings.yaml → Mongo `job_settings`
+seeds/job_settings.yaml → Mongo `job_settings`
    │
    ▼
 load_app_config()   →   AppConfig (immutable dataclass)
@@ -73,7 +78,7 @@ runner.run(config, targets, keywords)
    │   ├─ apply_filter()               → drop content-mismatch jobs
    │   └─ project_jobs(fields)         → strip to configured fields
    │
-   └─ write output/<keyword-slug>/<site>.json
+   └─ write output/<keyword-slug>/<site>.json   (OUTPUT_DIR, fixed)
 ```
 
 ## Lifecycle of a Job dict
@@ -91,7 +96,7 @@ fields you didn't configure still drive the filter.
 
 ## Concurrency model
 
-- One `ThreadPoolExecutor` per `runner.run()` call, sized to `min(config.concurrency, len(pairs))`.
+- One `ThreadPoolExecutor` per `runner.run()` call, sized to `min(config.concurrency, len(pairs))`. `concurrency` is a job setting (default 2).
 - Each worker thread builds its own Playwright `sync_playwright()` context
   when needed — never share the instance across threads.
 - cloudscraper sessions are created per call (not reused), so they're

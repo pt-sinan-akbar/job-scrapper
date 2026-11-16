@@ -19,11 +19,19 @@ services:
   # override: pre-built image; reached only through caddy, so no published port
   scraper-ui:
     image: ${SCRAPER_IMAGE:-job-scraper:latest}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as r; r.urlopen(r.Request('http://${MCP_BIND_HOST:-172.17.0.1}:8090/health', headers={'Host': 'localhost'}))",
+        ]
     environment:
       - UI_ENV=prod
-      - UI_MCP_URL=http://host.docker.internal:8080/mcp
+      - UI_HOST=${MCP_BIND_HOST:-172.17.0.1}
+      - MONGO_URI=${MONGO_URI}
       - UI_PASSWORD_HASH=${UI_PASSWORD_HASH:-}
       - UI_SESSION_SECRET=${UI_SESSION_SECRET:-}
       - UI_DOMAIN=${UI_DOMAIN:-}
@@ -37,6 +45,8 @@ services:
     profiles: ["ui"]
     depends_on:
       - scraper-ui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
       - "443:443"

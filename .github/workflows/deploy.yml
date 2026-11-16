@@ -152,7 +152,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: SCRAPER_IMAGE,UI_PASSWORD_HASH,UI_SESSION_SECRET,UI_DOMAIN,MCP_BIND_HOST,GHCR_USERNAME,GHCR_PULL_TOKEN
+          envs: SCRAPER_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,PROXY_URL,UI_PASSWORD_HASH,UI_SESSION_SECRET,UI_DOMAIN,MCP_BIND_HOST,GHCR_USERNAME,GHCR_PULL_TOKEN
           script: |
             set -euo pipefail
             : "${GHCR_PULL_TOKEN:?Set the GHCR_PULL_TOKEN GitHub secret}"
@@ -169,6 +169,12 @@ jobs:
           GHCR_USERNAME: ${{ github.repository_owner }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           SCRAPER_IMAGE: ${{ needs.build.outputs.image_tag_sha }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          MONGO_ROOT_USER: ${{ vars.MONGO_ROOT_USER || 'admin' }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_DB_NAME: ${{ vars.MONGO_DB_NAME || 'job_scraper' }}
+          MONGO_COLLECTION_NAME: ${{ vars.MONGO_COLLECTION_NAME || 'scrape_runs' }}
+          PROXY_URL: ${{ secrets.PROXY_URL || vars.PROXY_URL }}
           UI_PASSWORD_HASH: ${{ secrets.UI_PASSWORD_HASH }}
           UI_SESSION_SECRET: ${{ secrets.UI_SESSION_SECRET }}
           UI_DOMAIN: ${{ vars.UI_DOMAIN }}

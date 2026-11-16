@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     env: Literal["dev", "prod"]
     host: str = "127.0.0.1"
     port: int = 8090
-    mcp_url: str = "http://scraper-mcp:8080/mcp"
     runs_dir: Path = Path("output/ui-runs")
     log_path: Path = Path("logs/scraper.log")
     static_dir: Path = Path("ui/dist")

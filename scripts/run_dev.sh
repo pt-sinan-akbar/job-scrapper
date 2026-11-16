@@ -15,10 +15,6 @@ COMPOSE_BASE="docker-compose.yml"
 COMPOSE_ENV="docker-compose.dev.yml"
 ARG="${1:-all}"
 
-# --- ui file access ---
-# scraper-ui writes host-owned output/ui-runs, so it runs as the host user in dev.
-export UI_UID="$(id -u)" UI_GID="$(id -g)"
-
 # --- resolve profiles ---
 case "$ARG" in
   mcp)  PROFILES="--profile mcp" ;;

@@ -1,11 +1,9 @@
 services:
 
-  # override: run as the host user so output/ui-runs stays writable; local access only
+  # override: local access only
   scraper-ui:
-    user: "${UI_UID:-1001}:${UI_GID:-1001}"
     ports:
       - "127.0.0.1:8090:8090"
     environment:
       - UI_ENV=dev
-      - UI_MCP_URL=http://scraper-mcp:8080/mcp
       - UI_DEV_LOGIN_KEY=${UI_DEV_LOGIN_KEY:-}

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any, Protocol
 
-import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-
+from mcp_server import discord_tools, server
 from ui_server.errors import (
     ConfigConflictError,
     ConfigInvalidError,
@@ -25,7 +23,6 @@ WRITE_TIMEOUT_SECONDS = 10.0
 SCRAPE_TIMEOUT_SECONDS = 1800.0
 DISCORD_CALL_TIMEOUT_SECONDS = 20.0
 DISCORD_SEND_TIMEOUT_SECONDS = 180.0
-CONNECT_TIMEOUT_SECONDS = 5.0
 SAVE_SOURCE = "ui"
 
 
@@ -41,14 +38,27 @@ class CachedRead:
     is_stale: bool
 
 
-def read_structured(tool: str, result: Any) -> dict[str, Any]:
-    if result.isError or not isinstance(result.structuredContent, dict):
-        LOG.warning("mcp tool %s returned no usable result", tool)
+LOCAL_TOOLS: dict[str, Callable[..., Any]] = {
+    tool.__name__: tool
+    for tool in (
+        server.list_sites,
+        server.get_config,
+        server.get_config_history,
+        server.update_config,
+        server.restore_config,
+        server.scrape_jobs,
+        *discord_tools.DISCORD_TOOLS,
+    )
+}
+
+
+def read_result(tool: str, result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        LOG.warning("tool %s returned no usable result", tool)
         raise McpUnavailableError()
-    content = result.structuredContent
-    if "error" in content:
-        raise McpUnavailableError(str(content["error"]))
-    return content
+    if "error" in result:
+        raise McpUnavailableError(str(result["error"]))
+    return result
 
 
 def _raise_on_failed_save(result: dict[str, Any]) -> None:
@@ -86,34 +96,22 @@ def _message_arguments(
     return {"mention": mention, **content}
 
 
-class HttpMcpGateway:
-    def __init__(self, url: str) -> None:
-        self._url = url
+async def _run_tool(function: Callable[..., Any], arguments: dict[str, Any]) -> Any:
+    if inspect.iscoroutinefunction(function):
+        return await function(**arguments)
+    return await asyncio.to_thread(function, **arguments)
 
+
+class LocalGateway:
     async def call(
         self, tool: str, arguments: dict[str, Any], timeout_seconds: float
     ) -> dict[str, Any]:
         try:
-            async with asyncio.timeout(timeout_seconds):
-                result = await self._open_session_and_call(tool, arguments, timeout_seconds)
+            result = await _run_tool(LOCAL_TOOLS[tool], arguments)
         except Exception as exc:
-            LOG.warning("mcp tool %s failed: %s", tool, exc)
+            LOG.warning("tool %s failed", tool, exc_info=exc)
             raise McpUnavailableError() from exc
-        return read_structured(tool, result)
-
-    async def _open_session_and_call(
-        self, tool: str, arguments: dict[str, Any], timeout_seconds: float
-    ) -> Any:
-        timeout = httpx.Timeout(timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS)
-        async with (
-            httpx.AsyncClient(timeout=timeout) as http_client,
-            streamable_http_client(self._url, http_client=http_client) as (read, write, _),
-            ClientSession(read, write) as session,
-        ):
-            await session.initialize()
-            return await session.call_tool(
-                tool, arguments, read_timeout_seconds=timedelta(seconds=timeout_seconds)
-            )
+        return read_result(tool, result)
 
 
 class ScraperClient:

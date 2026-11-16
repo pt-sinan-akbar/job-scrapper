@@ -14,7 +14,7 @@ from ui_server.dependencies import Services, reject_cross_site
 from ui_server.errors import install_error_handlers
 from ui_server.routes import auth, config, discord, logs, runs, sites
 from ui_server.services.auth_service import AuthService
-from ui_server.services.mcp_gateway import HttpMcpGateway, McpGateway, ScraperClient
+from ui_server.services.mcp_gateway import LocalGateway, McpGateway, ScraperClient
 from ui_server.services.run_service import RunService
 from ui_server.services.run_store import RunStore
 from ui_server.settings import Settings
@@ -48,7 +48,7 @@ def _build_services(settings: Settings, gateway: McpGateway) -> Services:
 
 def create_app(settings: Settings | None = None, gateway: McpGateway | None = None) -> FastAPI:
     resolved = settings or Settings()
-    services = _build_services(resolved, gateway or HttpMcpGateway(resolved.mcp_url))
+    services = _build_services(resolved, gateway or LocalGateway())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

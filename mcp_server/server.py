@@ -285,7 +285,9 @@ def _write_status(result: dict[str, Any], duration: float) -> None:
     }
 
     _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STATUS_PATH.write_text(json.dumps(status, indent=2))
+    temporary = _STATUS_PATH.with_name(f"{_STATUS_PATH.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(status, indent=2))
+    os.replace(temporary, _STATUS_PATH)
 
 
 def _normalize_job_payload(raw_job: Any, site_name: str, keyword: str) -> dict[str, Any]:

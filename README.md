@@ -2,13 +2,16 @@
 
 Personal job scraper for job boards (JobStreet, Glints, LinkedIn, Indeed,
 Upwork). Flow: a Playwright/Python scraper is exposed as an **MCP HTTP server**
-(`scraper-mcp`, port 8080); a **Discord cron bot** (claude-code + supercronic)
-runs on a schedule, calls the MCP `scrape_jobs` tool, formats results, posts
-each job to a Discord channel, and records the run in **MongoDB**.
+(`scraper-mcp`, port 8080) and a web control panel (`scraper-ui`, port 8090).
+MCP scrape runs are recorded in **MongoDB**. Discord posting goes through a UI run with
+**Notify Discord** or the MCP `send_discord_message` tool. Scheduled runs come
+from a separate service outside this project.
 
-Four Dockerfile stages: `scraper-cli` (`python -m scraper`),
-`mcp-server` (`python -m mcp_server.server`), `bot`, plus `mongo` (MongoDB 7).
-Driven by job settings in Mongo (keywords, sites, filters), edited at /config. The bot schedule stays in config.yaml.
+One Docker image, `job-scraper` (Dockerfile stage `app`), holds the scraper, the
+MCP server, the UI server, and the built UI. Its default command is
+`python -m mcp_server.server`. The UI runs `python -m ui_server` from the same
+image, and the CLI runs `python -m scraper`. Mongo uses the `mongo:7` image.
+Driven by job settings in Mongo (keywords, sites, filters, concurrency), edited at /config.
 
 Upwork is API-only. It uses the visitor GraphQL endpoint with no login and has no HTML fallback, so a failure shows up in `errors` with 0 jobs.
 
@@ -28,15 +31,15 @@ python scripts/manage.py
 pip install -r scripts/requirements.txt   # textual + pyyaml — NOT the root requirements.txt
 ```
 
-The root `requirements.txt` is baked into the Docker images and is not needed on the host.
+The root `requirements.txt` is baked into the Docker image and is not needed on the host.
 
 The TUI is a single Textual screen with:
 
 - **Env bar** — `dev` / `prod` buttons (default `dev`, from `scripts/environments.yaml`)
 - **Summary panel** — shows the site names from `seeds/job_settings.yaml`, proxy status, mongo db/collection, masked `.env` secrets
 - **Command preview panel** — shows the exact command that will run when you press a button
-- **Action rows** — one row per scope (`all`, `bot`, `mcp`, `mongo`); columns: Start / Stop (labelled **Down** on the `all` row) / Status / Logs
-- **Tests row** — dev smoke tests: Scrape / Mongo / Cron / Discord
+- **Action rows** — one row per scope (`all`, `mcp`, `mongo`, `ui`); columns: Start / Stop (labelled **Down** on the `all` row) / Status / Logs
+- **Tests row** — dev smoke tests: Scrape / Mongo
 - Keys: `q`/`ctrl+c` quit, `c` cancel running command, `r` refresh status, `x`/`ctrl+l` clear log
 
 Equivalent raw command to start the MCP stack in dev (the TUI does this for you):
@@ -47,25 +50,17 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile mcp up 
 
 Before first run, copy the `.example` files (see section below).
 
-# Test with local Claude and local MCP
+# Test with a local MCP client
 
-This is for a **`claude` CLI you run on your host machine** (your laptop terminal,
-in the repo dir) to talk to the dockerized MCP server — handy for ad-hoc testing
-without going through the bot. This is a _different_ client from the dockerized
-bot, which ships its own baked `claude-code` and uses `host.docker.internal`
-(see [MCP on Docker](#mcp-on-docker)).
+This is for an MCP client you run on your host machine (for example `claude` in
+your laptop terminal, in the repo dir) to talk to the dockerized MCP server —
+handy for ad-hoc testing.
 
 It works because `scraper-mcp` publishes its port to the host
 (`docker-compose.yml`: `ports: "8080:8080"`), so `localhost:8080` on your host
 forwards into the container.
 
-Copy the example to a project-root `.mcp.json` (where host `claude` picks it up):
-
-```bash
-cp claude/mcp.json.example .mcp.json
-```
-
-Then edit `.mcp.json` and change the URL from `host.docker.internal` to `localhost`:
+Create a project-root `.mcp.json` (gitignored):
 
 ```json
 {
@@ -87,34 +82,30 @@ curl http://localhost:8080/health
 
 # MCP on Docker
 
-The bot container uses `http://host.docker.internal:8080/mcp` instead of
-`localhost` — `localhost` inside a container refers to the container itself, not
-the host. The value in `claude/mcp.json.example` already ships with the Docker
-URL and is baked into the bot image as `/workspace/scraper-bot/.mcp.json`
-(Dockerfile `bot` stage). Set `MCP_URL` to point the bot at another MCP server,
-for example `http://job-scrapper-revamp-mcp-service/mcp` on Kubernetes.
+Containers reach the MCP server by name, not `localhost` — `localhost` inside a
+container refers to the container itself, not the host.
 
-Compose wiring that makes this work:
-
-- `bot` service has `extra_hosts: ["host.docker.internal:host-gateway"]` (Linux)
-- In prod, `scraper-mcp` uses `network_mode: host`, so it listens on the host's
-  `:8080` that `host.docker.internal` resolves to
+- `scraper-ui` does not call the MCP server. It runs the scrape, config and Discord
+  functions in its own process, so it needs `MONGO_URI`, `MONGO_DB_NAME`,
+  `MONGO_COLLECTION_NAME` and `PROXY_URL` like `scraper-mcp`
+- Dev: the job-agent backend uses `http://job-scraper-mcp:8080/mcp` on the shared `job-net` network
+- Prod: `scraper-mcp` and `scraper-ui` both use `network_mode: host` and listen on
+  `MCP_BIND_HOST` (default `172.17.0.1`). Caddy reaches the UI at `host.docker.internal:8090`
 
 # Ports used here
 
 | Service       | Port  | Bind                                      | Notes                                                    |
 | ------------- | ----- | ----------------------------------------- | -------------------------------------------------------- |
 | `scraper-mcp` | 8080  | `0.0.0.0:8080` (dev); host network (prod) | MCP HTTP; `/health` and `/mcp` endpoints                 |
+| `scraper-ui`  | 8090  | `127.0.0.1:8090` (dev); host network (prod) | profile `ui`; in prod binds `MCP_BIND_HOST:8090`, public traffic goes through Caddy (80, 443) |
 | `mongo`       | 27017 | `127.0.0.1:27017`                         | profiles `mcp`, `mongo`; data in `mongo-data` volume     |
-| `bot`         | —     | none                                      | outbound only (Discord API, `host.docker.internal:8080`) |
 
 # Copy the .example files
 
 | Example                         | Copy to                 | Purpose                                                          |
 | ------------------------------- | ----------------------- | ---------------------------------------------------------------- |
-| `.env.example`                  | `.env`                  | local compose env vars: Discord tokens, Mongo creds, `PROXY_URL` |
+| `.env.example`                  | `.env`                  | local compose env vars: Mongo creds, `PROXY_URL`, UI dev login   |
 | `scripts/ssh-tunnel.sh.example` | `scripts/ssh-tunnel.sh` | reverse SOCKS proxy helper — gitignored, contains real host/user |
-| `claude/mcp.json.example`       | `.mcp.json`             | MCP client config for Claude (update URL for host vs Docker)     |
 
 `.env` is for local Docker Compose only. Production injects all env vars through
 GitHub Actions secrets/variables — it never reads this file.
@@ -243,26 +234,29 @@ docker rm -f job-scraper-mongo && docker volume rm job-scrapper_mongo-data
 `.github/workflows/deploy.yml` — triggers on push to `main` or manual
 `workflow_dispatch`.
 
-**Build jobs** (`build-mcp` + `build-bot`, run in parallel):
+**Build job** (`build`):
 
-- Build and push each Docker image to `ghcr.io`
-- Two tags per image: rolling (`mcp-latest` / `bot-latest`) and immutable per-commit (`mcp-<sha>` / `bot-<sha>`)
+- Builds the Dockerfile `app` stage and pushes one image to `ghcr.io`
+- Two tags: rolling `:latest` and immutable per-commit `:<sha>`
 - Uses GitHub Actions layer cache to speed up rebuilds
 
-**Deploy jobs** (sequential after their respective build):
+**Deploy jobs** (both use the sha tag through `SCRAPER_IMAGE`):
 
-1. `deploy-mcp` (needs `build-mcp`): copies `docker-compose.yml` + `docker-compose.prod.yml` to the server via SCP, then SSHs in and runs `docker compose --profile mcp pull && up -d --no-build`, pinned to the immutable sha tag
-2. `deploy-bot` (needs `build-bot` + `deploy-mcp`): same flow for `--profile bot`, injects Discord tokens, Claude config paths, and `TZ`
+1. `deploy-mcp` (needs `build`): copies `docker-compose.yml` + `docker-compose.prod.yml` to the server via SCP, then SSHs in and runs `docker compose --profile mcp pull && up -d --no-build`
+2. `deploy-ui` (needs `build` + `deploy-mcp`): same flow for `--profile ui`, plus the `Caddyfile`. Skipped when the `UI_DOMAIN` variable is not set
 
-# Config: Mongo, config.yaml, and the proxy var
+Woodpecker (`.woodpecker/dev.yml`, `.woodpecker/prod.yml`) builds the same `app`
+stage and pushes `ghcr.io/pt-sinan-akbar/job-scraper/dev` or `/prod`.
+
+# Config: Mongo and the proxy var
 
 Settings live in three places, by how they change
 
 | Place | Holds | Change it |
 | --- | --- | --- |
-| `job_settings` collection | `keywords`, `limit`, `max_age_hours`, `filter`, `default_fields`, `sites` | `/config` page, applies from the next run |
+| `job_settings` collection | `keywords`, `limit`, `concurrency`, `max_age_hours`, `filter`, `default_fields`, `sites` | `/config` page, applies from the next run |
 | `PROXY_URL` env var | Proxy URL. Empty means direct connection. Not set stops scrapes | `.env` in dev, GitHub variable in prod |
-| `config.yaml` | `concurrency`, `output_dir`, `bot.*` | Edit and rebuild the images |
+| `discord_settings` collection | Discord token, channel, `message_template`, `max_chars` | Discord section of `/config`. Unset template and cap use the defaults in `mcp_server/discord_settings.py` |
 
 Each host's Mongo has its own document, so dev and prod differ without a patch file. A new environment needs one seed
 
@@ -272,10 +266,11 @@ Each host's Mongo has its own document, so dev and prod differ without a patch f
 
 The last 20 versions stay in `job_settings_history`, and `/config` can restore any of them
 
-> **Note on `bot.schedule`:** the crontab is generated from `config.yaml` at
-> **image build time** (Dockerfile `bot` stage). Changing `bot.schedule` requires
-> a rebuild and redeploy — editing `config.yaml` on a running container has no
-> effect.
+Output always goes to `output/` (`OUTPUT_DIR` in `scraper/config_loader.py`). It is not a setting
+
+> **Note on the bot schedule:** `/config` shows a bot schedule field. It is
+> display-only and turned off. Scheduled runs come from a separate service outside
+> this project.
 
 # How the filter works
 
@@ -299,39 +294,19 @@ matching per field. `location: [jakarta, tangerang]` keeps a job if
 Edge case: if a job's filtered field is `None` (site didn't return it), the
 job passes through — it is not dropped.
 
-# Cron job
+# Scheduled runs
 
-In the bot image, `supercronic` is the entrypoint, running
-`cron/scraper-crontab`. This file is generated at build time from `config.yaml`
-`bot.schedule` (currently `0 11 * * *` — 11:00 AM daily). Each tick executes
-`cron/run-scheduled-scraper.sh`, which checks `BOT_SCHEDULE_ENABLED`. When it is
-`true` (the default) it runs `cron/run-scraper.sh`. When it is `false` the tick
-is skipped. Any other value fails the tick. Manual runs call `cron/run-scraper.sh`
-directly, so they still work when the schedule is off. `cron/run-scraper.sh` runs:
+This project has no scheduler. Scheduled runs come from a separate service
+outside this project (a Kubernetes CronJob in another repo).
+
+To run a scrape by hand, start one from the UI, or scrape only (no Mongo write,
+no Discord post):
 
 ```bash
-claude --dangerously-skip-permissions --verbose --output-format stream-json \
-  -p "$(cat prompts/scrape-and-post.md)"
-```
-
-`--verbose --output-format stream-json` makes claude emit one JSON event per
-step (tool calls, messages, result) so the run streams live to the log; default
-text mode prints only the final result at the very end.
-
-Output is logged to `/workspace/scraper-bot/cron/scraper.log`. `cron/entrypoint.sh`
-just `exec`s supercronic.
-
-**Who triggers it in prod:** supercronic inside the deployed `bot` container,
-automatically on the baked schedule.
-
-**In dev**, the bot is overridden to `sleep infinity` (`docker-compose.dev.yml`),
-so it idles and does not run cron. To fire a run manually:
-
-```bash
-# Via TUI: tests row → Cron
+# Via TUI: tests row → Scrape
 
 # Or directly:
-docker exec job-scraper-bot /bin/sh /workspace/scraper-bot/cron/run-scraper.sh
+docker exec job-scraper-mcp python -m scraper
 ```
 
 # Query MongoDB data
@@ -392,57 +367,20 @@ Stream container logs:
 
 ```bash
 docker logs -f job-scraper-mcp       # MCP server
-docker logs -f job-scraper-bot       # Discord cron bot
+docker logs -f job-scraper-ui        # Scraper UI
 docker logs -f job-scraper-mongo     # MongoDB
 ```
 
 Via TUI: select a scope row → **Logs** (runs `docker compose … logs -f --tail=200 <services>`).
 
-Read the cron run log inside the bot container:
+# Smoke tests
 
-```bash
-docker exec job-scraper-bot cat /workspace/scraper-bot/cron/scraper.log
-```
-
-# How to debug the bot
-
-The `bot` service (`docker-compose.yml`) mounts your host `~/.claude` +
-`~/.claude.json` (or override via `CLAUDE_CONFIG_DIR`/`CLAUDE_CONFIG_FILE`),
-needs `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` from `.env`, and reaches the
-MCP server at `host.docker.internal:8080`.
-
-In dev the bot idles (`sleep infinity`), so you can exec in freely.
-
-**Start the bot container** (TUI → dev → `bot` → Start, or):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile bot up --build -d
-```
-
-**Check which MCP target is active** — the baked `.mcp.json` inside the container
-uses `host.docker.internal:8080`. If you want to point the bot at a local
-(non-Docker) MCP server, you need `localhost:8080` — these are different hosts.
-
-**Interactive Claude session inside the bot:**
-
-```bash
-docker exec -it job-scraper-bot sh -c "cd /workspace/scraper-bot && claude"
-```
-
-Then run `/mcp` to list available servers and tools. The MCP server exposes:
-`scrape_jobs`, `insert_scrape_run`, `get_latest_scrape_run`, `get_scrape_status`,
-`list_sites`, `get_config`, `update_config`, `get_config_history`, `restore_config`,
-`get_scrape_response_structure`,
-`test_proxy_connection` — plus the `/health` HTTP endpoint.
-
-**Quick smoke tests** (TUI tests row, no full cron run needed):
+The full MCP tool list is in [docs/mcp.md](docs/mcp.md). Quick checks from the TUI tests row:
 
 | Button      | What it tests                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------- |
 | **Scrape**  | Runs `python -m scraper` in `scraper-mcp` — scrape only, no Mongo write, no Discord post    |
 | **Mongo**   | Inserts + reads + drops a throwaway document in `scraper-mcp` via the real Mongo connection |
-| **Discord** | Posts one test message to your Discord channel from the bot container                       |
-| **Cron**    | Fires the full cron job once (`run-scraper.sh`) — real scrape + real Discord posts          |
 
 # Scraper UI
 
@@ -458,33 +396,13 @@ the foreground. Ctrl+C stops Vite only, the containers keep running.
 http://127.0.0.1:8090 serves the UI baked into the image, so it only changes after a rebuild.
 
 - Runs go through `scraper-mcp`, one at a time, with no stop button
+- A run with **Notify Discord** on posts its jobs to Discord, using the Discord settings saved in the UI
 - Each run is saved to `output/ui-runs/<run_id>/`, last 50 kept, and never to Mongo
 - Config saves go through `scraper-mcp` into Mongo. Saving is off while a scrape runs, because MCP is busy then
 - Prod is public through Caddy with one password
 - Compose needs the external `job-net` network. The scripts in `scripts/` create it.
   With plain `docker compose` or `scripts/manage.py`, run `docker network create job-net`
   once first
-
-# The scraping prompt (prompts/scrape-and-post.md)
-
-This markdown file is what cron feeds to Claude on every run. It drives the full
-scrape-and-post pipeline:
-
-1. **Scrape** — call MCP `scrape_jobs` with no arguments; runs every enabled site
-   for every configured keyword using the job settings filters and returns aggregated
-   results grouped by keyword → site → jobs
-2. **Read formatting config** — extract `bot.message_template` and `bot.max_chars`
-   from `/workspace/config.yaml` using `yq`
-3. **Format each job** — substitute `{field}` placeholders in the template; drop
-   lines where the field is null; reformat ISO dates; distil `{requirements}` down
-   to candidate-facing bullet points only
-4. **Post to Discord** — one API call per job via `node` + Discord REST v10;
-   token and channel ID come from the container's env vars, never inlined
-5. **Summary footer** — one final message with total job count, keywords, sites,
-   errors (skipped if zero jobs)
-6. **Record run** — call MCP `insert_scrape_run` with metadata, per-site counts,
-   raw results, and post status; job posting always takes priority over history
-   recording
 
 # GitHub Actions variables & secrets
 
@@ -499,17 +417,12 @@ Set these in your repository's **Settings → Secrets and variables**.
 | `SSH_PRIVATE_KEY`     | deploy jobs | Private key for SSH authentication     |
 | `MONGO_ROOT_PASSWORD` | deploy-mcp  | MongoDB root password                  |
 | `MONGO_URI`           | deploy-mcp  | MongoDB connection URL                 |
-| `DISCORD_BOT_TOKEN`   | deploy-bot  | Discord bot application token          |
-| `DISCORD_CHANNEL_ID`  | deploy-bot  | Target channel ID for job posts        |
-| `GITHUB_TOKEN`        | build jobs  | Auto-provided; used to push to ghcr.io |
+| `GITHUB_TOKEN`        | build job   | Auto-provided; used to push to ghcr.io |
 
 **Variables** (plain text, shown in logs):
 
-| Variable                | Default        | Purpose                                             |
-| ----------------------- | -------------- | --------------------------------------------------- |
-| `MONGO_ROOT_USER`       | `admin`        | MongoDB root username                               |
-| `MONGO_DB_NAME`         | `job_scraper`  | Database name                                       |
-| `MONGO_COLLECTION_NAME` | `scrape_runs`  | Scrape history collection                           |
-| `CLAUDE_CONFIG_DIR`     | —              | Host path to `.claude` directory (mounted into bot) |
-| `CLAUDE_CONFIG_FILE`    | —              | Host path to `.claude.json` (mounted into bot)      |
-| `TZ`                    | `Asia/Jakarta` | Timezone for the bot container                      |
+| Variable                | Default       | Purpose                   |
+| ----------------------- | ------------- | ------------------------- |
+| `MONGO_ROOT_USER`       | `admin`       | MongoDB root username     |
+| `MONGO_DB_NAME`         | `job_scraper` | Database name             |
+| `MONGO_COLLECTION_NAME` | `scrape_runs` | Scrape history collection |

@@ -10,7 +10,7 @@ services:
       [
         "sh",
         "-c",
-        "mkdir -p /out/ui-runs && chown -R pwuser:pwuser /out && chown -R ${UI_UID:-1001}:${UI_GID:-1001} /out/ui-runs",
+        "mkdir -p /out/ui-runs && chown -R pwuser:pwuser /out",
       ]
     restart: "no"
     volumes:
@@ -43,7 +43,7 @@ services:
     image: mongo:7
     container_name: job-scraper-mongo
     restart: unless-stopped
-    profiles: ["mcp", "mongo"]
+    profiles: ["mcp", "mongo", "ui"]
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
@@ -111,6 +111,8 @@ services:
     depends_on:
       output-init:
         condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -125,7 +127,12 @@ services:
       start_period: 10s
     volumes:
       - ./output:/app/output
-      - scraper-logs:/app/logs:ro
+      - scraper-logs:/app/logs
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
+      - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
+      - PROXY_URL
 
 networks:
   # shared with the job-agent backend; create once with: docker network create job-net
