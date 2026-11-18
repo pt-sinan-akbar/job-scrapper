@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import mongomock
 import pytest
-from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+from pymongo.errors import ServerSelectionTimeoutError
 
 from scraper.config_loader import PROXY_ENV_VAR, ConfigError
 from scraper.job_settings import (
-    KEEP_HISTORY,
     SETTINGS_COLLECTION,
     SETTINGS_ID,
     JobSettingsStore,
@@ -113,18 +111,16 @@ def test_seed_keeps_existing_document(store: JobSettingsStore):
     assert store.read().settings["limit"] == 9
 
 
-def test_seed_after_lost_document_continues_after_history():
+def test_seed_after_lost_document_starts_at_first_version():
     database = mongomock.MongoClient()["job_scraper"]
     lost = JobSettingsStore(database)
     lost.seed(deepcopy(SETTINGS))
     lost.save({"limit": 5}, None, "ui")
-    lost.save({"limit": 6}, None, "ui")
     database[SETTINGS_COLLECTION].delete_one({"_id": SETTINGS_ID})
 
     assert lost.seed(deepcopy(SETTINGS)) is True
-    assert lost.read().version == 3
-    assert lost.save({"limit": 7}, None, "ui").version == 4
-    assert [entry.version for entry in lost.history()] == [3, 2, 1]
+    assert lost.read().version == 1
+    assert lost.save({"limit": 7}, None, "ui").version == 2
 
 
 def test_seed_rejects_invalid_settings():
@@ -134,30 +130,24 @@ def test_seed_rejects_invalid_settings():
         store.seed({"keywords": []})
 
 
-def test_save_moves_to_next_version_and_keeps_old_one(store: JobSettingsStore):
+def test_save_moves_to_next_version(store: JobSettingsStore):
     saved = store.save({"limit": 9}, 1, "ui")
 
     assert saved.version == 2
     assert saved.updated_by == "ui"
-    assert store.read().settings["limit"] == 9
-    history = store.history()
-    assert [entry.version for entry in history] == [1]
-    assert history[0].settings["limit"] == 3
-
-
-def test_save_succeeds_when_history_write_fails(
-    store: JobSettingsStore, monkeypatch: pytest.MonkeyPatch
-):
-    def fail(previous: dict[str, Any]) -> None:
-        raise PyMongoError("history down")
-
-    monkeypatch.setattr(store, "_keep_history", fail)
-
-    saved = store.save({"limit": 9}, 1, "ui")
-
-    assert saved.version == 2
     assert store.read().version == 2
     assert store.read().settings["limit"] == 9
+
+
+def test_save_writes_only_the_live_document():
+    database = mongomock.MongoClient()["job_scraper"]
+    store = JobSettingsStore(database)
+    store.seed(deepcopy(SETTINGS))
+
+    store.save({"limit": 9}, 1, "ui")
+
+    assert database.list_collection_names() == [SETTINGS_COLLECTION]
+    assert database[SETTINGS_COLLECTION].count_documents({}) == 1
 
 
 def test_save_rejects_stale_version(store: JobSettingsStore):
@@ -185,33 +175,12 @@ def test_save_leaves_document_unchanged_when_invalid(store: JobSettingsStore):
         store.save({"limit": 0}, 1, "ui")
 
     assert store.read().version == 1
-    assert store.history() == ()
-
-
-def test_history_keeps_newest_versions(store: JobSettingsStore):
-    for limit in range(1, KEEP_HISTORY + 4):
-        store.save({"limit": limit}, None, "ui")
-
-    versions = [entry.version for entry in store.history()]
-
-    assert len(versions) == KEEP_HISTORY
-    assert versions[0] == KEEP_HISTORY + 3
-    assert versions == sorted(versions, reverse=True)
-
-
-def test_restore_brings_back_settings_as_new_version(store: JobSettingsStore):
-    store.save({"limit": 9}, 1, "ui")
-
-    restored = store.restore(1, 2, "ui")
-
-    assert restored.version == 3
     assert store.read().settings["limit"] == 3
-    assert [entry.version for entry in store.history()] == [2, 1]
 
 
-def test_restore_rejects_unknown_version(store: JobSettingsStore):
-    with pytest.raises(ConfigError, match="no saved version 8"):
-        store.restore(8, 1, "ui")
+def test_store_has_no_history_or_restore(store: JobSettingsStore):
+    assert not hasattr(store, "history")
+    assert not hasattr(store, "restore")
 
 
 def test_mongo_failure_hides_connection_details():
@@ -226,14 +195,13 @@ def test_mongo_failure_hides_connection_details():
     assert "secret-host" not in str(caught.value)
 
 
-def test_load_app_config_joins_file_store_and_proxy(
-    store: JobSettingsStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_load_app_config_joins_store_and_proxy(
+    store: JobSettingsStore, monkeypatch: pytest.MonkeyPatch
 ):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 5\n")
+    store.save({"concurrency": 5}, None, "ui")
     monkeypatch.setenv(PROXY_ENV_VAR, "socks5://localhost:1080")
 
-    config = load_app_config(path, store)
+    config = load_app_config(store)
 
     assert config.concurrency == 5
     assert config.keywords == ("devops",)
@@ -243,11 +211,9 @@ def test_load_app_config_joins_file_store_and_proxy(
 
 
 def test_load_app_config_stops_when_proxy_is_unset(
-    store: JobSettingsStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    store: JobSettingsStore, monkeypatch: pytest.MonkeyPatch
 ):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 5\n")
     monkeypatch.delenv(PROXY_ENV_VAR, raising=False)
 
     with pytest.raises(ConfigError, match=PROXY_ENV_VAR):
-        load_app_config(path, store)
+        load_app_config(store)

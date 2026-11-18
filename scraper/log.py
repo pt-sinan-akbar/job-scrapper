@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -29,7 +30,7 @@ def get_logger() -> logging.Logger:
 
     fmt = logging.Formatter(_FMT)
 
-    sh = logging.StreamHandler()
+    sh = logging.StreamHandler(sys.stderr)
     sh.setLevel(logging.DEBUG)
     sh.setFormatter(fmt)
     logger.addHandler(sh)

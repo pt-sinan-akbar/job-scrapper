@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -12,9 +11,10 @@ from ui_server.errors import (
     DiscordUnauthorizedError,
     McpUnavailableError,
     RunInProgressError,
+    RunNotFoundError,
 )
+from ui_server.services.run_record import DiscordStatus, RunStatus
 from ui_server.services.run_service import RunService
-from ui_server.services.run_store import DiscordStatus, RunStatus, RunStore
 
 CHANNEL_ID = "123456789012345678"
 USER_ID = "223456789012345678"
@@ -95,27 +95,26 @@ def _jobs_result(count: int) -> dict:
     }
 
 
-def _service(tmp_path: Path, scraper: FakeScraper) -> tuple[RunService, RunStore]:
-    store = RunStore(tmp_path / "runs", keep_runs=50)
-    return RunService(store, scraper), store
+def _service(scraper: FakeScraper) -> RunService:
+    return RunService(scraper)
 
 
-def test_run_finishes_and_saves_result(tmp_path: Path):
+def test_run_finishes_and_saves_result():
     async def scenario() -> RunStatus:
         scraper = FakeScraper({"ok": True, "results": [], "errors": []})
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return store.get(record.id).status
+        return service.get(record.id).status
 
     assert asyncio.run(scenario()) is RunStatus.SUCCEEDED
 
 
-def test_second_run_is_refused_while_first_is_active(tmp_path: Path):
+def test_second_run_is_refused_while_first_is_active():
     async def scenario() -> None:
         scraper = FakeScraper({"ok": True})
-        service, _ = _service(tmp_path, scraper)
+        service = _service(scraper)
         service.start(("django",), ("upwork",), notify_discord=False)
         with pytest.raises(RunInProgressError):
             service.start(("flask",), ("upwork",), notify_discord=False)
@@ -125,64 +124,116 @@ def test_second_run_is_refused_while_first_is_active(tmp_path: Path):
     asyncio.run(scenario())
 
 
-def test_new_run_is_allowed_after_first_finishes(tmp_path: Path):
-    async def scenario() -> int:
+def test_new_run_replaces_the_previous_record():
+    async def scenario() -> None:
         scraper = FakeScraper({"ok": True})
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
+        scraper.release.set()
+        first = service.start(("django",), ("upwork",), notify_discord=False)
+        await service.wait()
+        second = service.start(("flask",), ("upwork",), notify_discord=False)
+        await service.wait()
+        with pytest.raises(RunNotFoundError):
+            service.get(first.id)
+        assert service.get(second.id).keywords == ("flask",)
+
+    asyncio.run(scenario())
+
+
+def test_get_returns_running_record_before_finish():
+    async def scenario() -> RunStatus:
+        scraper = FakeScraper({"ok": True})
+        service = _service(scraper)
+        record = service.start(("django",), ("upwork",), notify_discord=False)
+        status = service.get(record.id).status
+        scraper.release.set()
+        await service.wait()
+        return status
+
+    assert asyncio.run(scenario()) is RunStatus.RUNNING
+
+
+def test_get_before_any_run_raises_not_found():
+    service = _service(FakeScraper({"ok": True}))
+
+    with pytest.raises(RunNotFoundError):
+        service.get("20261101T010000Z-abc123")
+
+
+def test_get_unknown_id_raises_not_found():
+    async def scenario() -> None:
+        scraper = FakeScraper({"ok": True})
+        service = _service(scraper)
         scraper.release.set()
         service.start(("django",), ("upwork",), notify_discord=False)
         await service.wait()
-        service.start(("flask",), ("upwork",), notify_discord=False)
-        await service.wait()
-        return len(store.list_recent())
+        with pytest.raises(RunNotFoundError):
+            service.get("nope")
 
-    assert asyncio.run(scenario()) == 2
+    asyncio.run(scenario())
 
 
-def test_mcp_failure_marks_run_failed(tmp_path: Path):
-    async def scenario() -> str | None:
-        scraper = FakeScraper(McpUnavailableError("MCP down"))
-        service, store = _service(tmp_path, scraper)
+def test_finished_run_counts_jobs_and_errors():
+    async def scenario():
+        result = {**_jobs_result(3), "ok": False, "errors": [{"site": "x"}]}
+        scraper = FakeScraper(result)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return store.get(record.id).error
+        return service.get(record.id)
+
+    record = asyncio.run(scenario())
+
+    assert record.status is RunStatus.PARTIAL
+    assert (record.job_count, record.error_count) == (3, 1)
+    assert record.finished_at is not None
+
+
+def test_mcp_failure_marks_run_failed():
+    async def scenario() -> str | None:
+        scraper = FakeScraper(McpUnavailableError("MCP down"))
+        service = _service(scraper)
+        record = service.start(("django",), ("upwork",), notify_discord=False)
+        scraper.release.set()
+        await service.wait()
+        return service.get(record.id).error
 
     assert asyncio.run(scenario()) == "MCP down"
 
 
-def test_unexpected_failure_hides_detail(tmp_path: Path):
+def test_unexpected_failure_hides_detail():
     async def scenario() -> str | None:
         scraper = FakeScraper(RuntimeError("secret detail"))
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return store.get(record.id).error
+        return service.get(record.id).error
 
     assert asyncio.run(scenario()) == "The scrape failed."
 
 
-def _notified_run(tmp_path: Path, scraper: FakeScraper):
+def _notified_run(scraper: FakeScraper):
     async def scenario():
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=True)
         scraper.release.set()
         await service.wait()
-        return store.get(record.id)
+        return service.get(record.id)
 
     return asyncio.run(scenario())
 
 
-def test_run_without_notify_never_touches_discord(tmp_path: Path):
+def test_run_without_notify_never_touches_discord():
     scraper = FakeScraper(_jobs_result(2))
 
     async def scenario():
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return store.get(record.id)
+        return service.get(record.id)
 
     record = asyncio.run(scenario())
 
@@ -190,11 +241,11 @@ def test_run_without_notify_never_touches_discord(tmp_path: Path):
     assert scraper.sent_messages == []
 
 
-def test_notify_sends_all_jobs_to_default_channel_with_mention(tmp_path: Path):
+def test_notify_sends_all_jobs_to_default_channel_with_mention():
     scraper = FakeScraper(_jobs_result(2))
     scraper.send_outcomes = [_delivery(2, 0)]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert scraper.sent_messages == [
         (CHANNEL_ID, True, None, [{"title": "job 0"}, {"title": "job 1"}])
@@ -204,69 +255,69 @@ def test_notify_sends_all_jobs_to_default_channel_with_mention(tmp_path: Path):
     assert (record.discord_sent, record.discord_failed, record.discord_error) == (2, 0, None)
 
 
-def test_notify_without_mention_user_sends_without_mention(tmp_path: Path):
+def test_notify_without_mention_user_sends_without_mention():
     scraper = FakeScraper(_jobs_result(1))
     scraper.settings = {**DISCORD_SETTINGS, "mention_user_id": None}
 
-    _notified_run(tmp_path, scraper)
+    _notified_run(scraper)
 
     assert scraper.sent_messages[0][1] is False
 
 
-def test_notify_splits_jobs_in_chunks_of_fifty(tmp_path: Path):
+def test_notify_splits_jobs_in_chunks_of_fifty():
     scraper = FakeScraper(_jobs_result(120))
     scraper.send_outcomes = [_delivery(50, 0), _delivery(48, 2), _delivery(20, 0)]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert [len(message[3]) for message in scraper.sent_messages] == [50, 50, 20]
     assert (record.discord_sent, record.discord_failed) == (118, 2)
     assert record.discord_status is DiscordStatus.PARTIAL
 
 
-def test_notify_counts_only_job_messages_not_the_summary(tmp_path: Path):
+def test_notify_counts_only_job_messages_not_the_summary():
     scraper = FakeScraper(_jobs_result(100))
     scraper.send_outcomes = [_delivery(50, 0), _delivery(50, 0)]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert (record.discord_sent, record.discord_failed) == (100, 0)
     assert record.discord_status is DiscordStatus.SENT
 
 
-def test_notify_ignores_a_failed_summary_message(tmp_path: Path):
+def test_notify_ignores_a_failed_summary_message():
     scraper = FakeScraper(_jobs_result(2))
     scraper.send_outcomes = [_delivery(2, 0, summary_status="failed")]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert (record.discord_sent, record.discord_failed) == (2, 0)
     assert record.discord_status is DiscordStatus.SENT
 
 
-def test_notify_with_failed_text_message_is_failed(tmp_path: Path):
+def test_notify_with_failed_text_message_is_failed():
     scraper = FakeScraper(_jobs_result(0))
     scraper.send_outcomes = [_text_delivery("failed")]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert (record.discord_sent, record.discord_failed) == (0, 1)
     assert record.discord_status is DiscordStatus.FAILED
 
 
-def test_notify_mentions_only_on_the_first_chunk(tmp_path: Path):
+def test_notify_mentions_only_on_the_first_chunk():
     scraper = FakeScraper(_jobs_result(120))
 
-    _notified_run(tmp_path, scraper)
+    _notified_run(scraper)
 
     assert [message[1] for message in scraper.sent_messages] == [True, False, False]
 
 
-def test_notify_keeps_counts_when_a_later_chunk_raises(tmp_path: Path):
+def test_notify_keeps_counts_when_a_later_chunk_raises():
     scraper = FakeScraper(_jobs_result(120))
     scraper.send_outcomes = [_delivery(50, 0), DiscordForbiddenError()]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert len(scraper.sent_messages) == 2
     assert record.discord_status is DiscordStatus.PARTIAL
@@ -274,11 +325,11 @@ def test_notify_keeps_counts_when_a_later_chunk_raises(tmp_path: Path):
     assert record.discord_error == DiscordForbiddenError.default_message
 
 
-def test_notify_with_first_chunk_raising_is_failed(tmp_path: Path):
+def test_notify_with_first_chunk_raising_is_failed():
     scraper = FakeScraper(_jobs_result(120))
     scraper.send_outcomes = [DiscordUnauthorizedError()]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert len(scraper.sent_messages) == 1
     assert record.discord_status is DiscordStatus.FAILED
@@ -296,30 +347,30 @@ def test_notify_with_first_chunk_raising_is_failed(tmp_path: Path):
         McpUnavailableError("MCP down"),
     ],
 )
-def test_notify_maps_known_errors_to_their_message(tmp_path: Path, error: Exception):
+def test_notify_maps_known_errors_to_their_message(error: Exception):
     scraper = FakeScraper(_jobs_result(1))
     scraper.send_outcomes = [error]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert record.discord_error == str(error)
 
 
-def test_notify_unknown_error_after_partial_keeps_generic_message(tmp_path: Path):
+def test_notify_unknown_error_after_partial_keeps_generic_message():
     scraper = FakeScraper(_jobs_result(120))
     scraper.send_outcomes = [_delivery(50, 0), RuntimeError("secret detail")]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert record.discord_status is DiscordStatus.PARTIAL
     assert record.discord_error == "Sending to Discord failed."
     assert record.discord_sent == 50
 
 
-def test_notify_text_with_long_keywords_fits_with_mention_prefix(tmp_path: Path):
+def test_notify_text_with_long_keywords_fits_with_mention_prefix():
     async def scenario() -> list[tuple]:
         scraper = FakeScraper(McpUnavailableError("MCP down"))
-        service, _ = _service(tmp_path, scraper)
+        service = _service(scraper)
         service.start(("k" * 3000,), ("upwork",), notify_discord=True)
         scraper.release.set()
         await service.wait()
@@ -331,56 +382,37 @@ def test_notify_text_with_long_keywords_fits_with_mention_prefix(tmp_path: Path)
     assert text.endswith(": MCP down")
 
 
-def test_notify_text_without_overflow_is_unchanged(tmp_path: Path):
+def test_notify_text_without_overflow_is_unchanged():
     scraper = FakeScraper(McpUnavailableError("MCP down"))
 
-    _notified_run(tmp_path, scraper)
+    _notified_run(scraper)
 
     assert scraper.sent_messages[0][2] == "Run failed for django on upwork: MCP down"
 
 
-def test_notify_disk_error_on_sending_still_prunes(tmp_path: Path):
-    async def scenario() -> int:
-        scraper = FakeScraper(_jobs_result(1))
-        service, store = _service(tmp_path, scraper)
-        pruned: list[int] = []
-
-        def broken_update(*arguments, **keywords):
-            raise OSError("disk full")
-
-        store.update_discord = broken_update
-        store.prune = lambda: pruned.append(1)
-        service.start(("django",), ("upwork",), notify_discord=True)
-        scraper.release.set()
-        await service.wait()
-        return len(pruned)
-
-    assert asyncio.run(scenario()) == 1
-
-
-def test_notify_with_every_message_failed_is_failed(tmp_path: Path):
+def test_notify_with_every_message_failed_is_failed():
     scraper = FakeScraper(_jobs_result(2))
     scraper.send_outcomes = [_delivery(0, 2)]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert record.discord_status is DiscordStatus.FAILED
     assert (record.discord_sent, record.discord_failed) == (0, 2)
 
 
-def test_notify_with_zero_jobs_sends_one_text_message(tmp_path: Path):
+def test_notify_with_zero_jobs_sends_one_text_message():
     scraper = FakeScraper(_jobs_result(0))
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert scraper.sent_messages == [(CHANNEL_ID, True, "django on upwork found 0 jobs", None)]
     assert record.discord_status is DiscordStatus.SENT
 
 
-def test_notify_after_failed_run_sends_failure_text(tmp_path: Path):
+def test_notify_after_failed_run_sends_failure_text():
     scraper = FakeScraper(McpUnavailableError("MCP down"))
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert scraper.sent_messages == [
         (CHANNEL_ID, True, "Run failed for django on upwork: MCP down", None)
@@ -389,19 +421,19 @@ def test_notify_after_failed_run_sends_failure_text(tmp_path: Path):
     assert record.discord_status is DiscordStatus.SENT
 
 
-def test_notify_after_unexpected_failure_hides_detail_in_text(tmp_path: Path):
+def test_notify_after_unexpected_failure_hides_detail_in_text():
     scraper = FakeScraper(RuntimeError("secret detail"))
 
-    _notified_run(tmp_path, scraper)
+    _notified_run(scraper)
 
     assert scraper.sent_messages[0][2] == "Run failed for django on upwork: The scrape failed."
 
 
-def test_notify_without_token_fails_and_sends_nothing(tmp_path: Path):
+def test_notify_without_token_fails_and_sends_nothing():
     scraper = FakeScraper(_jobs_result(1))
     scraper.settings = {**DISCORD_SETTINGS, "configured": False}
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert scraper.sent_messages == []
     assert record.discord_status is DiscordStatus.FAILED
@@ -409,39 +441,39 @@ def test_notify_without_token_fails_and_sends_nothing(tmp_path: Path):
     assert record.status is RunStatus.SUCCEEDED
 
 
-def test_notify_without_default_channel_fails_and_sends_nothing(tmp_path: Path):
+def test_notify_without_default_channel_fails_and_sends_nothing():
     scraper = FakeScraper(_jobs_result(1))
     scraper.settings = {**DISCORD_SETTINGS, "default_channel_id": None}
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert scraper.sent_messages == []
     assert record.discord_status is DiscordStatus.FAILED
     assert record.discord_error == "No default Discord channel is set."
 
 
-def test_notify_send_error_hides_detail(tmp_path: Path):
+def test_notify_send_error_hides_detail():
     scraper = FakeScraper(_jobs_result(1))
     scraper.send_outcomes = [RuntimeError("secret detail")]
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert record.discord_status is DiscordStatus.FAILED
     assert record.discord_error == "Sending to Discord failed."
     assert record.status is RunStatus.SUCCEEDED
 
 
-def test_notify_settings_error_marks_discord_failed(tmp_path: Path):
+def test_notify_settings_error_marks_discord_failed():
     scraper = FakeScraper(_jobs_result(1))
     scraper.settings = McpUnavailableError("MCP down")
 
-    record = _notified_run(tmp_path, scraper)
+    record = _notified_run(scraper)
 
     assert record.discord_status is DiscordStatus.FAILED
     assert record.discord_error == "Sending to Discord failed."
 
 
-def test_run_stays_busy_while_discord_is_sending(tmp_path: Path):
+def test_run_stays_busy_while_discord_is_sending():
     async def scenario() -> tuple[DiscordStatus | None, bool]:
         scraper = FakeScraper(_jobs_result(1))
         gate = asyncio.Event()
@@ -452,12 +484,12 @@ def test_run_stays_busy_while_discord_is_sending(tmp_path: Path):
             return await original(*arguments)
 
         scraper.send_discord_message = slow_send
-        service, store = _service(tmp_path, scraper)
+        service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=True)
         scraper.release.set()
         for _ in range(20):
             await asyncio.sleep(0)
-        current = store.get(record.id)
+        current = service.get(record.id)
         is_busy = False
         try:
             service.ensure_idle()

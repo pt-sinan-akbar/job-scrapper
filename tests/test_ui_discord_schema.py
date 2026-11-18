@@ -17,13 +17,6 @@ def test_message_request_accepts_text():
     request = DiscordMessageRequest(mention=True, text="hello")
 
     assert request.text == "hello"
-    assert request.job_indexes is None
-
-
-def test_message_request_accepts_run_jobs():
-    request = DiscordMessageRequest(mention=False, run_id=RUN_ID, job_indexes=[0, 2])
-
-    assert request.job_indexes == [0, 2]
 
 
 @pytest.mark.parametrize(
@@ -32,15 +25,10 @@ def test_message_request_accepts_run_jobs():
         {"mention": True},
         {"mention": True, "text": "hi", "run_id": RUN_ID, "job_indexes": [0]},
         {"mention": True, "text": "hi", "job_indexes": [0]},
-        {"mention": True, "run_id": RUN_ID},
-        {"mention": True, "job_indexes": [0]},
+        {"mention": True, "text": "hi", "run_id": RUN_ID},
+        {"mention": True, "run_id": RUN_ID, "job_indexes": [0]},
         {"mention": True, "text": ""},
         {"mention": True, "text": "x" * 2001},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": []},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": [1, 1]},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": [-1]},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": list(range(51))},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": ["a"]},
         {"text": "hi"},
         {"mention": True, "text": "hi", "extra": 1},
     ],
@@ -48,12 +36,6 @@ def test_message_request_accepts_run_jobs():
 def test_message_request_rejects_bad_body(body: dict):
     with pytest.raises(ValidationError):
         DiscordMessageRequest(**body)
-
-
-def test_message_request_accepts_fifty_jobs():
-    request = DiscordMessageRequest(mention=True, run_id=RUN_ID, job_indexes=list(range(50)))
-
-    assert len(request.job_indexes or []) == 50
 
 
 def test_send_request_needs_channel_id():

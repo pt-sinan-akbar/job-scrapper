@@ -7,7 +7,6 @@ from typing import Any
 from starlette.concurrency import run_in_threadpool
 
 from mcp_server import discord_sender, mongo
-from mcp_server.config_path import DEFAULT_CONFIG_PATH
 from mcp_server.discord_messages import MessageInvalidError, build_messages
 from mcp_server.discord_sender import DiscordFailure, failure_result
 from mcp_server.discord_settings import (
@@ -23,7 +22,7 @@ LOG = logging.getLogger(__name__)
 
 
 def _discord_store() -> DiscordSettingsStore:
-    return DiscordSettingsStore(mongo.get_database(), DEFAULT_CONFIG_PATH)
+    return DiscordSettingsStore(mongo.get_database())
 
 
 async def _with_discord(
@@ -53,8 +52,8 @@ def get_discord_settings() -> dict[str, Any]:
     """Return the Discord settings, with the bot token masked.
 
     The token itself is never returned, only token_hint (for example "••••1234").
-    message_template and max_chars fall back to the bot block of config.yaml
-    until they are saved.
+    message_template and max_chars fall back to built-in defaults until they
+    are saved.
 
     Returns:
         {configured, token_hint, default_channel_id, mention_user_id,

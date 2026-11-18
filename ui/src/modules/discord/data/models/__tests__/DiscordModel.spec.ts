@@ -91,14 +91,13 @@ describe('toDiscordChannels', () => {
 
 describe('toDiscordContentModel', () => {
   it('sends free text as text', () => {
-    expect(toDiscordContentModel({ kind: 'text', text: 'hi' })).toEqual({ text: 'hi' })
+    expect(toDiscordContentModel({ text: 'hi' })).toEqual({ text: 'hi' })
   })
 
-  it('sends jobs as a run id and job indexes', () => {
-    expect(toDiscordContentModel({ kind: 'jobs', runId: 'r1', jobIndexes: [0, 2] })).toEqual({
-      run_id: 'r1',
-      job_indexes: [0, 2],
-    })
+  it('never sends run ids or job indexes', () => {
+    const content = { text: 'hi', runId: 'r1', jobIndexes: [0] } as { text: string }
+
+    expect(toDiscordContentModel(content)).toEqual({ text: 'hi' })
   })
 })
 

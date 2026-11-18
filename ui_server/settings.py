@@ -17,15 +17,11 @@ class Settings(BaseSettings):
     env: Literal["dev", "prod"]
     host: str = "127.0.0.1"
     port: int = 8090
-    mcp_url: str = "http://scraper-mcp:8080/mcp"
-    runs_dir: Path = Path("output/ui-runs")
-    log_path: Path = Path("logs/scraper.log")
     static_dir: Path = Path("ui/dist")
     password_hash: str = ""
     dev_login_key: str = ""
     session_secret: str = ""
     domain: str = ""
-    keep_runs: int = 50
 
     @model_validator(mode="after")
     def require_prod_secrets(self) -> Self:

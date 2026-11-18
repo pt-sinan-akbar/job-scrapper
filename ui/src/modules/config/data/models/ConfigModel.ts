@@ -2,7 +2,6 @@ import type {
   ApiSetting,
   ConfigChanges,
   ConfigSnapshot,
-  ConfigVersion,
   FilterSetting,
   LocationOption,
   SiteChanges,
@@ -42,6 +41,7 @@ export interface ConfigModel {
   values: {
     keywords: string[]
     limit: number | null
+    concurrency?: number | null
     max_age_hours: number | null
     filter: FilterModel
     default_fields: string[]
@@ -68,20 +68,11 @@ export interface SiteChangesModel {
 export interface ConfigChangesModel {
   keywords?: string[]
   limit?: number
+  concurrency?: number
   max_age_hours?: number
   filter?: FilterModel
   default_fields?: string[]
   sites?: Record<string, SiteChangesModel>
-}
-
-export interface ConfigHistoryModel {
-  entries: {
-    version: number
-    updated_at: string
-    updated_by: string
-    keywords: string[]
-    enabled_sites: string[]
-  }[]
 }
 
 function toFilterSetting(model: FilterModel): FilterSetting {
@@ -142,6 +133,7 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     values: {
       keywords: model.values.keywords,
       limit: model.values.limit,
+      concurrency: model.values.concurrency ?? null,
       maxAgeHours: model.values.max_age_hours,
       filter: toFilterSetting(model.values.filter),
       defaultFields: pickFields(model.values.default_fields),
@@ -155,16 +147,6 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     mandatoryFields: model.mandatory_fields,
     locationOptions: toLocationOptions(model.location_options),
   }
-}
-
-export function toConfigVersions(model: ConfigHistoryModel): ConfigVersion[] {
-  return model.entries.map((entry) => ({
-    version: entry.version,
-    updatedAt: entry.updated_at,
-    updatedBy: entry.updated_by,
-    keywords: entry.keywords,
-    enabledSites: entry.enabled_sites,
-  }))
 }
 
 function toFilterModel(filter: FilterSetting): FilterModel {

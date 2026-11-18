@@ -14,8 +14,8 @@ import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { parseKeywords } from '@/shared/utils/parseKeywords'
 
-const DISCORD_ROUTE = { path: '/', hash: '#discord' }
-const CONFIG_ROUTE = { path: '/', hash: '#config' }
+const DISCORD_ROUTE = '/discord'
+const CONFIG_ROUTE = { path: '/runs', hash: '#config' }
 
 interface DiscordHint {
   text: string
@@ -81,7 +81,7 @@ function setSite(name: string, isPicked: boolean | 'indeterminate'): void {
 
 <template>
   <form
-    class="flex flex-col gap-4"
+    class="flex flex-col gap-8"
     @submit.prevent="emit('start', keywords, pickedSites, notifyDiscord)"
   >
     <div class="flex flex-col gap-2">

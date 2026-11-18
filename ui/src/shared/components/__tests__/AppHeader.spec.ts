@@ -29,13 +29,18 @@ function stubBrowser(): void {
   )
 }
 
-async function mountHeader(canSignOut = true) {
+const blank = { render: () => null }
+
+async function mountHeader(canSignOut = true, path = '/runs') {
   stubBrowser()
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/', component: { render: () => null } }],
+    routes: [
+      { path: '/runs', component: blank },
+      { path: '/discord', component: blank },
+    ],
   })
-  router.push('/')
+  router.push(path)
   await router.isReady()
 
   const wrapper = mount(AppHeader, {
@@ -73,28 +78,48 @@ describe('AppHeader', () => {
     expect(wrapper.get('[data-slot="app-header"]').text()).toContain('Job Agent Scraper')
   })
 
-  it('links to the Runs, Config and Discord sections inside the Main navigation', async () => {
+  it('links to the Runs and Discord tabs inside the Main navigation', async () => {
     const wrapper = await mountHeader()
     const nav = wrapper.get('nav[aria-label="Main"]')
 
-    expect(nav.findAll('a').map((link) => link.attributes('href'))).toEqual([
-      '/#runs',
-      '/#config',
-      '/#discord',
-    ])
+    expect(nav.findAll('a').map((link) => link.attributes('href'))).toEqual(['/runs', '/discord'])
     expect(nav.text()).toContain('Runs')
-    expect(nav.text()).toContain('Config')
     expect(nav.text()).toContain('Discord')
+    expect(nav.text()).not.toContain('Config')
   })
 
-  it('never marks a section link as the current page', async () => {
-    const wrapper = await mountHeader()
+  it.each<[string, (string | undefined)[]]>([
+    ['/runs', ['page', undefined]],
+    ['/runs#config', ['page', undefined]],
+    ['/discord', [undefined, 'page']],
+  ])('marks only the current tab as the page on %s', async (path, expected) => {
+    const wrapper = await mountHeader(true, path)
 
     const values = wrapper
       .get('nav[aria-label="Main"]')
       .findAll('a')
       .map((link) => link.attributes('aria-current'))
-    expect(values).toEqual(['false', 'false', 'false'])
+    expect(values).toEqual(expected)
+  })
+
+  it('highlights the current tab as a pill and leaves the others plain', async () => {
+    const wrapper = await mountHeader(true, '/discord')
+    const [runs, discord] = wrapper.get('nav[aria-label="Main"]').findAll('a')
+
+    expect(discord!.classes()).toEqual(expect.arrayContaining(['bg-surface-subtle', 'text-ink']))
+    expect(discord!.classes()).not.toContain('text-ink-muted')
+    expect(runs!.classes()).toContain('text-ink-muted')
+    expect(runs!.classes()).not.toContain('bg-surface-subtle')
+  })
+
+  it('moves the pill when the user switches tabs', async () => {
+    const wrapper = await mountHeader()
+    const links = () => wrapper.get('nav[aria-label="Main"]').findAll('a')
+
+    await links()[1]!.trigger('click')
+    await flushPromises()
+
+    expect(links().map((link) => link.attributes('aria-current'))).toEqual([undefined, 'page'])
   })
 
   it('names the product in the only h1', async () => {

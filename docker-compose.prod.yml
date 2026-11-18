@@ -4,9 +4,9 @@ services:
   # localhost:1080 (reverse SSH proxy tunnel) and localhost:27017 (mongo published port).
   # MONGO_URI must point to localhost (not 'mongo' DNS which is bridge-only).
   # MCP_HOST is the Docker gateway: containers reach it through host.docker.internal,
-  # and the public cannot. Do not use 127.0.0.1, it would cut off the bot.
+  # and the public cannot. Do not use 127.0.0.1, it would cut off the UI.
   scraper-mcp:
-    image: ${MCP_IMAGE:-job-scraper-mcp:latest}
+    image: ${SCRAPER_IMAGE:-job-scraper:latest}
     network_mode: host
     networks: !reset []
     ports: !reset []
@@ -16,18 +16,22 @@ services:
       - MONGO_URI=${MONGO_URI}
       - MCP_HOST=${MCP_BIND_HOST:-172.17.0.1}
 
-  # override: use pre-built image from ghcr.io
-  bot:
-    image: ${BOT_IMAGE:-job-scraper-bot:latest}
-
   # override: pre-built image; reached only through caddy, so no published port
   scraper-ui:
-    image: ${UI_IMAGE:-job-scraper-ui:latest}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    image: ${SCRAPER_IMAGE:-job-scraper:latest}
+    network_mode: host
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as r; r.urlopen(r.Request('http://${MCP_BIND_HOST:-172.17.0.1}:8090/health', headers={'Host': 'localhost'}))",
+        ]
     environment:
       - UI_ENV=prod
-      - UI_MCP_URL=http://host.docker.internal:8080/mcp
+      - UI_HOST=${MCP_BIND_HOST:-172.17.0.1}
+      - MONGO_URI=${MONGO_URI}
       - UI_PASSWORD_HASH=${UI_PASSWORD_HASH:-}
       - UI_SESSION_SECRET=${UI_SESSION_SECRET:-}
       - UI_DOMAIN=${UI_DOMAIN:-}
@@ -41,6 +45,8 @@ services:
     profiles: ["ui"]
     depends_on:
       - scraper-ui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
       - "443:443"

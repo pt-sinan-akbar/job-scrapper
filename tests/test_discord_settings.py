@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -8,6 +7,7 @@ import mongomock
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
+from mcp_server.discord_messages import render_job
 from mcp_server.discord_settings import (
     DEFAULT_MAX_CHARS,
     DEFAULT_MESSAGE_TEMPLATE,
@@ -23,20 +23,6 @@ from mcp_server.discord_settings import (
 CHANNEL_ID = "123456789012345678"
 USER_ID = "98765432109876543"
 TOKEN = "abc.def.secret-token-1234"
-CONFIG_YAML = """\
-bot:
-  max_chars: 1500
-  message_template: |
-    ## {title}
-    {company}
-"""
-
-
-@pytest.fixture
-def config_path(tmp_path: Path) -> Path:
-    path = tmp_path / "config.yaml"
-    path.write_text(CONFIG_YAML)
-    return path
 
 
 @pytest.fixture
@@ -45,56 +31,19 @@ def database() -> Any:
 
 
 @pytest.fixture
-def store(database: Any, config_path: Path) -> DiscordSettingsStore:
-    return DiscordSettingsStore(database, config_path)
+def store(database: Any) -> DiscordSettingsStore:
+    return DiscordSettingsStore(database)
 
 
-def test_read_without_saved_settings_uses_config_defaults(store: DiscordSettingsStore):
+def test_read_without_saved_settings_uses_built_in_defaults(store: DiscordSettingsStore):
     settings = store.read()
 
     assert settings.token is None
     assert settings.default_channel_id is None
     assert settings.mention_user_id is None
-    assert settings.message_template == "## {title}\n{company}\n"
-    assert settings.max_chars == 1500
-    assert settings.updated_at is None
-
-
-def test_read_falls_back_when_config_has_no_bot_block(database: Any, tmp_path: Path):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 2\n")
-
-    settings = DiscordSettingsStore(database, path).read()
-
     assert settings.message_template == DEFAULT_MESSAGE_TEMPLATE
     assert settings.max_chars == DEFAULT_MAX_CHARS == 1900
-
-
-def test_read_falls_back_when_config_file_is_missing(database: Any, tmp_path: Path):
-    settings = DiscordSettingsStore(database, tmp_path / "missing.yaml").read()
-
-    assert settings.message_template == DEFAULT_MESSAGE_TEMPLATE
-    assert settings.max_chars == DEFAULT_MAX_CHARS
-
-
-def test_read_falls_back_when_config_is_not_valid_yaml(database: Any, tmp_path: Path):
-    path = tmp_path / "config.yaml"
-    path.write_text("bot: [unclosed\n")
-
-    settings = DiscordSettingsStore(database, path).read()
-
-    assert settings.message_template == DEFAULT_MESSAGE_TEMPLATE
-    assert settings.max_chars == DEFAULT_MAX_CHARS
-
-
-def test_read_falls_back_when_bot_values_are_unusable(database: Any, tmp_path: Path):
-    path = tmp_path / "config.yaml"
-    path.write_text("bot:\n  max_chars: lots\n  message_template: 5\n")
-
-    settings = DiscordSettingsStore(database, path).read()
-
-    assert settings.message_template == DEFAULT_MESSAGE_TEMPLATE
-    assert settings.max_chars == DEFAULT_MAX_CHARS
+    assert settings.updated_at is None
 
 
 def test_save_stores_everything_in_its_own_document(store: DiscordSettingsStore, database: Any):
@@ -254,7 +203,7 @@ def test_mongo_failure_on_read_hides_connection_details():
     )
 
     with pytest.raises(DiscordSettingsUnavailableError) as caught:
-        DiscordSettingsStore(database, Path("config.yaml")).read()
+        DiscordSettingsStore(database).read()
 
     assert "secret-host" not in str(caught.value)
 
@@ -264,7 +213,7 @@ def test_mongo_failure_on_save_is_unavailable():
     database.__getitem__.return_value.update_one.side_effect = ServerSelectionTimeoutError("down")
 
     with pytest.raises(DiscordSettingsUnavailableError):
-        DiscordSettingsStore(database, Path("config.yaml")).save({"token": TOKEN})
+        DiscordSettingsStore(database).save({"token": TOKEN})
 
 
 def test_payload_when_nothing_is_saved(store: DiscordSettingsStore):
@@ -273,8 +222,8 @@ def test_payload_when_nothing_is_saved(store: DiscordSettingsStore):
         "token_hint": None,
         "default_channel_id": None,
         "mention_user_id": None,
-        "message_template": "## {title}\n{company}\n",
-        "max_chars": 1500,
+        "message_template": DEFAULT_MESSAGE_TEMPLATE,
+        "max_chars": DEFAULT_MAX_CHARS,
         "updated_at": None,
     }
 
@@ -316,3 +265,23 @@ def test_is_snowflake(value: str, expected: bool):
 def test_is_snowflake_rejects_non_text():
     assert is_snowflake(123456789012345678) is False
     assert is_snowflake(None) is False
+
+
+def test_default_template_renders_every_placeholder():
+    job = {
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "location": "Jakarta",
+        "url": "https://example.com/job",
+        "site": "glints",
+        "posted_date": "2026-11-16",
+    }
+
+    rendered = render_job(DEFAULT_MESSAGE_TEMPLATE, job)
+
+    assert "{" not in rendered
+    assert "## Backend Engineer" in rendered
+    assert "Acme | Jakarta" in rendered
+    assert "Link: [link](https://example.com/job)" in rendered
+    assert "Source: glints" in rendered
+    assert "Diposting: 2026-11-16" in rendered

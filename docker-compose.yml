@@ -1,39 +1,19 @@
 name: scraper
 
 services:
-  # SERVICE: output-init — fixes output dir ownership before scraper runs (Playwright image runs as root)
-  output-init:
-    image: mcr.microsoft.com/playwright/python:v1.59.0-noble
-    container_name: job-scraper-init
-    user: "0:0"
-    entrypoint:
-      [
-        "sh",
-        "-c",
-        "mkdir -p /out/ui-runs && chown -R pwuser:pwuser /out && chown -R ${UI_UID:-1001}:${UI_GID:-1001} /out/ui-runs",
-      ]
-    restart: "no"
-    volumes:
-      - ./output:/out
-
   # SERVICE: scraper — one-shot CLI scraper; network_mode:host for SOCKS5 proxy passthrough
   # Disabled, this is just to test if the scraper works independently
   # scraper:
   #   build:
   #     context: .
   #     dockerfile: Dockerfile
-  #     target: scraper-cli
+  #     target: app
   #   image: job-scraper:latest
   #   container_name: job-scraper
+  #   command: ["python", "-m", "scraper"]
   #   restart: "no"
   #   profiles: ["scraper"]
   #   network_mode: host
-  #   depends_on:
-  #     output-init:
-  #       condition: service_completed_successfully
-  #   volumes:
-  #     - ./config.yaml:/app/config.yaml:ro
-  #     - ./output:/app/output
   #   environment:
   #     - PROXY_URL
   #     - MONGO_URI=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongo:27017
@@ -43,13 +23,13 @@ services:
     image: mongo:7
     container_name: job-scraper-mongo
     restart: unless-stopped
-    profiles: ["mcp", "mongo"]
+    profiles: ["mcp", "mongo", "ui"]
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
       - mongo-data:/data/db
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER:-admin}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
@@ -66,14 +46,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: mcp-server
-    image: job-scraper-mcp:latest
+      target: app
+    image: job-scraper:latest
     container_name: job-scraper-mcp
     restart: unless-stopped
     profiles: ["mcp"]
     depends_on:
-      output-init:
-        condition: service_completed_successfully
       mongo:
         condition: service_healthy
     healthcheck:
@@ -85,7 +63,6 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./output:/app/output
       - ./docs:/app/docs:ro
       - scraper-logs:/app/logs
     environment:
@@ -102,14 +79,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ui-server
-    image: job-scraper-ui:latest
+      target: app
+    image: job-scraper:latest
     container_name: job-scraper-ui
+    command: ["python", "-m", "ui_server"]
     restart: unless-stopped
     profiles: ["ui"]
     depends_on:
-      output-init:
-        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -122,34 +100,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    volumes:
-      - ./output:/app/output
-      - scraper-logs:/app/logs:ro
-
-  # SERVICE: bot — cron bot; runs claude-code on a schedule; profile-gated so `docker compose up` skips it by default
-  bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: bot
-    image: job-scraper-bot:latest
-    container_name: job-scraper-bot
-    restart: unless-stopped
-    profiles: ["bot"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # allows bot to reach scraper-mcp via host.docker.internal:8080 (Linux only)
-    depends_on:
-      output-init:
-        condition: service_completed_successfully
     environment:
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-      - BOT_SCHEDULE_ENABLED=${BOT_SCHEDULE_ENABLED:-true}
-      - TZ=${TZ:-Asia/Jakarta}
-    volumes:
-      - ${CLAUDE_CONFIG_DIR:-~/.claude}:/home/node/.claude
-      - ${CLAUDE_CONFIG_FILE:-~/.claude.json}:/home/node/.claude.json
-      - ./output:/workspace/output
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
+      - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
+      - PROXY_URL
 
 networks:
   # shared with the job-agent backend; create once with: docker network create job-net

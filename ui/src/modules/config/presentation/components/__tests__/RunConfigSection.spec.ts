@@ -12,13 +12,12 @@ import { useConfigStore } from '@/modules/config/presentation/stores/useConfigSt
 
 const getConfig = { execute: vi.fn() }
 const saveConfig = { execute: vi.fn() }
-const getConfigHistory = { execute: vi.fn() }
-const restoreConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
     keywords: ['django'],
     limit: 3,
+    concurrency: 2,
     maxAgeHours: 72,
     filter: EMPTY_FILTER,
     defaultFields: ['title'],
@@ -44,6 +43,10 @@ function mountSection(router: Router = createTestRouter()) {
   return mount(RunConfigSection, { global: { plugins: [router] }, attachTo: document.body })
 }
 
+function startClosed(): void {
+  window.localStorage.setItem(CONFIG_CARD_STORAGE_KEY, 'false')
+}
+
 function toggle(wrapper: ReturnType<typeof mountSection>) {
   return wrapper.get('button[aria-controls]')
 }
@@ -54,8 +57,7 @@ describe('RunConfigSection', () => {
     vi.stubGlobal('localStorage', createMemoryStorage())
     setActivePinia(createPinia())
     getConfig.execute.mockResolvedValue(SNAPSHOT)
-    getConfigHistory.execute.mockResolvedValue([])
-    provideConfigUseCases({ getConfig, saveConfig, getConfigHistory, restoreConfig })
+    provideConfigUseCases({ getConfig, saveConfig })
   })
 
   afterEach(() => {
@@ -64,16 +66,27 @@ describe('RunConfigSection', () => {
     document.body.innerHTML = ''
   })
 
-  it('is a closed card titled Config by default', async () => {
+  it('is an open card titled Config by default', async () => {
     const wrapper = mountSection()
     await flushPromises()
 
     expect(wrapper.get('h3').text()).toBe('Config')
+    expect(toggle(wrapper).attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('form').exists()).toBe(true)
+  })
+
+  it('starts closed when it was left closed', async () => {
+    startClosed()
+
+    const wrapper = mountSection()
+    await flushPromises()
+
     expect(toggle(wrapper).attributes('aria-expanded')).toBe('false')
     expect(wrapper.find('form').exists()).toBe(false)
   })
 
   it('opens when the page links to the config section', async () => {
+    startClosed()
     const router = createTestRouter()
     const wrapper = mountSection(router)
     await flushPromises()
@@ -82,6 +95,31 @@ describe('RunConfigSection', () => {
     await flushPromises()
 
     expect(toggle(wrapper).attributes('aria-expanded')).toBe('true')
+    expect(localStorage.getItem(CONFIG_CARD_STORAGE_KEY)).toBe('false')
+  })
+
+  it('opens for a deep link on load but keeps the saved closed choice', async () => {
+    startClosed()
+    const router = createTestRouter()
+    await router.push({ path: '/', hash: '#config' })
+
+    const wrapper = mountSection(router)
+    await flushPromises()
+
+    expect(toggle(wrapper).attributes('aria-expanded')).toBe('true')
+    expect(localStorage.getItem(CONFIG_CARD_STORAGE_KEY)).toBe('false')
+  })
+
+  it('saves the choice once the user closes a card opened by a link', async () => {
+    startClosed()
+    const router = createTestRouter()
+    await router.push({ path: '/', hash: '#config' })
+    const wrapper = mountSection(router)
+    await flushPromises()
+
+    await toggle(wrapper).trigger('click')
+    await toggle(wrapper).trigger('click')
+
     expect(localStorage.getItem(CONFIG_CARD_STORAGE_KEY)).toBe('true')
   })
 
@@ -101,6 +139,7 @@ describe('RunConfigSection', () => {
   })
 
   it('stays closed for links to other hashes', async () => {
+    startClosed()
     const router = createTestRouter()
     const wrapper = mountSection(router)
     await flushPromises()
@@ -113,46 +152,50 @@ describe('RunConfigSection', () => {
 
   it('stops listening to links once unmounted', async () => {
     const router = createTestRouter()
+    const addHook = router.afterEach.bind(router)
+    const removeHook = vi.fn()
+    vi.spyOn(router, 'afterEach').mockImplementation((guard) => {
+      const stop = addHook(guard)
+      return () => {
+        removeHook()
+        stop()
+      }
+    })
     const wrapper = mountSection(router)
     await flushPromises()
+
     wrapper.unmount()
 
-    await router.push({ path: '/', hash: '#config' })
-    await flushPromises()
-
-    expect(localStorage.getItem(CONFIG_CARD_STORAGE_KEY)).toBeNull()
+    expect(removeHook).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the saved version under the title once loaded', async () => {
+  it('shows no saved version note under the title', async () => {
     const wrapper = mountSection()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Version 4')
-    expect(wrapper.text()).toContain('by ui')
-    expect(wrapper.text()).toContain('Changes apply from the next run')
+    expect(wrapper.text()).not.toContain('Version 4')
+    expect(wrapper.text()).not.toContain('Changes apply from the next run')
   })
 
-  it('loads the config and its history once on mount', async () => {
+  it('loads the config once on mount', async () => {
     mountSection()
     await flushPromises()
 
     expect(getConfig.execute).toHaveBeenCalledTimes(1)
-    expect(getConfigHistory.execute).toHaveBeenCalledTimes(1)
   })
 
   it('does not load again when the store already has the config', async () => {
     await useConfigStore().load()
     getConfig.execute.mockClear()
-    getConfigHistory.execute.mockClear()
 
     mountSection()
     await flushPromises()
 
     expect(getConfig.execute).not.toHaveBeenCalled()
-    expect(getConfigHistory.execute).not.toHaveBeenCalled()
   })
 
   it('shows the form once the card is opened', async () => {
+    startClosed()
     const wrapper = mountSection()
     await flushPromises()
 
@@ -166,6 +209,7 @@ describe('RunConfigSection', () => {
   })
 
   it('hides the form again when the card is closed', async () => {
+    startClosed()
     const wrapper = mountSection()
     await flushPromises()
 
@@ -176,6 +220,7 @@ describe('RunConfigSection', () => {
   })
 
   it('keeps unsaved edits while the card is closed and opened again', async () => {
+    startClosed()
     const wrapper = mountSection()
     await flushPromises()
     await toggle(wrapper).trigger('click')
@@ -189,6 +234,7 @@ describe('RunConfigSection', () => {
   })
 
   it('remembers open and closed in the browser', async () => {
+    startClosed()
     const wrapper = mountSection()
     await flushPromises()
 
@@ -209,7 +255,7 @@ describe('RunConfigSection', () => {
     expect(wrapper.find('form').exists()).toBe(true)
   })
 
-  it('still opens when the browser blocks storage', async () => {
+  it('starts open when the browser blocks storage', async () => {
     vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
       throw new Error('blocked')
     })
@@ -218,8 +264,6 @@ describe('RunConfigSection', () => {
     })
     const wrapper = mountSection()
     await flushPromises()
-
-    await toggle(wrapper).trigger('click')
 
     expect(wrapper.find('form').exists()).toBe(true)
   })

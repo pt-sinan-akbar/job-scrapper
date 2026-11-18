@@ -1,4 +1,4 @@
-export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
+export type RunStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 
 export type RunDiscordStatus = 'sending' | 'sent' | 'partial' | 'failed'
 
@@ -16,38 +16,6 @@ export interface RunRecord {
   discordSent: number
   discordFailed: number
   discordError: string | null
-}
-
-export interface RunJob {
-  site: string | null
-  matchedKeyword: string | null
-  title: string | null
-  company: string | null
-  location: string | null
-  url: string | null
-  postedAt: string | null
-}
-
-export interface RunFailure {
-  keyword: string
-  site: string
-  reason: string
-}
-
-export type JsonObject = Record<string, unknown>
-
-export interface RunPayload {
-  keyword: string
-  site: string
-  raw: JsonObject | null
-  filtered: JsonObject | null
-}
-
-export interface RunDetail {
-  record: RunRecord
-  jobs: RunJob[]
-  failures: RunFailure[]
-  payloads: RunPayload[]
 }
 
 export interface SiteOption {

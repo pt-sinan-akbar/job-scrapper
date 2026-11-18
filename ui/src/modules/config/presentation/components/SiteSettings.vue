@@ -72,7 +72,7 @@ function changeDelayMax(value: string | number): void {
     </div>
     <details>
       <summary class="cursor-pointer text-body-sm text-ink-muted">More settings</summary>
-      <div class="mt-3 flex flex-col gap-4">
+      <div class="mt-3 flex flex-col gap-8">
         <div class="flex flex-col gap-2">
           <Label :for="`${site.name}-max-age`">Max job age in hours</Label>
           <Input
@@ -84,7 +84,7 @@ function changeDelayMax(value: string | number): void {
             @update:model-value="change({ maxAgeHours: toOptionalNumber($event) })"
           />
         </div>
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-6">
           <div class="flex items-center gap-3">
             <Checkbox
               :id="`${site.name}-own-filter`"
@@ -102,7 +102,7 @@ function changeDelayMax(value: string | number): void {
             @update:model-value="change({ filter: $event })"
           />
         </div>
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-6">
           <div class="flex items-center gap-3">
             <Checkbox
               :id="`${site.name}-own-fields`"
@@ -121,7 +121,7 @@ function changeDelayMax(value: string | number): void {
             @update:model-value="change({ fields: $event })"
           />
         </div>
-        <div v-if="site.api !== null" class="flex flex-col gap-3">
+        <div v-if="site.api !== null" class="flex flex-col gap-6">
           <div class="flex items-center gap-3">
             <Checkbox
               :id="`${site.name}-api-enabled`"

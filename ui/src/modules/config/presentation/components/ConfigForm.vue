@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { toast } from 'vue-sonner'
-import { toOptionalNumber, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
-import ConfigHistory from '@/modules/config/presentation/components/ConfigHistory.vue'
+import {
+  BOT_SCHEDULE,
+  toOptionalNumber,
+  type SiteSetting,
+} from '@/modules/config/domain/entities/ScraperConfig'
 import FilterFields from '@/modules/config/presentation/components/FilterFields.vue'
 import JobFieldsInput from '@/modules/config/presentation/components/JobFieldsInput.vue'
 import ListInput from '@/modules/config/presentation/components/ListInput.vue'
@@ -62,12 +65,12 @@ async function save(): Promise<void> {
     <form class="flex flex-col gap-6 md:gap-4" @submit.prevent="save">
       <fieldset :disabled="isStale" class="flex min-w-0 flex-col gap-6 border-0 p-0 md:gap-4">
         <PageSection title="General">
-          <div class="flex flex-col gap-4">
+          <div class="flex flex-col gap-8">
             <div class="flex flex-col gap-2">
               <Label for="keywords">Keywords, separated by commas</Label>
               <ListInput id="keywords" v-model="store.values.keywords" placeholder="Keywords" />
             </div>
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div class="grid gap-8 sm:grid-cols-2 sm:gap-6">
               <div class="flex flex-col gap-2">
                 <Label for="limit">Limit per site</Label>
                 <Input
@@ -91,6 +94,23 @@ async function save(): Promise<void> {
                   min="1"
                   @update:model-value="store.values!.maxAgeHours = toOptionalNumber($event)"
                 />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label for="concurrency">Sites scraped at once</Label>
+                <Input
+                  id="concurrency"
+                  placeholder="Sites scraped at once"
+                  :model-value="store.values.concurrency ?? ''"
+                  type="number"
+                  :required="store.snapshot?.values.concurrency !== null"
+                  min="1"
+                  max="10"
+                  @update:model-value="store.values!.concurrency = toOptionalNumber($event)"
+                />
+              </div>
+              <div class="flex flex-col gap-2">
+                <Label for="bot-schedule">Bot schedule (cron), turned off for now</Label>
+                <Input id="bot-schedule" :model-value="BOT_SCHEDULE" disabled readonly />
               </div>
             </div>
           </div>
@@ -128,8 +148,6 @@ async function save(): Promise<void> {
           </div>
         </PageSection>
       </fieldset>
-
-      <ConfigHistory />
 
       <div
         data-slot="save-bar"

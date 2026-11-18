@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { RunDetail, RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import {
+  MAX_DISCORD_WAIT_POLLS,
   MAX_POLL_FAILURES,
   POLL_INTERVAL_MS,
   useRunStore,
@@ -10,8 +11,13 @@ import {
 
 const getOptions = { execute: vi.fn() }
 const getRun = { execute: vi.fn() }
-const listRuns = { execute: vi.fn() }
 const startRun = { execute: vi.fn() }
+
+const OPTIONS: RunOptions = {
+  keywords: ['django'],
+  sites: [{ name: 'upwork', isEnabled: true }],
+  isStale: false,
+}
 
 function record(
   status: RunRecord['status'],
@@ -34,11 +40,12 @@ function record(
   }
 }
 
-function detail(
-  status: RunRecord['status'],
-  discordStatus: RunRecord['discordStatus'] = null,
-): RunDetail {
-  return { record: record(status, discordStatus), jobs: [], failures: [], payloads: [] }
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
 }
 
 describe('useRunStore', () => {
@@ -46,20 +53,15 @@ describe('useRunStore', () => {
     vi.resetAllMocks()
     vi.useFakeTimers()
     setActivePinia(createPinia())
-    provideRunUseCases({ getOptions, getRun, listRuns, startRun })
-    listRuns.execute.mockResolvedValue([])
+    provideRunUseCases({ getOptions, getRun, startRun })
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('loads options and history', async () => {
-    getOptions.execute.mockResolvedValue({
-      keywords: ['django'],
-      sites: [{ name: 'upwork', isEnabled: true }],
-      isStale: false,
-    })
+  it('loads the run options', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
     const store = useRunStore()
 
     await store.load()
@@ -78,11 +80,51 @@ describe('useRunStore', () => {
     expect(store.errorMessage).toBe('Scraper down')
   })
 
+  it('does not look for an active run on load', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    const store = useRunStore()
+
+    await store.load()
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+    expect(store.isRunning).toBe(false)
+    expect(getRun.execute).not.toHaveBeenCalled()
+  })
+
+  it('asks for the options once while a load is already in flight', async () => {
+    const pending = deferred<RunOptions>()
+    getOptions.execute.mockReturnValue(pending.promise)
+    const store = useRunStore()
+
+    void store.load()
+    void store.load()
+    pending.resolve(OPTIONS)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getOptions.execute).toHaveBeenCalledTimes(1)
+    expect(store.status).toBe('ready')
+  })
+
+  it('keeps one poll loop when load runs again during a run', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    startRun.execute.mockResolvedValue(record('running'))
+    getRun.execute.mockResolvedValue(record('running'))
+    const store = useRunStore()
+    await store.start(['django'], ['upwork'], false)
+
+    await store.load()
+    await store.load()
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+    expect(store.isRunning).toBe(true)
+    expect(getRun.execute).toHaveBeenCalledTimes(3)
+  })
+
   it('polls a started run until it ends', async () => {
     startRun.execute.mockResolvedValue(record('running'))
     getRun.execute
-      .mockResolvedValueOnce(detail('running'))
-      .mockResolvedValueOnce(detail('succeeded'))
+      .mockResolvedValueOnce(record('running'))
+      .mockResolvedValueOnce(record('succeeded'))
     const store = useRunStore()
 
     await store.start(['django'], ['upwork'], false)
@@ -90,11 +132,23 @@ describe('useRunStore', () => {
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(store.isRunning).toBe(true)
+    expect(store.runOutcome).toBeNull()
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(store.isRunning).toBe(false)
-    expect(store.selected?.record.status).toBe('succeeded')
+    expect(store.runOutcome?.status).toBe('succeeded')
     expect(getRun.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a second start while a run is active', async () => {
+    startRun.execute.mockResolvedValue(record('running'))
+    getRun.execute.mockResolvedValue(record('running'))
+    const store = useRunStore()
+    await store.start(['django'], ['upwork'], false)
+
+    await store.start(['django'], ['upwork'], false)
+
+    expect(startRun.execute).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the message when a run cannot start', async () => {
@@ -103,7 +157,7 @@ describe('useRunStore', () => {
 
     await store.start(['django'], ['upwork'], false)
 
-    expect(store.actionError).toBe('A scrape is already running.')
+    expect(store.runError?.message).toBe('A scrape is already running.')
     expect(store.isRunning).toBe(false)
   })
 
@@ -111,17 +165,17 @@ describe('useRunStore', () => {
     startRun.execute.mockResolvedValue(record('running'))
     getRun.execute
       .mockRejectedValueOnce(new Error('timeout'))
-      .mockResolvedValueOnce(detail('succeeded'))
+      .mockResolvedValueOnce(record('succeeded'))
     const store = useRunStore()
     await store.start(['django'], ['upwork'], false)
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(store.isRunning).toBe(true)
-    expect(store.actionError).toBeNull()
+    expect(store.runError).toBeNull()
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
     expect(store.isRunning).toBe(false)
-    expect(store.selected?.record.status).toBe('succeeded')
+    expect(store.runOutcome?.status).toBe('succeeded')
   })
 
   it('gives up after repeated failed polls', async () => {
@@ -133,7 +187,7 @@ describe('useRunStore', () => {
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * MAX_POLL_FAILURES)
 
     expect(store.isRunning).toBe(false)
-    expect(store.actionError).toContain('Lost track')
+    expect(store.runError?.message).toContain('Lost track')
     expect(getRun.execute).toHaveBeenCalledTimes(MAX_POLL_FAILURES)
   })
 
@@ -142,61 +196,18 @@ describe('useRunStore', () => {
     const failures = Array.from({ length: MAX_POLL_FAILURES - 1 }, () => new Error('timeout'))
     for (const failure of [...failures, null, ...failures]) {
       if (failure === null) {
-        getRun.execute.mockResolvedValueOnce(detail('running'))
+        getRun.execute.mockResolvedValueOnce(record('running'))
       } else {
         getRun.execute.mockRejectedValueOnce(failure)
       }
     }
-    getRun.execute.mockResolvedValueOnce(detail('succeeded'))
+    getRun.execute.mockResolvedValueOnce(record('succeeded'))
     const store = useRunStore()
     await store.start(['django'], ['upwork'], false)
 
     await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * (MAX_POLL_FAILURES * 2))
 
-    expect(store.selected?.record.status).toBe('succeeded')
-  })
-
-  it('keeps following a started run when history fails to refresh', async () => {
-    startRun.execute.mockResolvedValue(record('running'))
-    listRuns.execute.mockRejectedValue(new Error('timeout'))
-    const store = useRunStore()
-
-    await store.start(['django'], ['upwork'], false)
-
-    expect(store.isRunning).toBe(true)
-    expect(store.actionError).toContain('history')
-  })
-
-  it('ignores a poll that returns after polling stopped', async () => {
-    startRun.execute.mockResolvedValue(record('running'))
-    let finishPoll: (value: RunDetail) => void = () => undefined
-    getRun.execute.mockReturnValueOnce(
-      new Promise<RunDetail>((resolve) => {
-        finishPoll = resolve
-      }),
-    )
-    const store = useRunStore()
-    await store.start(['django'], ['upwork'], false)
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
-
-    store.stopPolling()
-    finishPoll(detail('running'))
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
-
-    expect(getRun.execute).toHaveBeenCalledTimes(1)
-    expect(store.isRunning).toBe(false)
-  })
-
-  it('stops polling when asked', async () => {
-    startRun.execute.mockResolvedValue(record('running'))
-    getRun.execute.mockResolvedValue(detail('running'))
-    const store = useRunStore()
-    await store.start(['django'], ['upwork'], false)
-
-    store.stopPolling()
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
-
-    expect(getRun.execute).not.toHaveBeenCalled()
+    expect(store.runOutcome?.status).toBe('succeeded')
   })
 
   describe('discord send', () => {
@@ -212,51 +223,36 @@ describe('useRunStore', () => {
     it('keeps polling and stays running while the run is sending', async () => {
       startRun.execute.mockResolvedValue(record('running', 'sending'))
       getRun.execute
-        .mockResolvedValueOnce(detail('succeeded', 'sending'))
-        .mockResolvedValueOnce(detail('succeeded', 'sending'))
-        .mockResolvedValueOnce(detail('succeeded', 'sent'))
+        .mockResolvedValueOnce(record('succeeded', 'sending'))
+        .mockResolvedValueOnce(record('succeeded', 'sending'))
+        .mockResolvedValueOnce(record('succeeded', 'sent'))
       const store = useRunStore()
       await store.start(['django'], ['upwork'], true)
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
       expect(store.isRunning).toBe(true)
-      expect(store.selected?.record.status).toBe('succeeded')
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
       expect(store.isRunning).toBe(true)
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
       expect(store.isRunning).toBe(false)
-      expect(store.selected?.record.discordStatus).toBe('sent')
       expect(getRun.execute).toHaveBeenCalledTimes(3)
     })
 
-    it('refreshes the history once scraping ends and again when sending ends', async () => {
+    it('reports the scrape end once even while sending goes on', async () => {
       startRun.execute.mockResolvedValue(record('running', 'sending'))
+      const scrapeEnd = record('succeeded', 'sending')
       getRun.execute
-        .mockResolvedValueOnce(detail('succeeded', 'sending'))
-        .mockResolvedValueOnce(detail('succeeded', 'sending'))
-        .mockResolvedValueOnce(detail('succeeded', 'sent'))
+        .mockResolvedValueOnce(scrapeEnd)
+        .mockResolvedValueOnce(record('succeeded', 'sending'))
+        .mockResolvedValueOnce(record('succeeded', 'sent'))
       const store = useRunStore()
       await store.start(['django'], ['upwork'], true)
-      listRuns.execute.mockClear()
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
 
-      expect(listRuns.execute).toHaveBeenCalledTimes(2)
-    })
-
-    it('follows a sending run found on load even though it is not running', async () => {
-      getOptions.execute.mockResolvedValue({ keywords: [], sites: [], isStale: false })
-      listRuns.execute.mockResolvedValue([record('succeeded', 'sending')])
-      getRun.execute.mockResolvedValue(detail('succeeded', 'sent'))
-      const store = useRunStore()
-
-      await store.load()
-      expect(store.isRunning).toBe(true)
-
-      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
-      expect(store.isRunning).toBe(false)
+      expect(store.runOutcome).toStrictEqual(scrapeEnd)
     })
 
     it.each<[RunRecord['discordStatus']]>([['sent'], ['partial'], ['failed']])(
@@ -264,8 +260,8 @@ describe('useRunStore', () => {
       async (final) => {
         startRun.execute.mockResolvedValue(record('running', 'sending'))
         getRun.execute
-          .mockResolvedValueOnce(detail('succeeded', 'sending'))
-          .mockResolvedValueOnce(detail('succeeded', final))
+          .mockResolvedValueOnce(record('succeeded', 'sending'))
+          .mockResolvedValueOnce(record('succeeded', final))
         const store = useRunStore()
         await store.start(['django'], ['upwork'], true)
         expect(store.discordOutcome).toBeNull()
@@ -278,7 +274,7 @@ describe('useRunStore', () => {
 
     it('reports the outcome even when sending ends between two polls', async () => {
       startRun.execute.mockResolvedValue(record('running', 'sending'))
-      getRun.execute.mockResolvedValueOnce(detail('succeeded', 'sent'))
+      getRun.execute.mockResolvedValueOnce(record('succeeded', 'sent'))
       const store = useRunStore()
       await store.start(['django'], ['upwork'], true)
 
@@ -287,9 +283,54 @@ describe('useRunStore', () => {
       expect(store.discordOutcome?.discordStatus).toBe('sent')
     })
 
+    it('keeps polling a finished run while the asked for send has not started', async () => {
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute
+        .mockResolvedValueOnce(record('succeeded'))
+        .mockResolvedValueOnce(record('succeeded', 'sent'))
+      const store = useRunStore()
+      await store.start(['django'], ['upwork'], true)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+      expect(store.isRunning).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+      expect(store.isRunning).toBe(false)
+      expect(store.discordOutcome?.discordStatus).toBe('sent')
+    })
+
+    it('stops waiting for a send that never starts after a few polls', async () => {
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockResolvedValue(record('succeeded'))
+      const store = useRunStore()
+      await store.start(['django'], ['upwork'], true)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * (MAX_DISCORD_WAIT_POLLS + 3))
+
+      expect(store.isRunning).toBe(false)
+      expect(store.discordOutcome).toBeNull()
+      expect(getRun.execute).toHaveBeenCalledTimes(MAX_DISCORD_WAIT_POLLS + 1)
+    })
+
+    it('forgets the expected send when it gives up on a run', async () => {
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockRejectedValue(new Error('timeout'))
+      const store = useRunStore()
+      await store.start(['django'], ['upwork'], true)
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * MAX_POLL_FAILURES)
+
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockReset()
+      getRun.execute.mockResolvedValue(record('succeeded', 'sent'))
+      await store.start(['django'], ['upwork'], false)
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+      expect(store.discordOutcome).toBeNull()
+    })
+
     it('does not report an outcome for a run without a send', async () => {
       startRun.execute.mockResolvedValue(record('running'))
-      getRun.execute.mockResolvedValueOnce(detail('succeeded'))
+      getRun.execute.mockResolvedValueOnce(record('succeeded'))
       const store = useRunStore()
       await store.start(['django'], ['upwork'], false)
 
@@ -297,14 +338,82 @@ describe('useRunStore', () => {
 
       expect(store.discordOutcome).toBeNull()
     })
-
-    it('does not report an outcome for a run that was only selected', async () => {
-      getRun.execute.mockResolvedValue(detail('succeeded', 'sent'))
+  })
+  describe('reset', () => {
+    it('stops polling and clears the run state', async () => {
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockResolvedValue(record('running'))
       const store = useRunStore()
+      await store.start(['django'], ['upwork'], true)
 
-      await store.select('run-1')
+      store.reset()
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
 
+      expect(getRun.execute).not.toHaveBeenCalled()
+      expect(store.isRunning).toBe(false)
+      expect(store.runError).toBeNull()
+    })
+
+    it('clears the outcomes, options and errors', async () => {
+      getOptions.execute.mockResolvedValue(OPTIONS)
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockResolvedValue(record('succeeded', 'sent'))
+      const store = useRunStore()
+      await store.load()
+      await store.start(['django'], ['upwork'], true)
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+      store.reset()
+
+      expect(store.status).toBe('idle')
+      expect(store.options).toBeNull()
+      expect(store.runOutcome).toBeNull()
       expect(store.discordOutcome).toBeNull()
+    })
+
+    it('ignores a poll that was in flight when it reset', async () => {
+      const pending = deferred<RunRecord>()
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockReturnValueOnce(pending.promise).mockResolvedValue(record('running'))
+      const store = useRunStore()
+      await store.start(['django'], ['upwork'], false)
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+      store.reset()
+      pending.resolve(record('succeeded'))
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+      expect(getRun.execute).toHaveBeenCalledTimes(1)
+      expect(store.runOutcome).toBeNull()
+      expect(store.isRunning).toBe(false)
+    })
+
+    it('ignores a start that was in flight when it reset', async () => {
+      const pending = deferred<RunRecord>()
+      startRun.execute.mockReturnValue(pending.promise)
+      const store = useRunStore()
+      const starting = store.start(['django'], ['upwork'], false)
+
+      store.reset()
+      pending.resolve(record('running'))
+      await starting
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
+
+      expect(store.isRunning).toBe(false)
+      expect(getRun.execute).not.toHaveBeenCalled()
+    })
+
+    it('lets a new run start after a reset', async () => {
+      startRun.execute.mockResolvedValue(record('running'))
+      getRun.execute.mockResolvedValue(record('running'))
+      const store = useRunStore()
+      await store.start(['django'], ['upwork'], false)
+
+      store.reset()
+      await store.start(['django'], ['upwork'], false)
+
+      expect(startRun.execute).toHaveBeenCalledTimes(2)
+      expect(store.isRunning).toBe(true)
     })
   })
 })

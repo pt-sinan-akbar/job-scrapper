@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -40,7 +39,7 @@ def _factory(**kwargs: Any) -> dict[str, Any]:
 def _build(api_cfg: ApiConfig):
     RecordingSource.instances.clear()
     return build_api_callbacks(
-        RecordingSource,
+        cast(Any, RecordingSource),
         api_cfg,
         "devops",
         proxy_url="http://p:1",
@@ -67,20 +66,19 @@ def test_search_falls_back_to_default_delay():
     assert RecordingSource.instances[0].client["delay"] == DEFAULT_DELAY_SECONDS
 
 
-def test_run_wires_api_callbacks_into_run_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_run_wires_api_callbacks_into_run_one(monkeypatch: pytest.MonkeyPatch):
     raw_config = yaml.safe_load(
-        f"""
+        """
 keywords: [devops]
-output_dir: {tmp_path / "out"}
 sites:
   jobstreet:
-    url_template: "https://id.jobstreet.com/id/{{keyword_slug}}-jobs"
+    url_template: "https://id.jobstreet.com/id/{keyword_slug}-jobs"
     api:
       locations: [Jakarta Raya]
       delay_seconds: [4, 6]
   glints:
     enabled: false
-    url_template: "https://glints.com/id/opportunities/jobs/explore?keyword={{keyword}}"
+    url_template: "https://glints.com/id/opportunities/jobs/explore?keyword={keyword}"
 """
     )
     built: list[tuple[str, tuple[str, ...], tuple[float, float] | None]] = []
@@ -96,13 +94,14 @@ sites:
         built.append((keyword, api_cfg.locations, api_cfg.delay_seconds))
         return search, detail
 
-    def fake_run_one(*args: Any, **kwargs: Any) -> None:
+    def fake_run_one(*args: Any, **kwargs: Any) -> runner.SitePayloads:
         received.append(kwargs)
+        return runner.SitePayloads(filtered={"count": 0, "jobs": []}, raw={"count": 0, "jobs": []})
 
     monkeypatch.setattr(runner, "refresh_index", lambda: None)
     monkeypatch.setattr(runner, "build_api_callbacks", fake_build)
     monkeypatch.setattr(runner, "run_one", fake_run_one)
 
-    assert runner.run(parse(raw_config, None)) == 0
+    assert runner.run(parse(raw_config, None)).exit_code == 0
     assert built == [("devops", ("Jakarta Raya",), (4.0, 6.0))]
     assert received == [{"api_search": search, "api_detail": detail}]

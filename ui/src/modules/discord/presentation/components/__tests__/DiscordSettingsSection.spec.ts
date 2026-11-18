@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import type { DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import DiscordSettingsSection from '@/modules/discord/presentation/components/DiscordSettingsSection.vue'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
+import { EMPTY_FILTER, type ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
+import { provideConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
+import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 
 const toastSuccess = vi.hoisted(() => vi.fn())
 
@@ -15,6 +18,28 @@ const testConnection = { execute: vi.fn() }
 const listChannels = { execute: vi.fn() }
 const previewMessage = { execute: vi.fn() }
 const sendMessage = { execute: vi.fn() }
+
+const getConfig = { execute: vi.fn() }
+const saveConfig = { execute: vi.fn() }
+
+const CONFIG: ConfigSnapshot = {
+  values: {
+    keywords: ['django'],
+    limit: 3,
+    concurrency: 2,
+    maxAgeHours: 72,
+    filter: EMPTY_FILTER,
+    defaultFields: ['title'],
+    sites: [],
+  },
+  version: 1,
+  updatedAt: '2026-11-02T01:00:00+00:00',
+  updatedBy: 'ui',
+  isStale: false,
+  jobFields: ['title', 'company', 'url'],
+  mandatoryFields: ['company'],
+  locationOptions: {},
+}
 
 const SETTINGS: DiscordSettings = {
   isConfigured: true,
@@ -34,11 +59,15 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve }
 }
 
-function mountSection() {
+function mountSection(pinia: Pinia = createPinia(), isAttached = true) {
   return mount(DiscordSettingsSection, {
-    global: { plugins: [createPinia()] },
-    attachTo: document.body,
+    global: { plugins: [pinia] },
+    attachTo: isAttached ? document.body : undefined,
   })
+}
+
+function chips(wrapper: ReturnType<typeof mountSection>) {
+  return wrapper.findAll('[data-slot="template-variable"]')
 }
 
 function inputValue(wrapper: ReturnType<typeof mountSection>, id: string): string {
@@ -53,6 +82,8 @@ describe('DiscordSettingsSection', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     getSettings.execute.mockResolvedValue(SETTINGS)
+    getConfig.execute.mockResolvedValue(CONFIG)
+    provideConfigUseCases({ getConfig, saveConfig })
     provideDiscordUseCases({
       getSettings,
       saveSettings,
@@ -104,6 +135,117 @@ describe('DiscordSettingsSection', () => {
     expect(inputValue(wrapper, '#discord-mention-user')).toBe('76543210987654321')
     expect(inputValue(wrapper, '#discord-template')).toBe('{title} at {company}')
     expect(inputValue(wrapper, '#discord-max-chars')).toBe('1900')
+  })
+
+  it('puts channel, mention user and max chars in one three column row', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+
+    const row = wrapper.get('[data-slot="settings-ids-row"]')
+    expect(row.classes()).toContain('sm:grid-cols-3')
+    expect(row.findAll('input').map((input) => input.attributes('id'))).toEqual([
+      'discord-default-channel',
+      'discord-mention-user',
+      'discord-max-chars',
+    ])
+  })
+
+  it('shows no helper text under the token and template fields', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Leave empty to keep the current token')
+    expect(wrapper.text()).not.toContain('A missing field stays empty')
+  })
+
+  it('lists every job field as a template variable', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+
+    const chips = wrapper.findAll('[data-slot="template-variable"]').map((chip) => chip.text())
+    expect(chips).toEqual(['{title}', '{company}', '{url}'])
+  })
+
+  it('inserts a variable at the cursor in the template', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+    const template = wrapper.get('#discord-template')
+    await template.setValue('New  job')
+    const element = template.element as HTMLTextAreaElement
+    element.setSelectionRange(4, 4)
+
+    await wrapper.findAll('[data-slot="template-variable"]')[0]!.trigger('click')
+
+    expect(element.value).toBe('New {title} job')
+  })
+
+  it('finds the template field without looking it up in the document', async () => {
+    const wrapper = mountSection(createPinia(), false)
+    await flushPromises()
+    const template = wrapper.get('#discord-template')
+    await template.setValue('New  job')
+    const element = template.element as HTMLTextAreaElement
+    element.setSelectionRange(4, 4)
+
+    await chips(wrapper)[0]!.trigger('click')
+
+    expect(element.value).toBe('New {title} job')
+  })
+
+  it('inserts a variable at the end when the caret is at the end', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+    const template = wrapper.get('#discord-template')
+    await template.setValue('New job ')
+    const element = template.element as HTMLTextAreaElement
+    element.setSelectionRange(8, 8)
+
+    await chips(wrapper)[1]!.trigger('click')
+
+    expect(element.value).toBe('New job {company}')
+  })
+
+  it('names each variable chip and ties the chips to the template field', async () => {
+    const wrapper = mountSection()
+    await flushPromises()
+
+    const group = wrapper.get('[role="group"]')
+    expect(wrapper.get('#discord-template').attributes('aria-describedby')).toBe(
+      group.attributes('id'),
+    )
+    expect(group.attributes('aria-label')).toBe('Template variables')
+    expect(chips(wrapper).map((chip) => chip.attributes('aria-label'))).toEqual([
+      'Insert title',
+      'Insert company',
+      'Insert url',
+    ])
+    expect(chips(wrapper)[0]!.attributes('aria-controls')).toBe('discord-template')
+  })
+
+  it('loads the config again once when it had failed so the variables show', async () => {
+    getConfig.execute.mockRejectedValueOnce(new Error('down'))
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    await useConfigStore().load()
+
+    const wrapper = mountSection(pinia)
+    await flushPromises()
+
+    expect(getConfig.execute).toHaveBeenCalledTimes(2)
+    expect(chips(wrapper)).toHaveLength(3)
+  })
+
+  it('tries the failed config load only once per mount', async () => {
+    getConfig.execute.mockRejectedValue(new Error('down'))
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    await useConfigStore().load()
+
+    const wrapper = mountSection(pinia)
+    await flushPromises()
+
+    expect(getConfig.execute).toHaveBeenCalledTimes(2)
+    expect(chips(wrapper)).toHaveLength(0)
   })
 
   it('never shows the token and uses the hint as the placeholder', async () => {

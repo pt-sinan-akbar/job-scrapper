@@ -3,8 +3,6 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { DiscordChannel, DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
 import { useDiscordComposeStore } from '@/modules/discord/presentation/stores/useDiscordComposeStore'
-import type { RunDetail, RunRecord } from '@/modules/runs/domain/entities/Run'
-import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 
 const getSettings = { execute: vi.fn() }
 const saveSettings = { execute: vi.fn() }
@@ -12,10 +10,6 @@ const testConnection = { execute: vi.fn() }
 const listChannels = { execute: vi.fn() }
 const previewMessage = { execute: vi.fn() }
 const sendMessage = { execute: vi.fn() }
-const getOptions = { execute: vi.fn() }
-const getRun = { execute: vi.fn() }
-const listRuns = { execute: vi.fn() }
-const startRun = { execute: vi.fn() }
 
 const CHANNEL_ID = '12345678901234567'
 const USER_ID = '76543210987654321'
@@ -33,41 +27,6 @@ const SETTINGS: DiscordSettings = {
   messageTemplate: '{title}',
   maxChars: 1900,
   updatedAt: null,
-}
-
-function makeRun(id: string, jobCount: number): RunRecord {
-  return {
-    id,
-    status: 'succeeded',
-    keywords: ['django'],
-    sites: ['upwork'],
-    startedAt: '2026-11-01T10:00:00+00:00',
-    finishedAt: null,
-    jobCount,
-    errorCount: 0,
-    error: null,
-    discordStatus: null,
-    discordSent: 0,
-    discordFailed: 0,
-    discordError: null,
-  }
-}
-
-function makeDetail(id: string, jobCount: number): RunDetail {
-  return {
-    record: makeRun(id, jobCount),
-    jobs: Array.from({ length: jobCount }, (_, index) => ({
-      site: 'upwork',
-      matchedKeyword: 'django',
-      title: `Job ${index}`,
-      company: 'Acme',
-      location: null,
-      url: null,
-      postedAt: null,
-    })),
-    failures: [],
-    payloads: [],
-  }
 }
 
 function deferred<T>(): {
@@ -102,21 +61,15 @@ describe('useDiscordComposeStore', () => {
       previewMessage,
       sendMessage,
     })
-    provideRunUseCases({ getOptions, getRun, listRuns, startRun })
     listChannels.execute.mockResolvedValue(CHANNELS)
-    listRuns.execute.mockResolvedValue([makeRun('r1', 3), makeRun('r2', 0), makeRun('r3', 60)])
-    getRun.execute.mockImplementation((id: string) =>
-      Promise.resolve(makeDetail(id, id === 'r3' ? 60 : 3)),
-    )
   })
 
   describe('load', () => {
-    it('loads the channels and the runs', async () => {
+    it('loads the channels', async () => {
       const store = await loadedStore()
 
       expect(store.status).toBe('ready')
       expect(store.channels).toEqual(CHANNELS)
-      expect(store.runs).toHaveLength(3)
     })
 
     it('picks the default channel', async () => {
@@ -158,18 +111,64 @@ describe('useDiscordComposeStore', () => {
       expect(store.errorMessage).toBe('Discord rejected the bot token.')
     })
 
-    it('shows an error when the runs fail', async () => {
-      listRuns.execute.mockRejectedValue(new Error('Runs down'))
+    it('does not load the channels again for the same settings', async () => {
       const store = await loadedStore()
 
-      expect(store.status).toBe('error')
-      expect(store.errorMessage).toBe('Runs down')
+      await store.load(SETTINGS)
+
+      expect(listChannels.execute).toHaveBeenCalledTimes(1)
+      expect(store.status).toBe('ready')
     })
 
-    it('offers only the runs that found jobs', async () => {
+    it('loads again for the same settings after a failed load', async () => {
+      listChannels.execute.mockRejectedValueOnce(new Error('down'))
       const store = await loadedStore()
 
-      expect(store.sendableRuns.map((run) => run.id)).toEqual(['r1', 'r3'])
+      await store.load(SETTINGS)
+
+      expect(listChannels.execute).toHaveBeenCalledTimes(2)
+      expect(store.status).toBe('ready')
+    })
+
+    it('keeps the picked channel when the settings are saved again', async () => {
+      const store = await loadedStore()
+      store.channelId = CHANNELS[1]!.id
+
+      await store.load({ ...SETTINGS })
+
+      expect(listChannels.execute).toHaveBeenCalledTimes(2)
+      expect(store.channelId).toBe(CHANNELS[1]!.id)
+    })
+
+    it('follows a new default channel when the old default was still picked', async () => {
+      const store = await loadedStore()
+
+      await store.load({ ...SETTINGS, defaultChannelId: CHANNELS[1]!.id })
+
+      expect(store.channelId).toBe(CHANNELS[1]!.id)
+    })
+
+    it('keeps mention off when the settings are saved again', async () => {
+      const store = await loadedStore()
+      store.mention = false
+
+      await store.load({ ...SETTINGS })
+
+      expect(store.mention).toBe(false)
+    })
+
+    it('ignores a channel list that arrives after newer settings', async () => {
+      const first = deferred<DiscordChannel[]>()
+      listChannels.execute.mockReturnValueOnce(first.promise).mockResolvedValueOnce([CHANNELS[1]!])
+      const store = useDiscordComposeStore()
+
+      const stale = store.load(SETTINGS)
+      await store.load({ ...SETTINGS, defaultChannelId: CHANNELS[1]!.id })
+      first.resolve(CHANNELS)
+      await stale
+
+      expect(store.channels).toEqual([CHANNELS[1]])
+      expect(store.status).toBe('ready')
     })
   })
 
@@ -229,7 +228,7 @@ describe('useDiscordComposeStore', () => {
 
       await store.preview()
 
-      expect(previewMessage.execute).toHaveBeenCalledWith(true, { kind: 'text', text: 'hello' })
+      expect(previewMessage.execute).toHaveBeenCalledWith(true, { text: 'hello' })
       expect(store.previewMessages).toEqual(['<@1>\nhello'])
       expect(store.isPreviewing).toBe(false)
     })
@@ -278,7 +277,6 @@ describe('useDiscordComposeStore', () => {
       await expect(store.send()).resolves.toEqual(result)
 
       expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, true, {
-        kind: 'text',
         text: 'hello',
       })
       expect(store.sendResult).toEqual(result)
@@ -293,7 +291,6 @@ describe('useDiscordComposeStore', () => {
       await store.send()
 
       expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, false, {
-        kind: 'text',
         text: 'hello',
       })
     })
@@ -307,7 +304,6 @@ describe('useDiscordComposeStore', () => {
       await store.send()
 
       expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, false, {
-        kind: 'text',
         text: 'hello',
       })
     })
@@ -428,233 +424,6 @@ describe('useDiscordComposeStore', () => {
 
       expect(store.sendResult).toBeNull()
       expect(store.sendError).toBe('Nope')
-    })
-  })
-
-  describe('scraper result', () => {
-    it('loads the run and ticks every job', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-
-      await store.selectRun('r1')
-
-      expect(getRun.execute).toHaveBeenCalledWith('r1')
-      expect(store.detail?.record.id).toBe('r1')
-      expect(store.pickedIndexes).toEqual([0, 1, 2])
-    })
-
-    it('shows an error when the run fails to load', async () => {
-      getRun.execute.mockRejectedValue(new Error('Run gone'))
-      const store = await loadedStore()
-
-      await store.selectRun('r1')
-
-      expect(store.runError).toBe('Run gone')
-      expect(store.detail).toBeNull()
-      expect(store.isLoadingRun).toBe(false)
-    })
-
-    it('unticks and reticks a job', async () => {
-      const store = await loadedStore()
-      await store.selectRun('r1')
-
-      store.setJobPicked(1, false)
-      expect(store.pickedIndexes).toEqual([0, 2])
-
-      store.setJobPicked(1, true)
-      expect(store.pickedIndexes).toEqual([0, 1, 2])
-    })
-
-    it('does not tick a job twice', async () => {
-      const store = await loadedStore()
-      await store.selectRun('r1')
-
-      store.setJobPicked(1, true)
-
-      expect(store.pickedIndexes).toEqual([0, 1, 2])
-    })
-
-    it('clears and reselects every job', async () => {
-      const store = await loadedStore()
-      await store.selectRun('r1')
-
-      store.clearJobs()
-      expect(store.pickedIndexes).toEqual([])
-
-      store.pickAllJobs()
-      expect(store.pickedIndexes).toEqual([0, 1, 2])
-    })
-
-    it('cannot send with no job ticked', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r1')
-
-      store.clearJobs()
-
-      expect(store.canSend).toBe(false)
-      expect(store.canPreview).toBe(false)
-    })
-
-    it('cannot send before a run is picked', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-
-      expect(store.canSend).toBe(false)
-    })
-
-    it('ticks only the first 50 jobs of a bigger run', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r3')
-
-      expect(store.pickedIndexes).toEqual(Array.from({ length: 50 }, (_, index) => index))
-      expect(store.isOverLimit).toBe(false)
-      expect(store.canSend).toBe(true)
-    })
-
-    it('is over the limit when more than 50 jobs get ticked', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r3')
-
-      store.setJobPicked(50, true)
-
-      expect(store.pickedIndexes).toHaveLength(51)
-      expect(store.isOverLimit).toBe(true)
-      expect(store.canSend).toBe(false)
-    })
-
-    it('ticks every job of a bigger run with pick all and clears with clear all', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r3')
-
-      store.pickAllJobs()
-      expect(store.pickedIndexes).toHaveLength(60)
-      expect(store.isOverLimit).toBe(true)
-
-      store.clearJobs()
-      expect(store.pickedIndexes).toEqual([])
-    })
-
-    it('keeps the latest run when an older run answers last', async () => {
-      const slow = deferred<RunDetail>()
-      const fast = deferred<RunDetail>()
-      getRun.execute.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise)
-      const store = await loadedStore()
-
-      const first = store.selectRun('r1')
-      const second = store.selectRun('r3')
-      fast.resolve(makeDetail('r3', 60))
-      await second
-      slow.resolve(makeDetail('r1', 3))
-      await first
-
-      expect(store.detail?.record.id).toBe('r3')
-      expect(store.pickedIndexes).toHaveLength(50)
-      expect(store.isLoadingRun).toBe(false)
-    })
-
-    it('keeps the latest run when an older run answers first', async () => {
-      const slow = deferred<RunDetail>()
-      const fast = deferred<RunDetail>()
-      getRun.execute.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise)
-      const store = await loadedStore()
-
-      const first = store.selectRun('r1')
-      const second = store.selectRun('r3')
-      slow.resolve(makeDetail('r1', 3))
-      await first
-
-      expect(store.detail).toBeNull()
-      expect(store.isLoadingRun).toBe(true)
-
-      fast.resolve(makeDetail('r3', 60))
-      await second
-
-      expect(store.detail?.record.id).toBe('r3')
-      expect(store.isLoadingRun).toBe(false)
-    })
-
-    it('ignores the error of an older run', async () => {
-      const slow = deferred<RunDetail>()
-      const fast = deferred<RunDetail>()
-      getRun.execute.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise)
-      const store = await loadedStore()
-
-      const first = store.selectRun('r1')
-      const second = store.selectRun('r3')
-      fast.resolve(makeDetail('r3', 60))
-      await second
-      slow.reject(new Error('Run gone'))
-      await first
-
-      expect(store.runError).toBeNull()
-      expect(store.detail?.record.id).toBe('r3')
-    })
-
-    it('cannot send while a run is loading', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r1')
-      const next = deferred<RunDetail>()
-      getRun.execute.mockReturnValueOnce(next.promise)
-
-      const loading = store.selectRun('r3')
-
-      expect(store.isLoadingRun).toBe(true)
-      expect(store.canSend).toBe(false)
-
-      next.resolve(makeDetail('r3', 60))
-      await loading
-
-      expect(store.canSend).toBe(true)
-    })
-
-    it('previews and sends the run id and the ticked indexes in order', async () => {
-      previewMessage.execute.mockResolvedValue(['a', 'b'])
-      sendMessage.execute.mockResolvedValue({ sent: 3, failed: 0, results: [] })
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r1')
-      store.setJobPicked(1, false)
-      store.setJobPicked(1, true)
-
-      await store.preview()
-      await store.send()
-
-      const content = { kind: 'jobs', runId: 'r1', jobIndexes: [0, 1, 2] }
-      expect(previewMessage.execute).toHaveBeenCalledWith(true, content)
-      expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, true, content)
-    })
-
-    it('ignores free text while in scraper mode', async () => {
-      const store = await loadedStore()
-      store.text = 'hello'
-      store.mode = 'jobs'
-
-      expect(store.canSend).toBe(false)
-    })
-
-    it('clears the preview when a job is unticked', async () => {
-      previewMessage.execute.mockResolvedValue(['a'])
-      const store = await loadedStore()
-      store.mode = 'jobs'
-      await store.selectRun('r1')
-      await store.preview()
-
-      store.setJobPicked(0, false)
-      await Promise.resolve()
-
-      expect(store.previewMessages).toEqual([])
-    })
-
-    it('does not count characters for jobs', async () => {
-      const store = await loadedStore()
-      store.mode = 'jobs'
-
-      expect(store.isOverLimit).toBe(false)
     })
   })
 })

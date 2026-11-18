@@ -73,6 +73,29 @@ def test_update_config_saves_patch(database: Any):
     assert server.get_config()["updated_by"] == "ui"
 
 
+@pytest.mark.parametrize("value", [0, 11])
+def test_update_config_refuses_concurrency_out_of_range(database: Any, value: int):
+    result = server.update_config({"concurrency": value})
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid"
+    assert "concurrency" in result["message"]
+
+
+def test_update_config_saves_concurrency_and_clears_it_back_to_default(
+    database: Any, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("PROXY_URL", "")
+    saved = server.update_config({"concurrency": 4}, expected_version=1)
+    assert saved["settings"]["concurrency"] == 4
+    assert server._load_config().concurrency == 4
+
+    cleared = server.update_config({"concurrency": None}, expected_version=2)
+
+    assert "concurrency" not in cleared["settings"]
+    assert server._load_config().concurrency == 2
+
+
 def test_update_config_reports_conflict(database: Any):
     result = server.update_config({"limit": 9}, expected_version=5)
 
@@ -137,27 +160,6 @@ def test_update_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch)
     assert result["reason"] == "unavailable"
 
 
-def test_get_config_history_lists_versions(database: Any):
-    server.update_config({"limit": 9})
-
-    entries = server.get_config_history()["entries"]
-
-    assert entries == [
-        {
-            "version": 1,
-            "updated_at": entries[0]["updated_at"],
-            "updated_by": "seed",
-            "keywords": ["devops"],
-            "enabled_sites": ["upwork"],
-        }
-    ]
-
-
-def test_restore_config_returns_old_settings(database: Any):
-    server.update_config({"limit": 9})
-
-    result = server.restore_config(version=1, expected_version=2, source="ui")
-
-    assert result["ok"] is True
-    assert result["version"] == 3
-    assert result["settings"]["limit"] == 3
+def test_history_tools_are_gone():
+    assert not hasattr(server, "get_config_history")
+    assert not hasattr(server, "restore_config")

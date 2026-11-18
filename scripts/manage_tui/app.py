@@ -26,20 +26,14 @@ from .config_view import load_config_summary, masked_env
 from .model import Manifest
 from .runner import SequenceRunner
 
-_SUMMARY_ENV_KEYS = (
-    "MONGO_URI",
-    "DISCORD_CHANNEL_ID",
-    "DISCORD_BOT_TOKEN",
-)
+_SUMMARY_ENV_KEYS = ("MONGO_URI",)
 _PREVIEW_HINT = "(focus an action — Tab/arrows — to preview its command)"
 
 # Test button labels. Keys must match commands.TESTS; ids are f"test-{key}".
-# scrape/mongo run against scraper-mcp; cron/discord run against bot.
+# scrape/mongo run against scraper-mcp.
 _TEST_LABELS = {
     "scrape": "Scrape",
     "mongo": "Mongo",
-    "cron": "Cron",
-    "discord": "Discord",
 }
 
 
@@ -246,20 +240,13 @@ class ManagerApp(App):
     def _row_widgets(self) -> list[Horizontal]:
         rows: list[Horizontal] = []
         for scope in self._scopes():
-            children: list[Static | Button] = [
-                Static(self._row_label(scope), classes="scope-label")
-            ]
+            children: list[Static | Button] = [Static(scope, classes="scope-label")]
             children += [
                 Button(self._button_label(scope, action), id=f"act-{scope}-{action}")
                 for action in ACTIONS
             ]
             rows.append(Horizontal(*children, classes="scope-row"))
         return rows
-
-    def _row_label(self, scope: str) -> str:
-        if scope == "bot" and self.env.name == "dev":
-            return "bot (idles in dev)"
-        return scope
 
     @staticmethod
     def _button_label(scope: str, action: str) -> str:

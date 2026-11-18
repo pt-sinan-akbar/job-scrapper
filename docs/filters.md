@@ -118,7 +118,7 @@ For each site, the runner prints how many jobs survived the filter:
 [jobstreet:software-engineer] filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 4)
 ```
 
-The output JSON also records the filter that was applied:
+Each site payload (`filtered_results[*].payload` in Mongo, and the CLI's stdout) also records the filter that was applied:
 
 ```json
 {

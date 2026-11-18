@@ -5,10 +5,8 @@ set -euo pipefail
 # First run: ./seed.sh job-settings
 #
 # Usage:
-#   ./scripts/run_dev.sh           # mcp + bot + ui
+#   ./scripts/run_dev.sh           # MCP server + UI with hot reload at http://localhost:5174
 #   ./scripts/run_dev.sh mcp       # MCP server only
-#   ./scripts/run_dev.sh bot       # bot only
-#   ./scripts/run_dev.sh ui        # MCP server + UI with hot reload at http://localhost:5174
 
 # --- config ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,18 +14,12 @@ COMPOSE_BASE="docker-compose.yml"
 COMPOSE_ENV="docker-compose.dev.yml"
 ARG="${1:-all}"
 
-# --- ui file access ---
-# scraper-ui writes host-owned output/ui-runs, so it runs as the host user in dev.
-export UI_UID="$(id -u)" UI_GID="$(id -g)"
-
 # --- resolve profiles ---
 case "$ARG" in
   mcp)  PROFILES="--profile mcp" ;;
-  bot)  PROFILES="--profile bot" ;;
-  ui)   PROFILES="--profile mcp --profile ui" ;;
-  all)  PROFILES="--profile mcp --profile bot --profile ui" ;;
+  ui|all) PROFILES="--profile mcp --profile ui" ;;
   *)
-    echo "Usage: $0 [mcp|bot|ui]" >&2
+    echo "Usage: $0 [mcp|ui]" >&2
     exit 1
     ;;
 esac
@@ -42,7 +34,7 @@ cd "$REPO_ROOT"
 echo "==> Starting dev environment (services: ${ARG})..."
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_ENV" $PROFILES up --build -d
 
-if [ "$ARG" = "ui" ]; then
+if [ "$ARG" != "mcp" ]; then
   command -v bun >/dev/null || { echo "bun is required for the Vite dev server" >&2; exit 1; }
   cd "$REPO_ROOT/ui"
   [ -d node_modules ] || bun install --frozen-lockfile

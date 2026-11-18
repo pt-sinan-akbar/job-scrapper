@@ -4,7 +4,7 @@
     python scripts/manage.py
 
 Lets you start / stop / status / logs the docker compose stack per profile
-(mcp, mongo, bot) across environments (dev, prod), previewing the exact
+(mcp, mongo, ui) across environments (dev, prod), previewing the exact
 command before it runs. Read-only over config: it loads .env, the compose
 files, and the seed file for display, never writing back.
 

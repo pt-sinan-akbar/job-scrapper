@@ -8,6 +8,8 @@ keywords:
 
 limit: 3
 
+concurrency: 2
+
 # jobs older than this are dropped; pair with URL param windows per site
 max_age_hours: 72
 

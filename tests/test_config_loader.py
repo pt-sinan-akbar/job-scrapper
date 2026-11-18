@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from scraper.config_loader import (
+    DEFAULT_CONCURRENCY,
     PROXY_ENV_VAR,
     ConfigError,
     parse,
-    read_machine_settings,
     resolve_proxy_url,
     validate_job_settings,
 )
@@ -33,16 +31,30 @@ def test_parse_without_proxy():
     assert parse(SETTINGS, None).proxy is None
 
 
-def test_read_machine_settings_reads_mapping(tmp_path: Path):
-    path = tmp_path / "config.yaml"
-    path.write_text("concurrency: 5\n")
+def test_parse_uses_default_concurrency_and_has_no_output_dir():
+    config = parse(SETTINGS, None)
 
-    assert read_machine_settings(path) == {"concurrency": 5}
+    assert config.concurrency == DEFAULT_CONCURRENCY
+    assert not hasattr(config, "output_dir")
 
 
-def test_read_machine_settings_requires_file(tmp_path: Path):
-    with pytest.raises(ConfigError, match="config file not found"):
-        read_machine_settings(tmp_path / "missing.yaml")
+def test_validate_job_settings_accepts_concurrency():
+    validate_job_settings({**SETTINGS, "concurrency": 3})
+
+
+@pytest.mark.parametrize("value", [0, 11, 2.7, "3", True])
+def test_parse_refuses_bad_concurrency(value: object):
+    with pytest.raises(ConfigError, match="'concurrency' must be a whole number from 1 to 10"):
+        parse({**SETTINGS, "concurrency": value}, None)
+
+
+def test_parse_uses_default_concurrency_for_a_stored_null():
+    assert parse({**SETTINGS, "concurrency": None}, None).concurrency == DEFAULT_CONCURRENCY
+
+
+def test_validate_job_settings_refuses_unknown_keys():
+    with pytest.raises(ConfigError, match="not a job setting: output_dir"):
+        validate_job_settings({**SETTINGS, "output_dir": "elsewhere"})
 
 
 def test_resolve_proxy_url_rejects_unset(monkeypatch: pytest.MonkeyPatch):

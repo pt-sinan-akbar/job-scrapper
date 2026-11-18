@@ -62,11 +62,11 @@ describe('DiscordRemoteDataSource', () => {
   it('sends with the channel id and a long wait', async () => {
     const client = makeClient()
 
-    await makeSource(client).sendMessage('123', false, { run_id: 'r1', job_indexes: [0, 1] })
+    await makeSource(client).sendMessage('123', false, { text: 'hi' })
 
     expect(client.post).toHaveBeenCalledWith(
       '/discord/send',
-      { channel_id: '123', mention: false, run_id: 'r1', job_indexes: [0, 1] },
+      { channel_id: '123', mention: false, text: 'hi' },
       DISCORD_SEND_TIMEOUT_MS,
     )
   })

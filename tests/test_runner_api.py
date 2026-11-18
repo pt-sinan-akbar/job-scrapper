@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from scraper.api.client import ApiError
@@ -43,24 +42,18 @@ def _scraper():
     return LinkedinScraper(url="https://www.linkedin.com/jobs-guest/x", limit=10)
 
 
-def _read(tmp_path: Path, name: str) -> dict:
-    return json.loads((tmp_path / name).read_text())
-
-
-def test_api_success_skips_html_fetch_and_records_source(tmp_path: Path):
+def test_api_success_skips_html_fetch_and_records_source():
     fetcher = _fetcher(HTML_CARD)
-    run_one(
+    result = run_one(
         _scraper(),
         fetcher,
-        tmp_path,
         "devops",
         FIELDS - {"requirements"},
         None,
         {},
         api_search=lambda: [_api_job("1"), _api_job("2")],
     )
-    out = _read(tmp_path, "linkedin.json")
-    raw = _read(tmp_path, "linkedin.raw.json")
+    out, raw = result.filtered, result.raw
     assert out["count"] == 2
     assert out["source"] == "api"
     assert out["fallback_reason"] is None
@@ -68,54 +61,50 @@ def test_api_success_skips_html_fetch_and_records_source(tmp_path: Path):
     fetcher.fetch.assert_not_called()
 
 
-def test_api_error_falls_back_to_html(tmp_path: Path):
+def test_api_error_falls_back_to_html():
     def broken():
         raise ApiError("http_429", "slow down")
 
-    run_one(
+    result = run_one(
         _scraper(),
         _fetcher(HTML_CARD),
-        tmp_path,
         "devops",
         FIELDS - {"requirements"},
         None,
         {},
         api_search=broken,
     )
-    out = _read(tmp_path, "linkedin.json")
+    out = result.filtered
     assert out["source"] == "html"
     assert out["fallback_reason"] == "http_429"  # code only, no response body
-    for name in ("linkedin.json", "linkedin.raw.json"):
-        assert "slow down" not in (tmp_path / name).read_text()
+    for payload in (result.filtered, result.raw):
+        assert "slow down" not in json.dumps(payload)
     assert [j["title"] for j in out["jobs"]] == ["Html Role"]
 
 
-def test_zero_api_results_is_not_a_fallback(tmp_path: Path):
+def test_zero_api_results_is_not_a_fallback():
     fetcher = _fetcher(HTML_CARD)
-    run_one(
+    result = run_one(
         _scraper(),
         fetcher,
-        tmp_path,
         "devops",
         FIELDS - {"requirements"},
         None,
         {},
         api_search=lambda: [],
     )
-    out = _read(tmp_path, "linkedin.json")
+    out = result.filtered
     assert out["count"] == 0
     assert out["source"] == "api"
     fetcher.fetch.assert_not_called()
 
 
-def test_without_api_search_source_is_html(tmp_path: Path):
-    run_one(
-        _scraper(), _fetcher(HTML_CARD), tmp_path, "devops", FIELDS - {"requirements"}, None, {}
-    )
-    assert _read(tmp_path, "linkedin.json")["source"] == "html"
+def test_without_api_search_source_is_html():
+    result = run_one(_scraper(), _fetcher(HTML_CARD), "devops", FIELDS - {"requirements"}, None, {})
+    assert result.filtered["source"] == "html"
 
 
-def test_detail_api_used_then_page_fallback_per_job(tmp_path: Path):
+def test_detail_api_used_then_page_fallback_per_job():
     fetcher = _fetcher("<div class='show-more-less-html__markup'>From page</div>")
 
     def detail(job):
@@ -123,10 +112,9 @@ def test_detail_api_used_then_page_fallback_per_job(tmp_path: Path):
             return "From api"
         raise ApiError("http_500")
 
-    run_one(
+    result = run_one(
         _scraper(),
         fetcher,
-        tmp_path,
         "devops",
         FIELDS,
         None,
@@ -134,26 +122,25 @@ def test_detail_api_used_then_page_fallback_per_job(tmp_path: Path):
         api_search=lambda: [_api_job("1"), _api_job("2")],
         api_detail=detail,
     )
-    jobs = {j["title"]: j["requirements"] for j in _read(tmp_path, "linkedin.json")["jobs"]}
+    jobs = {j["title"]: j["requirements"] for j in result.filtered["jobs"]}
     assert jobs["Role 1"] == "From api"
     assert jobs["Role 2"] is not None and "From page" in jobs["Role 2"]
 
 
-def test_unexpected_api_exception_also_falls_back(tmp_path: Path):
+def test_unexpected_api_exception_also_falls_back():
     def crashing():
         raise KeyError("jobsInPage")
 
-    run_one(
+    result = run_one(
         _scraper(),
         _fetcher(HTML_CARD),
-        tmp_path,
         "devops",
         FIELDS - {"requirements"},
         None,
         {},
         api_search=crashing,
     )
-    out = _read(tmp_path, "linkedin.json")
+    out = result.filtered
     assert out["source"] == "html"
     assert out["fallback_reason"] == "unexpected_error:KeyError"
     assert [j["title"] for j in out["jobs"]] == ["Html Role"]

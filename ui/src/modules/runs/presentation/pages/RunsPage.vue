@@ -1,48 +1,45 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
-import { toast } from 'vue-sonner'
+import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import RunConfigSection from '@/modules/config/presentation/components/RunConfigSection.vue'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 import { useDiscordSettingsStore } from '@/modules/discord/presentation/stores/useDiscordSettingsStore'
-import LiveLogPanel from '@/modules/runs/presentation/components/LiveLogPanel.vue'
 import RunForm from '@/modules/runs/presentation/components/RunForm.vue'
-import RunHistory from '@/modules/runs/presentation/components/RunHistory.vue'
-import RunResults from '@/modules/runs/presentation/components/RunResults.vue'
+import { useDeferredScroll } from '@/modules/runs/presentation/composables/useDeferredScroll'
 import { toNotifyDiscordBlock } from '@/modules/runs/presentation/components/notifyDiscordBlock'
-import { toDiscordStatusView } from '@/modules/runs/presentation/components/runStatus'
 import { useRunStore } from '@/modules/runs/presentation/stores/useRunStore'
 import PageSection from '@/shared/components/PageSection.vue'
 import { Button } from '@/shared/components/ui/button'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import { isPendingStatus } from '@/shared/utils/loadStatus'
 
+const CONFIG_ID = 'config'
+
+const route = useRoute()
 const store = useRunStore()
 const configStore = useConfigStore()
 const discordSettingsStore = useDiscordSettingsStore()
-const isPending = computed(() => store.status === 'idle' || store.status === 'loading')
-const isFirstLoad = computed(() => isPending.value && store.options === null)
-const showsHistory = computed(() => store.options !== null || isFirstLoad.value)
-const selectedId = computed(() => store.selected?.record.id ?? null)
+const isFirstLoad = computed(() => isPendingStatus(store.status) && store.options === null)
 const notifyDiscordBlock = computed(() =>
   toNotifyDiscordBlock(discordSettingsStore.status, discordSettingsStore.settings),
 )
-
-watch(
-  () => store.discordOutcome,
-  (record) => {
-    const view = record === null ? null : toDiscordStatusView(record)
-    if (view !== null) {
-      toast[view.toastKind](view.label)
-    }
-  },
+const isSettled = computed(() =>
+  [store.status, configStore.status, discordSettingsStore.status].every(
+    (status) => !isPendingStatus(status),
+  ),
 )
+
+const startConfigScroll = useDeferredScroll(CONFIG_ID, () => isSettled.value)
 
 onMounted(() => {
   void store.load()
   if (discordSettingsStore.status === 'idle') {
     void discordSettingsStore.load()
   }
+  if (route.hash === `#${CONFIG_ID}`) {
+    startConfigScroll()
+  }
 })
-onBeforeUnmount(() => store.stopPolling())
 </script>
 
 <template>
@@ -87,23 +84,8 @@ onBeforeUnmount(() => store.stopPolling())
         :has-unsaved-config="configStore.isDirty"
         @start="(keywords, sites, notifyDiscord) => store.start(keywords, sites, notifyDiscord)"
       />
-      <p v-if="store.actionError" role="alert" class="text-body-sm text-danger">
-        {{ store.actionError }}
-      </p>
     </PageSection>
 
-    <RunConfigSection id="config" class="scroll-mt-24" />
-
-    <RunResults v-if="store.selected" :detail="store.selected" />
-
-    <PageSection v-if="showsHistory" title="History">
-      <div v-if="isFirstLoad" role="status" aria-busy="true" class="flex flex-col gap-4 md:gap-3">
-        <span class="sr-only">Loading run history</span>
-        <Skeleton v-for="index in 3" :key="index" class="h-24 w-full rounded-md" />
-      </div>
-      <RunHistory v-else :runs="store.runs" :selected-id="selectedId" @select="store.select" />
-    </PageSection>
-
-    <LiveLogPanel />
+    <RunConfigSection :id="CONFIG_ID" class="scroll-mt-24" />
   </div>
 </template>

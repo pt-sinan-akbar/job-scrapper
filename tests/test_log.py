@@ -62,3 +62,23 @@ def test_redact_proxy_url_hides_password():
     assert "secret" not in redacted
     assert "user:***" in redacted
     assert "proxy.example.com:8080" in redacted
+
+
+def test_console_handler_writes_to_stderr_not_stdout(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    import importlib
+    import logging
+    import logging.handlers
+    import sys
+
+    import scraper.log as log_mod
+
+    importlib.reload(log_mod)
+
+    logger = log_mod.get_logger()
+    console = [
+        h
+        for h in logger.handlers
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+    ]
+    assert [h.stream for h in console] == [sys.stderr]

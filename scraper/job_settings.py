@@ -5,27 +5,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-from pymongo import DESCENDING, MongoClient, ReturnDocument
+from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from .config_loader import (
     AppConfig,
     ConfigError,
     parse,
-    read_machine_settings,
     resolve_proxy_url,
     validate_job_settings,
 )
-from .log import get_logger
 from .types import CANONICAL_FIELDS
 
 SETTINGS_COLLECTION = "job_settings"
-HISTORY_COLLECTION = "job_settings_history"
 SETTINGS_ID = "active"
-KEEP_HISTORY = 20
 SOURCE_SEED = "seed"
 FIRST_VERSION = 1
 CONFLICT_MESSAGE = "These settings changed somewhere else. Reload and try again"
@@ -91,7 +86,7 @@ def _unknown_fields(fields: Any) -> list[str]:
 def _refuse_unknown_fields(patch: dict[str, Any]) -> None:
     """Refuse job field names the scraper does not know, so they are never stored.
 
-    Stored settings and restored versions stay lenient: the loader skips unknown
+    Stored settings stay lenient: the loader skips unknown
     names with a warning, so older data keeps working.
     """
     sites = patch.get("sites")
@@ -135,7 +130,6 @@ def _mongo_errors() -> Iterator[None]:
 class JobSettingsStore:
     def __init__(self, database: Any) -> None:
         self._settings = database[SETTINGS_COLLECTION]
-        self._history = database[HISTORY_COLLECTION]
 
     def read(self) -> StoredSettings:
         with _mongo_errors():
@@ -149,9 +143,7 @@ class JobSettingsStore:
     def seed(self, settings: dict[str, Any]) -> bool:
         validate_job_settings(settings)
         with _mongo_errors():
-            newest = self._history.find_one(sort=[("version", DESCENDING)])
-            version = FIRST_VERSION if newest is None else newest["version"] + 1
-            document = {"_id": SETTINGS_ID, **_stamp(settings, version, SOURCE_SEED)}
+            document = {"_id": SETTINGS_ID, **_stamp(settings, FIRST_VERSION, SOURCE_SEED)}
             try:
                 self._settings.insert_one(document)
             except DuplicateKeyError:
@@ -164,19 +156,6 @@ class JobSettingsStore:
         _refuse_unknown_fields(patch)
         current = self._read_expected(expected_version)
         return self._replace(current, merge_settings(current.settings, patch), source)
-
-    def restore(self, version: int, expected_version: int, source: str) -> StoredSettings:
-        current = self._read_expected(expected_version)
-        with _mongo_errors():
-            entry = self._history.find_one({"version": version})
-        if entry is None:
-            raise ConfigError(f"no saved version {version}")
-        return self._replace(current, entry["settings"], source)
-
-    def history(self) -> tuple[StoredSettings, ...]:
-        with _mongo_errors():
-            documents = list(self._history.find().sort("version", DESCENDING).limit(KEEP_HISTORY))
-        return tuple(_to_stored(document) for document in documents)
 
     def _read_expected(self, expected_version: int | None) -> StoredSettings:
         current = self.read()
@@ -197,21 +176,7 @@ class JobSettingsStore:
             )
             if previous is None:
                 raise SettingsConflictError(CONFLICT_MESSAGE)
-        try:
-            self._keep_history(previous)
-        except PyMongoError as exc:
-            # The new settings are already saved, so the save itself succeeded
-            get_logger().warning(
-                "Job settings saved but history was not updated (%s)", type(exc).__name__
-            )
         return _to_stored(fields)
-
-    def _keep_history(self, previous: dict[str, Any]) -> None:
-        self._history.insert_one({k: v for k, v in previous.items() if k != "_id"})
-        stale = self._history.find({}, {"_id": 1}).sort("version", DESCENDING).skip(KEEP_HISTORY)
-        stale_ids = [document["_id"] for document in stale]
-        if stale_ids:
-            self._history.delete_many({"_id": {"$in": stale_ids}})
 
 
 def open_store() -> JobSettingsStore:
@@ -221,6 +186,5 @@ def open_store() -> JobSettingsStore:
     return JobSettingsStore(MongoClient(uri, serverSelectionTimeoutMS=timeout)[db_name])
 
 
-def load_app_config(path: Path, store: JobSettingsStore) -> AppConfig:
-    machine = read_machine_settings(path)
-    return parse({**machine, **store.read().settings}, resolve_proxy_url())
+def load_app_config(store: JobSettingsStore) -> AppConfig:
+    return parse(store.read().settings, resolve_proxy_url())

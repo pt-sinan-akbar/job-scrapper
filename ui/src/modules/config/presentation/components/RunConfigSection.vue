@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { isNavigationFailure, NavigationFailureType, useRoute, useRouter } from 'vue-router'
 import { ChevronDown, ChevronUp } from '@lucide/vue'
 import ConfigForm from '@/modules/config/presentation/components/ConfigForm.vue'
@@ -20,32 +20,24 @@ const route = useRoute()
 const router = useRouter()
 const isOpen = ref(readConfigCardOpen())
 const bodyId = useId()
-const savedNote = computed(() => {
-  const snapshot = store.snapshot
-  if (snapshot === null) {
-    return undefined
-  }
-  const savedAt = new Date(snapshot.updatedAt).toLocaleString()
-  return `Version ${snapshot.version}, saved ${savedAt} by ${snapshot.updatedBy}. Changes apply from the next run`
-})
-
-function setOpen(next: boolean): void {
-  isOpen.value = next
-  writeConfigCardOpen(next)
-}
 
 function toggle(): void {
-  setOpen(!isOpen.value)
+  isOpen.value = !isOpen.value
+  writeConfigCardOpen(isOpen.value)
+}
+
+function expandForLink(): void {
+  isOpen.value = true
 }
 
 if (route.hash === CONFIG_HASH) {
-  setOpen(true)
+  expandForLink()
 }
 
 const stopListening = router.afterEach((to, _from, failure) => {
   const isDuplicate = isNavigationFailure(failure, NavigationFailureType.duplicated)
   if (to.hash === CONFIG_HASH && (!failure || isDuplicate)) {
-    setOpen(true)
+    expandForLink()
   }
 })
 
@@ -54,13 +46,12 @@ onBeforeUnmount(stopListening)
 onMounted(() => {
   if (store.status === 'idle') {
     void store.load()
-    void store.loadHistory()
   }
 })
 </script>
 
 <template>
-  <PageSection title="Config" :description="savedNote">
+  <PageSection title="Config">
     <template #actions>
       <Button
         type="button"

@@ -2,7 +2,6 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   countChars,
-  MAX_JOBS_PER_SEND,
   MAX_MESSAGE_CHARS,
   toMentionPrefix,
   type DiscordChannel,
@@ -11,72 +10,58 @@ import {
   type DiscordSettings,
 } from '@/modules/discord/domain/entities/Discord'
 import { requireDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
-import type { RunDetail, RunRecord } from '@/modules/runs/domain/entities/Run'
-import { requireRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
 import type { LoadStatus } from '@/shared/utils/loadStatus'
 
-export type DiscordMode = 'text' | 'jobs'
-
 const FALLBACK_ERROR_MESSAGE = 'Something went wrong. Try again.'
+
+function hasChannel(channels: readonly DiscordChannel[], id: string | null): id is string {
+  return id !== null && channels.some((channel) => channel.id === id)
+}
+
+function pickChannelId(
+  channels: readonly DiscordChannel[],
+  current: string | null,
+  previousDefault: string | null,
+  nextDefault: string | null,
+): string | null {
+  const isUserPick = current !== null && current !== previousDefault
+  if (isUserPick && hasChannel(channels, current)) {
+    return current
+  }
+  return hasChannel(channels, nextDefault) ? nextDefault : null
+}
 
 export const useDiscordComposeStore = defineStore('discordCompose', () => {
   const status = ref<LoadStatus>('idle')
   const channels = ref<DiscordChannel[]>([])
-  const runs = ref<RunRecord[]>([])
-  const detail = ref<RunDetail | null>(null)
   const mentionUserId = ref<string | null>(null)
   const channelId = ref<string | null>(null)
   const mention = ref(true)
-  const mode = ref<DiscordMode>('text')
   const text = ref('')
-  const pickedIndexes = ref<number[]>([])
   const previewMessages = ref<string[]>([])
   const sendResult = ref<DiscordSendResult | null>(null)
   const errorMessage = ref<string | null>(null)
-  const runError = ref<string | null>(null)
   const previewError = ref<string | null>(null)
   const sendError = ref<string | null>(null)
-  const isLoadingRun = ref(false)
   const isPreviewing = ref(false)
   const isSending = ref(false)
-  let runRequestId = 0
   let previewRequestId = 0
+  let loadedSettings: DiscordSettings | null = null
+  let previousDefaultId: string | null = null
 
   const hasMentionUser = computed(() => mentionUserId.value !== null)
   const isMentioned = computed(() => hasMentionUser.value && mention.value)
-  const sendableRuns = computed(() => runs.value.filter((run) => run.jobCount > 0))
   const mentionPrefix = computed(() => toMentionPrefix(mentionUserId.value, isMentioned.value))
   const charCount = computed(() => countChars(mentionPrefix.value) + countChars(text.value))
-  const isOverLimit = computed(() =>
-    mode.value === 'text'
-      ? charCount.value > MAX_MESSAGE_CHARS
-      : pickedIndexes.value.length > MAX_JOBS_PER_SEND,
+  const isOverLimit = computed(() => charCount.value > MAX_MESSAGE_CHARS)
+  const content = computed<DiscordContent | null>(() =>
+    isOverLimit.value || text.value.trim() === '' ? null : { text: text.value },
   )
-  const content = computed<DiscordContent | null>(() => {
-    if (isOverLimit.value) {
-      return null
-    }
-    if (mode.value === 'text') {
-      return text.value.trim() === '' ? null : { kind: 'text', text: text.value }
-    }
-    if (detail.value === null || pickedIndexes.value.length === 0) {
-      return null
-    }
-    return {
-      kind: 'jobs',
-      runId: detail.value.record.id,
-      jobIndexes: [...pickedIndexes.value].sort((first, second) => first - second),
-    }
-  })
   const canPreview = computed(() => content.value !== null && !isPreviewing.value)
   const canSend = computed(
     () =>
-      content.value !== null &&
-      channelId.value !== null &&
-      !isLoadingRun.value &&
-      !isPreviewing.value &&
-      !isSending.value,
+      content.value !== null && channelId.value !== null && !isPreviewing.value && !isSending.value,
   )
 
   watch(
@@ -90,65 +75,41 @@ export const useDiscordComposeStore = defineStore('discordCompose', () => {
     { flush: 'sync' },
   )
 
+  function isLoadedFor(settings: DiscordSettings): boolean {
+    return loadedSettings === settings && status.value !== 'error'
+  }
+
+  function applyChannels(nextChannels: DiscordChannel[], settings: DiscordSettings): void {
+    channelId.value = pickChannelId(
+      nextChannels,
+      channelId.value,
+      previousDefaultId,
+      settings.defaultChannelId,
+    )
+    channels.value = nextChannels
+    mentionUserId.value = settings.mentionUserId
+    previousDefaultId = settings.defaultChannelId
+    status.value = 'ready'
+  }
+
   async function load(settings: DiscordSettings): Promise<void> {
+    if (isLoadedFor(settings)) {
+      return
+    }
+    loadedSettings = settings
     status.value = 'loading'
     errorMessage.value = null
     try {
-      const [nextChannels, nextRuns] = await Promise.all([
-        requireDiscordUseCases().listChannels.execute(),
-        requireRunUseCases().listRuns.execute(),
-      ])
-      channels.value = nextChannels
-      runs.value = nextRuns
-      mentionUserId.value = settings.mentionUserId
-      mention.value = true
-      channelId.value = nextChannels.some((channel) => channel.id === settings.defaultChannelId)
-        ? settings.defaultChannelId
-        : null
-      status.value = 'ready'
-    } catch (error) {
-      errorMessage.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-      status.value = 'error'
-    }
-  }
-
-  async function selectRun(id: string): Promise<void> {
-    runRequestId += 1
-    const requestId = runRequestId
-    isLoadingRun.value = true
-    runError.value = null
-    try {
-      const next = await requireRunUseCases().getRun.execute(id)
-      if (requestId !== runRequestId) {
-        return
+      const nextChannels = await requireDiscordUseCases().listChannels.execute()
+      if (loadedSettings === settings) {
+        applyChannels(nextChannels, settings)
       }
-      detail.value = next
-      pickedIndexes.value = next.jobs.slice(0, MAX_JOBS_PER_SEND).map((_, index) => index)
     } catch (error) {
-      if (requestId !== runRequestId) {
-        return
-      }
-      detail.value = null
-      pickedIndexes.value = []
-      runError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-    } finally {
-      if (requestId === runRequestId) {
-        isLoadingRun.value = false
+      if (loadedSettings === settings) {
+        errorMessage.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
+        status.value = 'error'
       }
     }
-  }
-
-  function setJobPicked(index: number, isPicked: boolean): void {
-    const rest = pickedIndexes.value.filter((picked) => picked !== index)
-    pickedIndexes.value = isPicked ? [...rest, index].sort((first, second) => first - second) : rest
-  }
-
-  function pickAllJobs(): void {
-    pickedIndexes.value = detail.value?.jobs.map((_, index) => index) ?? []
-  }
-
-  function clearJobs(): void {
-    pickedIndexes.value = []
   }
 
   async function preview(): Promise<void> {
@@ -207,33 +168,22 @@ export const useDiscordComposeStore = defineStore('discordCompose', () => {
   return {
     status,
     channels,
-    runs,
-    detail,
     channelId,
     mention,
-    mode,
     text,
-    pickedIndexes,
     previewMessages,
     sendResult,
     errorMessage,
-    runError,
     previewError,
     sendError,
-    isLoadingRun,
     isPreviewing,
     isSending,
     hasMentionUser,
-    sendableRuns,
     charCount,
     isOverLimit,
     canPreview,
     canSend,
     load,
-    selectRun,
-    setJobPicked,
-    pickAllJobs,
-    clearJobs,
     preview,
     send,
   }

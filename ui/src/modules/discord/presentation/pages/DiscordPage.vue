@@ -2,16 +2,11 @@
 import { computed, onMounted, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import { MAX_MESSAGE_CHARS, toSendSummary } from '@/modules/discord/domain/entities/Discord'
-import DiscordJobPicker from '@/modules/discord/presentation/components/DiscordJobPicker.vue'
 import DiscordMessagePreview from '@/modules/discord/presentation/components/DiscordMessagePreview.vue'
 import DiscordSendResults from '@/modules/discord/presentation/components/DiscordSendResults.vue'
 import DiscordSettingsSection from '@/modules/discord/presentation/components/DiscordSettingsSection.vue'
-import {
-  useDiscordComposeStore,
-  type DiscordMode,
-} from '@/modules/discord/presentation/stores/useDiscordComposeStore'
+import { useDiscordComposeStore } from '@/modules/discord/presentation/stores/useDiscordComposeStore'
 import { useDiscordSettingsStore } from '@/modules/discord/presentation/stores/useDiscordSettingsStore'
-import { useRunStore } from '@/modules/runs/presentation/stores/useRunStore'
 import PageLoadState from '@/shared/components/PageLoadState.vue'
 import PageSection from '@/shared/components/PageSection.vue'
 import { Button } from '@/shared/components/ui/button'
@@ -27,18 +22,10 @@ import {
   SelectValue,
 } from '@/shared/components/ui/select'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
 import { Textarea } from '@/shared/components/ui/textarea'
-
-const MODE_LABELS: Record<DiscordMode, string> = {
-  text: 'Free text',
-  jobs: 'Scraper result',
-}
-const MODES = Object.keys(MODE_LABELS) as DiscordMode[]
 
 const settingsStore = useDiscordSettingsStore()
 const compose = useDiscordComposeStore()
-const runStore = useRunStore()
 
 const settings = computed(() => settingsStore.settings)
 const isConfigured = computed(() => settings.value?.isConfigured === true)
@@ -52,16 +39,6 @@ const channelGroups = computed(() => {
   }
   return [...groups.entries()]
 })
-
-function isMode(value: string | number): value is DiscordMode {
-  return MODES.some((mode) => mode === value)
-}
-
-function changeMode(next: string | number): void {
-  if (isMode(next)) {
-    compose.mode = next
-  }
-}
 
 function loadCompose(): Promise<void> {
   return settings.value === null ? Promise.resolve() : compose.load(settings.value)
@@ -79,15 +56,6 @@ watch(
     }
   },
   { immediate: true },
-)
-
-watch(
-  () => runStore.runs,
-  (runs) => {
-    if (runs.length > 0) {
-      compose.runs = runs
-    }
-  },
 )
 
 async function send(): Promise<void> {
@@ -108,7 +76,11 @@ async function send(): Promise<void> {
   }
 }
 
-onMounted(() => void loadPage())
+onMounted(() => {
+  if (settingsStore.status === 'idle') {
+    void loadPage()
+  }
+})
 </script>
 
 <template>
@@ -136,7 +108,7 @@ onMounted(() => void loadPage())
   <PageLoadState
     v-else-if="compose.status === 'error' || isComposePending"
     :is-error="compose.status === 'error'"
-    loading-label="Loading channels and runs"
+    loading-label="Loading channels"
     error-title="Could not load Discord"
     :error-message="compose.errorMessage"
     @retry="loadCompose"
@@ -147,50 +119,45 @@ onMounted(() => void loadPage())
   </PageLoadState>
 
   <form v-else class="flex min-w-0 flex-col gap-6 md:gap-4" @submit.prevent="send">
-    <PageSection title="Destination">
-      <div class="flex flex-col gap-4">
-        <div class="flex flex-col gap-2">
-          <Label for="discord-channel">Channel</Label>
-          <Select
-            :model-value="compose.channelId ?? undefined"
-            :disabled="compose.channels.length === 0"
-            @update:model-value="compose.channelId = String($event)"
-          >
-            <SelectTrigger id="discord-channel">
-              <SelectValue placeholder="Pick a channel" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup v-for="[guildName, channels] in channelGroups" :key="guildName">
-                <SelectLabel>{{ guildName }}</SelectLabel>
-                <SelectItem v-for="channel in channels" :key="channel.id" :value="channel.id">
-                  # {{ channel.name }}
-                </SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <p v-if="compose.channels.length === 0" class="text-body-sm text-ink-muted">
-            The bot cannot see any text channel yet. Invite it to a server first
-          </p>
+    <PageSection title="Send a message" data-slot="compose-card">
+      <div class="flex flex-col gap-8">
+        <div class="flex flex-col gap-8">
+          <div class="flex flex-col gap-2">
+            <Label for="discord-channel">Channel</Label>
+            <Select
+              :model-value="compose.channelId ?? undefined"
+              :disabled="compose.channels.length === 0"
+              @update:model-value="compose.channelId = String($event)"
+            >
+              <SelectTrigger id="discord-channel">
+                <SelectValue placeholder="Pick a channel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup v-for="[guildName, channels] in channelGroups" :key="guildName">
+                  <SelectLabel>{{ guildName }}</SelectLabel>
+                  <SelectItem v-for="channel in channels" :key="channel.id" :value="channel.id">
+                    # {{ channel.name }}
+                  </SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <p v-if="compose.channels.length === 0" class="text-body-sm text-ink-muted">
+              The bot cannot see any text channel yet. Invite it to a server first
+            </p>
+          </div>
+          <div v-if="compose.hasMentionUser" class="flex items-center gap-3">
+            <Checkbox
+              id="discord-mention"
+              :model-value="compose.mention"
+              @update:model-value="compose.mention = $event === true"
+            />
+            <Label for="discord-mention" class="cursor-pointer">Mention user</Label>
+          </div>
         </div>
-        <div v-if="compose.hasMentionUser" class="flex items-center gap-3">
-          <Checkbox
-            id="discord-mention"
-            :model-value="compose.mention"
-            @update:model-value="compose.mention = $event === true"
-          />
-          <Label for="discord-mention" class="cursor-pointer">Mention user</Label>
-        </div>
-      </div>
-    </PageSection>
-
-    <PageSection title="Message">
-      <Tabs :model-value="compose.mode" @update:model-value="changeMode">
-        <TabsList aria-label="Message type">
-          <TabsTrigger v-for="mode in MODES" :key="mode" :value="mode">
-            {{ MODE_LABELS[mode] }}
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="text">
+        <div
+          data-slot="compose-grid"
+          class="grid min-w-0 items-start gap-8 md:grid-cols-2 md:gap-6 [&>*]:min-w-0"
+        >
           <div class="flex flex-col gap-2">
             <Label for="discord-text">Message</Label>
             <Textarea
@@ -216,52 +183,40 @@ onMounted(() => void loadPage())
               </p>
             </div>
           </div>
-        </TabsContent>
-        <TabsContent value="jobs">
-          <DiscordJobPicker
-            :runs="compose.sendableRuns"
-            :detail="compose.detail"
-            :picked-indexes="compose.pickedIndexes"
-            :is-loading="compose.isLoadingRun"
-            :error="compose.runError"
-            @select-run="compose.selectRun"
-            @pick="compose.setJobPicked"
-            @pick-all="compose.pickAllJobs"
-            @clear="compose.clearJobs"
-          />
-        </TabsContent>
-      </Tabs>
-    </PageSection>
-
-    <PageSection title="Preview">
-      <template #actions>
-        <Button type="button" size="sm" :disabled="!compose.canPreview" @click="compose.preview">
-          {{ compose.isPreviewing ? 'Previewing' : 'Preview' }}
-        </Button>
-      </template>
-      <p v-if="compose.previewError" role="alert" class="text-body-sm text-danger">
-        {{ compose.previewError }}
-      </p>
-      <DiscordMessagePreview
-        v-else-if="compose.previewMessages.length > 0"
-        :messages="compose.previewMessages"
-      />
-      <p v-else class="text-body-sm text-ink-muted">Press Preview to see the messages</p>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-body-sm font-semibold text-ink">Preview</span>
+              <Button
+                type="button"
+                size="sm"
+                :disabled="!compose.canPreview"
+                @click="compose.preview"
+              >
+                {{ compose.isPreviewing ? 'Previewing' : 'Preview' }}
+              </Button>
+            </div>
+            <p v-if="compose.previewError" role="alert" class="text-body-sm text-danger">
+              {{ compose.previewError }}
+            </p>
+            <DiscordMessagePreview
+              v-else-if="compose.previewMessages.length > 0"
+              :messages="compose.previewMessages"
+            />
+            <p v-else class="text-body-sm text-ink-muted">Press Preview to see the messages</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <p v-if="compose.sendError" role="alert" class="mr-auto min-w-0 text-body-sm text-danger">
+            {{ compose.sendError }}
+          </p>
+          <Button type="submit" variant="primary" :disabled="!compose.canSend">
+            {{ compose.isSending ? 'Sending' : 'Send' }}
+          </Button>
+        </div>
+      </div>
     </PageSection>
 
     <DiscordSendResults v-if="compose.sendResult" :result="compose.sendResult" />
-
-    <div
-      data-slot="send-bar"
-      class="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-end gap-3 bg-surface px-4 py-3 md:mx-0"
-    >
-      <p v-if="compose.sendError" role="alert" class="mr-auto min-w-0 text-body-sm text-danger">
-        {{ compose.sendError }}
-      </p>
-      <Button type="submit" variant="primary" :disabled="!compose.canSend">
-        {{ compose.isSending ? 'Sending' : 'Send' }}
-      </Button>
-    </div>
   </form>
 
   <DiscordSettingsSection v-if="settings !== null" />

@@ -36,19 +36,6 @@ RESULTS = [
         "error": None,
     }
 ]
-SCRAPE_RESULT = {
-    "ok": True,
-    "results": [
-        {
-            "keyword": "devops",
-            "sites": [
-                {"site": "upwork", "jobs": [{"title": "A"}, {"title": "B"}]},
-                {"site": "indeed", "jobs": [{"title": "C"}]},
-            ],
-        }
-    ],
-    "errors": [],
-}
 
 
 class FakeGateway:
@@ -83,8 +70,6 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     values = {
         "env": "dev",
         "dev_login_key": DEV_LOGIN_KEY,
-        "runs_dir": tmp_path / "runs",
-        "log_path": tmp_path / "scraper.log",
         "static_dir": tmp_path / "dist",
     }
     return Settings(**{**values, **overrides})
@@ -118,13 +103,6 @@ def prod_client(tmp_path: Path, gateway: FakeGateway):
     )
     with TestClient(create_app(settings, gateway), base_url="https://testserver") as test_client:
         yield test_client
-
-
-@pytest.fixture
-def run_id(app: FastAPI, client: TestClient) -> str:
-    store = app.state.services.run_store
-    record = store.create(("devops",), ("upwork", "indeed"))
-    return store.finish(record, SCRAPE_RESULT).id
 
 
 def test_every_route_needs_login(prod_client: TestClient, gateway: FakeGateway):
@@ -243,21 +221,6 @@ def test_preview_text_passes_text_to_tool(client: TestClient, gateway: FakeGatew
     assert gateway.arguments["preview_discord_message"] == {"mention": True, "text": "hello"}
 
 
-def test_preview_run_jobs_passes_picked_jobs_in_order(
-    client: TestClient, gateway: FakeGateway, run_id: str
-):
-    response = client.post(
-        "/api/discord/preview",
-        json={"mention": False, "run_id": run_id, "job_indexes": [2, 0]},
-    )
-
-    assert response.status_code == 200
-    assert gateway.arguments["preview_discord_message"] == {
-        "mention": False,
-        "jobs": [{"title": "C"}, {"title": "A"}],
-    }
-
-
 def test_preview_maps_invalid_from_tool(client: TestClient, gateway: FakeGateway):
     gateway.responses["preview_discord_message"] = _failed("invalid", "Text is too long")
 
@@ -267,43 +230,16 @@ def test_preview_maps_invalid_from_tool(client: TestClient, gateway: FakeGateway
     assert response.json()["error"] == "Text is too long"
 
 
-def test_preview_unknown_run_is_404(client: TestClient, gateway: FakeGateway):
-    response = client.post(
-        "/api/discord/preview",
-        json={"mention": False, "run_id": "20261101T010000Z-abc123", "job_indexes": [0]},
-    )
-
-    assert response.status_code == 404
-    assert gateway.calls == []
-
-
-def test_preview_malformed_run_id_is_404(client: TestClient):
-    response = client.post(
-        "/api/discord/preview", json={"mention": False, "run_id": "nope", "job_indexes": [0]}
-    )
-
-    assert response.status_code == 404
-
-
-def test_preview_out_of_range_index_is_422(client: TestClient, gateway: FakeGateway, run_id: str):
-    response = client.post(
-        "/api/discord/preview",
-        json={"mention": False, "run_id": run_id, "job_indexes": [0, 3]},
-    )
-
-    assert response.status_code == 422
-    assert gateway.calls == []
-
-
 @pytest.mark.parametrize(
     "body",
     [
         {"mention": True},
-        {"mention": True, "text": "hi", "run_id": "x", "job_indexes": [0]},
-        {"mention": True, "run_id": "x"},
-        {"mention": True, "run_id": "x", "job_indexes": []},
-        {"mention": True, "run_id": "x", "job_indexes": [1, 1]},
-        {"mention": True, "run_id": "x", "job_indexes": list(range(51))},
+        {"mention": True, "text": ""},
+        {"mention": True, "text": "x" * 2001},
+        {"text": "hi"},
+        {"mention": True, "text": "hi", "run_id": "x"},
+        {"mention": True, "text": "hi", "job_indexes": [0]},
+        {"mention": True, "run_id": "x", "job_indexes": [0]},
     ],
 )
 def test_preview_rejects_bad_body(client: TestClient, gateway: FakeGateway, body: dict):
@@ -327,23 +263,15 @@ def test_send_text_returns_counts_and_results(client: TestClient, gateway: FakeG
     }
 
 
-def test_send_run_jobs_passes_picked_jobs(client: TestClient, gateway: FakeGateway, run_id: str):
+def test_send_rejects_run_id_as_extra_field(client: TestClient, gateway: FakeGateway):
     response = client.post(
         "/api/discord/send",
-        json={
-            "channel_id": CHANNEL_ID,
-            "mention": False,
-            "run_id": run_id,
-            "job_indexes": [1],
-        },
+        json={"channel_id": CHANNEL_ID, "mention": False, "text": "hi", "run_id": "x"},
     )
 
-    assert response.status_code == 200
-    assert gateway.arguments["send_discord_message"] == {
-        "channel_id": CHANNEL_ID,
-        "mention": False,
-        "jobs": [{"title": "B"}],
-    }
+    assert response.status_code == 422
+    assert "run_id" in response.json()["error"]
+    assert gateway.calls == []
 
 
 @pytest.mark.parametrize(

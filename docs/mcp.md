@@ -11,7 +11,7 @@ This page is the canonical reference for what those tools accept and return.
 
 ```bash
 python -m mcp_server.server          # local
-docker compose up -d scraper-mcp     # container (orchestration repo)
+docker compose --profile mcp up -d   # container, image job-scraper
 ```
 
 Environment variables:
@@ -20,7 +20,6 @@ Environment variables:
 |-------------------|---------------|-----------------------------------------|
 | `MCP_HOST`        | `0.0.0.0`     | Bind address                            |
 | `MCP_PORT`        | `8080`        | Bind port                               |
-| `SCRAPER_CONFIG`  | `config.yaml` | Path to the machine settings file (`concurrency`, `output_dir`, `bot`) |
 | `PROXY_URL` | none, required | Proxy URL for scrapes. Empty means direct connection. Not set stops scrapes |
 | `PROXY_TEST_URL`  | `https://api.ipify.org?format=json` | URL `test_proxy_connection` fetches by default |
 | `PROXY_TEST_TIMEOUT_SEC` | `25` | Per-request timeout for that probe |
@@ -88,6 +87,7 @@ Read-only. Returns the job settings from Mongo, with their version.
   "settings": {
     "keywords": ["software engineer"],
     "limit": 2,
+    "concurrency": 2,
     "max_age_hours": 24,
     "filter": {"location": ["jakarta"]},
     "sites": {}
@@ -138,7 +138,7 @@ Use this when you need strict output formatting in downstream automations.
 
 ### `update_config`
 
-Write. Applies a patch to the job settings, validates the result, and keeps the old version in history.
+Write. Applies a patch to the job settings, and validates the result.
 
 **Args**:
 
@@ -150,7 +150,7 @@ Write. Applies a patch to the job settings, validates the result, and keeps the 
 - `expected_version`: optional. The version you read. A mismatch saves nothing
 - `source`: `ui` or `mcp`. Kept with the version
 
-Only job setting keys are allowed. `proxy` and `concurrency` are refused. Field names in `default_fields` or `sites.<name>.fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`.
+Only job setting keys are allowed, and `concurrency` is one of them. `proxy` is refused. Field names in `default_fields` or `sites.<name>.fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`.
 
 **Returns** (success):
 
@@ -165,22 +165,6 @@ Only job setting keys are allowed. `proxy` and `concurrency` are refused. Field 
 ```
 
 `reason` is `invalid`, `conflict`, or `unavailable`.
-
-### `get_config_history`
-
-Read-only. Returns up to 20 older versions, newest first.
-
-```json
-{ "entries": [ { "version": 3, "updated_at": "...", "updated_by": "seed", "keywords": ["..."], "enabled_sites": ["upwork"] } ] }
-```
-
-### `restore_config`
-
-Write. Makes an older version current. The restore creates a new version, so it can be undone.
-
-**Args**: `version`, `expected_version`, and optional `source`.
-
-**Returns**: same shape as `update_config`.
 
 #### Patch examples
 
@@ -294,8 +278,8 @@ aggregated results.
   box and the scraper UI send `false`, so their results are shown once and stay
   out of the scrape history. `mongo_id` is then `null`.
 - `include_payloads`: add `raw_results` and `filtered_results` to the response.
-  Omitted = `false`. Off by default because both carry every site's full output,
-  which makes the response much bigger; the main backend bot keeps the smaller
+  Omitted = `false`. Off by default because both carry every site's full payload,
+  which makes the response much bigger; the job-agent backend keeps the smaller
   response. The scraper UI sends `true` to show each run's raw and filtered data.
 
 **Returns**:
@@ -328,13 +312,18 @@ aggregated results.
 ```
 
 `results` is always grouped by keyword first, then site. `errors` collects
-any pair whose JSON couldn't be read or whose fetch failed.
+any pair whose fetch failed, that was skipped (`skipped: site has no entry in the
+job settings`), that crashed (`crashed: <ExceptionType>`), or that the runner gave
+no result for (`scraper returned no result for this pair (exit code 1)`, when the
+site or keyword selection was invalid).
+
+Results come straight back from `scraper.runner.run`. Nothing is written to disk.
 
 With `include_payloads: true` the response also has two optional lists, each
 entry `{"keyword": "...", "site": "...", "payload": {...}}`:
 
-- `raw_results`: each site's output before max-age, filter and limit
-- `filtered_results`: each site's final output file
+- `raw_results`: each site's payload before max-age, filter and limit
+- `filtered_results`: each site's final payload, the same one stored in Mongo
 
 Without the flag these two keys are not in the response.
 

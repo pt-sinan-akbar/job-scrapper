@@ -24,6 +24,7 @@ export interface SiteSetting {
 export interface ConfigValues {
   keywords: string[]
   limit: number | null
+  concurrency: number | null
   maxAgeHours: number | null
   filter: FilterSetting
   defaultFields: string[]
@@ -46,24 +47,19 @@ export interface ConfigSnapshot {
   locationOptions: Record<string, LocationOption[]>
 }
 
-export interface ConfigVersion {
-  version: number
-  updatedAt: string
-  updatedBy: string
-  keywords: string[]
-  enabledSites: string[]
-}
-
 export type SiteChanges = Partial<Omit<SiteSetting, 'name'>>
 
 export interface ConfigChanges {
   keywords?: string[]
   limit?: number
+  concurrency?: number
   maxAgeHours?: number
   filter?: FilterSetting
   defaultFields?: string[]
   sites?: Record<string, SiteChanges>
 }
+
+export const BOT_SCHEDULE = '0 11 * * *'
 
 export const EMPTY_FILTER: FilterSetting = { location: [], employmentType: [], workType: [] }
 
@@ -128,10 +124,13 @@ function toSitesChanges(values: ConfigValues, original: ConfigValues): Record<st
 export function toConfigChanges(values: ConfigValues, original: ConfigValues): ConfigChanges {
   const sites = toSitesChanges(values, original)
   const isLimitKept = values.limit === null || values.limit === original.limit
+  const isConcurrencyKept =
+    values.concurrency === null || values.concurrency === original.concurrency
   const isMaxAgeKept = values.maxAgeHours === null || values.maxAgeHours === original.maxAgeHours
   return {
     ...(isSame(values.keywords, original.keywords) ? {} : { keywords: values.keywords }),
     ...(isLimitKept ? {} : { limit: values.limit as number }),
+    ...(isConcurrencyKept ? {} : { concurrency: values.concurrency as number }),
     ...(isMaxAgeKept ? {} : { maxAgeHours: values.maxAgeHours as number }),
     ...(isSame(values.filter, original.filter) ? {} : { filter: values.filter }),
     ...(isSame(values.defaultFields, original.defaultFields)

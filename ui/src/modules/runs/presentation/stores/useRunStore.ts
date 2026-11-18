@@ -1,15 +1,19 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { RunDetail, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import { requireRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
 import type { LoadStatus } from '@/shared/utils/loadStatus'
 
 export const POLL_INTERVAL_MS = 2000
 export const MAX_POLL_FAILURES = 5
+export const MAX_DISCORD_WAIT_POLLS = 3
 const FALLBACK_ERROR_MESSAGE = 'Something went wrong. Try again.'
 const LOST_RUN_MESSAGE = 'Lost track of this run. Reload the page to check it.'
-const HISTORY_ERROR_MESSAGE = 'Could not refresh the run history.'
+
+export interface RunError {
+  readonly message: string
+}
 
 function isBusy(record: RunRecord): boolean {
   return record.status === 'running' || record.discordStatus === 'sending'
@@ -18,42 +22,50 @@ function isBusy(record: RunRecord): boolean {
 export const useRunStore = defineStore('runs', () => {
   const status = ref<LoadStatus>('idle')
   const options = ref<RunOptions | null>(null)
-  const runs = ref<RunRecord[]>([])
-  const selected = ref<RunDetail | null>(null)
   const activeRunId = ref<string | null>(null)
+  const runOutcome = ref<RunRecord | null>(null)
   const discordOutcome = ref<RunRecord | null>(null)
   const errorMessage = ref<string | null>(null)
-  const actionError = ref<string | null>(null)
-  let pollTimer: ReturnType<typeof setTimeout> | null = null
-  let pollGeneration = 0
+  const runError = ref<RunError | null>(null)
   let pollFailures = 0
-  let historyRefreshedFor: string | null = null
+  let discordWaitPolls = 0
+  let runEndReportedFor: string | null = null
+  let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let session = 0
   const expectedDiscordIds = new Set<string>()
 
   const isRunning = computed(() => activeRunId.value !== null)
 
-  function expectDiscordOutcome(id: string): void {
-    expectedDiscordIds.add(id)
-  }
-
-  async function refreshHistory(): Promise<void> {
-    try {
-      runs.value = await requireRunUseCases().listRuns.execute()
-    } catch {
-      actionError.value = HISTORY_ERROR_MESSAGE
+  function clearPollTimer(): void {
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer)
+      pollTimer = null
     }
   }
 
   function schedulePoll(id: string): void {
-    const generation = pollGeneration
-    pollTimer = setTimeout(() => void poll(id, generation), POLL_INTERVAL_MS)
+    clearPollTimer()
+    pollTimer = setTimeout(() => {
+      pollTimer = null
+      void poll(id)
+    }, POLL_INTERVAL_MS)
   }
 
   function followRun(id: string): void {
     activeRunId.value = id
     pollFailures = 0
-    historyRefreshedFor = null
+    discordWaitPolls = 0
     schedulePoll(id)
+  }
+
+  function stopFollowing(id: string): void {
+    clearPollTimer()
+    activeRunId.value = null
+    expectedDiscordIds.delete(id)
+  }
+
+  function isFollowing(id: string, startedIn: number): boolean {
+    return session === startedIn && activeRunId.value === id
   }
 
   function handlePollFailure(id: string): void {
@@ -62,124 +74,136 @@ export const useRunStore = defineStore('runs', () => {
       schedulePoll(id)
       return
     }
-    actionError.value = LOST_RUN_MESSAGE
-    activeRunId.value = null
+    runError.value = { message: LOST_RUN_MESSAGE }
+    stopFollowing(id)
   }
 
   async function load(): Promise<void> {
+    if (status.value === 'loading') {
+      return
+    }
+    const startedIn = session
     status.value = 'loading'
     errorMessage.value = null
     try {
-      const useCases = requireRunUseCases()
-      const [nextOptions, nextRuns] = await Promise.all([
-        useCases.getOptions.execute(),
-        useCases.listRuns.execute(),
-      ])
-      options.value = nextOptions
-      runs.value = nextRuns
-      status.value = 'ready'
-      const active = nextRuns.find(isBusy)
-      if (active !== undefined && activeRunId.value === null) {
-        if (active.discordStatus === 'sending') {
-          expectDiscordOutcome(active.id)
-        }
-        followRun(active.id)
+      const next = await requireRunUseCases().getOptions.execute()
+      if (startedIn === session) {
+        options.value = next
+        status.value = 'ready'
       }
     } catch (error) {
-      errorMessage.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-      status.value = 'error'
+      if (startedIn === session) {
+        errorMessage.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
+        status.value = 'error'
+      }
     }
   }
 
-  async function poll(id: string, generation: number): Promise<void> {
-    let detail: RunDetail
+  function shouldWaitForDiscord(record: RunRecord): boolean {
+    const isAwaiting =
+      expectedDiscordIds.has(record.id) &&
+      record.status !== 'running' &&
+      record.discordStatus === null
+    if (!isAwaiting || discordWaitPolls >= MAX_DISCORD_WAIT_POLLS) {
+      return false
+    }
+    discordWaitPolls += 1
+    return true
+  }
+
+  async function poll(id: string): Promise<void> {
+    const startedIn = session
+    let record: RunRecord
     try {
-      detail = await requireRunUseCases().getRun.execute(id)
+      record = await requireRunUseCases().getRun.execute(id)
     } catch {
-      if (generation === pollGeneration) {
+      if (isFollowing(id, startedIn)) {
         handlePollFailure(id)
       }
       return
     }
-    if (generation !== pollGeneration) {
-      return
+    if (isFollowing(id, startedIn)) {
+      handleRecord(record)
     }
-    pollFailures = 0
-    if (detail.record.discordStatus === 'sending') {
-      expectDiscordOutcome(id)
-    }
-    const isScrapeEnd = detail.record.status !== 'running' && historyRefreshedFor !== id
-    const isSelectedRun = selected.value?.record.id === id
-    if (!isBusy(detail.record) || isScrapeEnd || isSelectedRun) {
-      selected.value = detail
-    }
-    if (isBusy(detail.record)) {
-      schedulePoll(id)
-      await refreshHistoryOnce(id, detail.record)
-      return
-    }
-    activeRunId.value = null
-    recordDiscordOutcome(detail.record)
-    await refreshHistory()
   }
 
-  async function refreshHistoryOnce(id: string, record: RunRecord): Promise<void> {
-    if (record.status === 'running' || historyRefreshedFor === id) {
+  function handleRecord(record: RunRecord): void {
+    pollFailures = 0
+    if (record.discordStatus === 'sending') {
+      expectedDiscordIds.add(record.id)
+    }
+    if (record.status !== 'running') {
+      recordRunEnd(record)
+    }
+    if (isBusy(record) || shouldWaitForDiscord(record)) {
+      schedulePoll(record.id)
       return
     }
-    historyRefreshedFor = id
-    await refreshHistory()
+    recordDiscordOutcome(record)
+    stopFollowing(record.id)
+  }
+
+  function recordRunEnd(record: RunRecord): void {
+    if (runEndReportedFor !== record.id) {
+      runEndReportedFor = record.id
+      runOutcome.value = record
+    }
   }
 
   function recordDiscordOutcome(record: RunRecord): void {
-    if (record.discordStatus !== null && expectedDiscordIds.delete(record.id)) {
+    if (record.discordStatus !== null && expectedDiscordIds.has(record.id)) {
       discordOutcome.value = record
     }
   }
 
   async function start(keywords: string[], sites: string[], notifyDiscord: boolean): Promise<void> {
-    actionError.value = null
+    if (isRunning.value) {
+      return
+    }
+    const startedIn = session
+    runError.value = null
     try {
       const record = await requireRunUseCases().startRun.execute(keywords, sites, notifyDiscord)
+      if (startedIn !== session) {
+        return
+      }
       if (notifyDiscord) {
-        expectDiscordOutcome(record.id)
+        expectedDiscordIds.add(record.id)
       }
       followRun(record.id)
-      await refreshHistory()
     } catch (error) {
-      actionError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
+      if (startedIn === session) {
+        runError.value = { message: toErrorMessage(error, FALLBACK_ERROR_MESSAGE) }
+      }
     }
   }
 
-  async function select(id: string): Promise<void> {
-    try {
-      selected.value = await requireRunUseCases().getRun.execute(id)
-    } catch (error) {
-      actionError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-    }
-  }
-
-  function stopPolling(): void {
-    pollGeneration += 1
-    if (pollTimer !== null) {
-      clearTimeout(pollTimer)
-      pollTimer = null
-    }
+  function reset(): void {
+    session += 1
+    clearPollTimer()
+    expectedDiscordIds.clear()
+    pollFailures = 0
+    discordWaitPolls = 0
+    runEndReportedFor = null
+    status.value = 'idle'
+    options.value = null
     activeRunId.value = null
+    runOutcome.value = null
+    discordOutcome.value = null
+    errorMessage.value = null
+    runError.value = null
   }
 
   return {
     status,
     options,
-    runs,
-    selected,
     errorMessage,
-    actionError,
+    runError,
+    runOutcome,
     discordOutcome,
     isRunning,
     load,
     start,
-    select,
-    stopPolling,
+    reset,
   }
 })

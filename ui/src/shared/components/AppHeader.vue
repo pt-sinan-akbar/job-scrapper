@@ -13,7 +13,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu'
+import { cn } from '@/shared/utils/cn'
 import { THEME_MODE_LABELS, type ThemeMode } from '@/shared/utils/theme'
+
+const NAV_LINK_CLASS =
+  'flex size-11 items-center justify-center gap-2 rounded-md text-body-sm font-semibold text-ink-muted outline-none hover:bg-surface-subtle hover:text-ink focus-visible:focus-ring sm:w-auto sm:px-3'
+const NAV_LINK_ACTIVE_CLASS = 'bg-surface-subtle text-ink'
 
 defineProps<{
   items: NavItem[]
@@ -62,12 +67,19 @@ function requestSignOut(): void {
         <RouterLink
           v-for="item in items"
           :key="item.id"
+          v-slot="{ href, navigate, isExactActive }"
           :to="item.to"
-          aria-current="false"
-          class="flex size-11 items-center justify-center gap-2 rounded-md text-body-sm font-semibold text-ink-muted outline-none hover:bg-surface-subtle hover:text-ink focus-visible:focus-ring sm:w-auto sm:px-3"
+          custom
         >
-          <component :is="item.icon" class="size-5" aria-hidden="true" />
-          <span class="max-sm:sr-only">{{ item.label }}</span>
+          <a
+            :href="href"
+            :aria-current="isExactActive ? 'page' : undefined"
+            :class="cn(NAV_LINK_CLASS, isExactActive && NAV_LINK_ACTIVE_CLASS)"
+            @click="navigate"
+          >
+            <component :is="item.icon" class="size-5" aria-hidden="true" />
+            <span class="max-sm:sr-only">{{ item.label }}</span>
+          </a>
         </RouterLink>
       </nav>
 

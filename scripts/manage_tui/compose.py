@@ -2,8 +2,8 @@
 
 Parsing the files (rather than shelling out to `docker compose config`) means
 the TUI still renders its profile rows when the Docker daemon is down or when
-.env interpolation vars are unset. A service with no `profiles:` key (e.g.
-output-init) is a plain dependency and is excluded from every profile.
+.env interpolation vars are unset. A service with no `profiles:` key is a
+plain dependency and is excluded from every profile.
 """
 
 from __future__ import annotations
