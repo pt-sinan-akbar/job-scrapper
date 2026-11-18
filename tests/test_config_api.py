@@ -7,9 +7,9 @@ from scraper.api.registry import API_SOURCES
 from scraper.config_loader import ApiConfig, AppConfig, ConfigError, parse
 
 BASE = """
-keywords: [devops]
 sites:
   jobstreet:
+    limit: 3
     url_template: "https://id.jobstreet.com/id/{keyword_slug}-jobs"
 """
 
@@ -73,13 +73,10 @@ def test_delay_seconds_must_be_valid_range(bad: str):
         _parse(f"    api:\n      delay_seconds: {bad}\n")
 
 
-def test_upwork_site_bypasses_the_global_location_filter():
+def test_upwork_site_keeps_its_own_empty_filter_and_limit():
     config = parse(
         yaml.safe_load(
             """
-keywords: [python]
-filter:
-  location: [jakarta]
 sites:
   upwork:
     limit: 30
@@ -92,9 +89,10 @@ sites:
         None,
     )
 
-    assert config.filter_for("upwork") == {}
-    assert config.limit_for("upwork") == 30
     site = config.site("upwork")
     assert site is not None
+    assert site.filter == {}
+    assert site.limit == 30
+    assert site.max_age_hours is None
     assert site.api is not None
     assert site.api.locations == ("Remote",)

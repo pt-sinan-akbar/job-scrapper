@@ -10,15 +10,15 @@ from mcp_server import server
 from scraper.job_settings import JobSettingsStore
 
 SETTINGS: dict[str, Any] = {
-    "keywords": ["devops"],
-    "limit": 3,
     "sites": {
         "upwork": {
             "enabled": True,
+            "limit": 3,
             "url_template": "https://www.upwork.com/nx/search/jobs/?q={keyword}&sort=recency",
         },
         "glints": {
             "enabled": False,
+            "limit": 3,
             "url_template": "https://glints.com/id/opportunities/jobs/explore?keyword={keyword}",
         },
     },
@@ -38,7 +38,7 @@ def test_get_config_returns_settings_with_version(database: Any):
 
     assert result["version"] == 1
     assert result["updated_by"] == "seed"
-    assert result["settings"]["keywords"] == ["devops"]
+    assert result["settings"] == SETTINGS
 
 
 def test_get_config_lists_job_fields_and_the_always_saved_ones(database: Any):
@@ -64,51 +64,81 @@ def test_get_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch):
     assert "seed.sh" in server.get_config()["error"]
 
 
+UPWORK_LIMIT_9 = {"sites": {"upwork": {"limit": 9}}}
+
+
 def test_update_config_saves_patch(database: Any):
-    result = server.update_config({"limit": 9}, expected_version=1, source="ui")
+    result = server.update_config(UPWORK_LIMIT_9, expected_version=1, source="ui")
 
     assert result["ok"] is True
     assert result["version"] == 2
-    assert result["settings"]["limit"] == 9
+    assert result["settings"]["sites"]["upwork"]["limit"] == 9
     assert server.get_config()["updated_by"] == "ui"
 
 
-@pytest.mark.parametrize("value", [0, 11])
-def test_update_config_refuses_concurrency_out_of_range(database: Any, value: int):
-    result = server.update_config({"concurrency": value})
+def test_update_config_saves_site_age_and_filter(database: Any):
+    patch = {"sites": {"upwork": {"max_age_hours": 24, "filter": {"work_type": ["remote"]}}}}
+
+    result = server.update_config(patch, expected_version=1)
+
+    assert result["ok"] is True
+    assert result["settings"]["sites"]["upwork"]["max_age_hours"] == 24
+    assert result["settings"]["sites"]["upwork"]["filter"] == {"work_type": ["remote"]}
+
+
+@pytest.mark.parametrize("key", ["limit", "concurrency", "max_age_hours", "filter"])
+def test_update_config_refuses_global_job_values(database: Any, key: str):
+    result = server.update_config({key: 3}, expected_version=1)
 
     assert result["ok"] is False
     assert result["reason"] == "invalid"
-    assert "concurrency" in result["message"]
+    assert f"not a job setting: {key}" in result["message"]
+    assert server.get_config()["version"] == 1
 
 
-def test_update_config_saves_concurrency_and_clears_it_back_to_default(
+def test_list_sites_has_no_global_limit(database: Any, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PROXY_URL", "")
+
+    result = server.list_sites()
+
+    assert "limit" not in result
+    assert [site["name"] for site in result["sites"]] == ["upwork", "glints"]
+
+
+def test_list_sites_has_no_keywords_and_samples_a_neutral_keyword(
     database: Any, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("PROXY_URL", "")
-    saved = server.update_config({"concurrency": 4}, expected_version=1)
-    assert saved["settings"]["concurrency"] == 4
-    assert server._load_config().concurrency == 4
 
-    cleared = server.update_config({"concurrency": None}, expected_version=2)
+    result = server.list_sites()
 
-    assert "concurrency" not in cleared["settings"]
-    assert server._load_config().concurrency == 2
+    assert set(result) == {"sites"}
+    assert result["sites"][0]["sample_url"] == (
+        "https://www.upwork.com/nx/search/jobs/?q=data%20analyst&sort=recency"
+    )
+
+
+def test_update_config_refuses_keywords(database: Any):
+    result = server.update_config({"keywords": ["qa"]})
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid"
+    assert "not a job setting: keywords" in result["message"]
 
 
 def test_update_config_reports_conflict(database: Any):
-    result = server.update_config({"limit": 9}, expected_version=5)
+    result = server.update_config(UPWORK_LIMIT_9, expected_version=5)
 
     assert result["ok"] is False
     assert result["reason"] == "conflict"
 
 
 def test_update_config_reports_invalid_patch(database: Any):
-    result = server.update_config({"limit": 0})
+    result = server.update_config({"sites": {"upwork": {"limit": 0}}})
 
     assert result["ok"] is False
     assert result["reason"] == "invalid"
-    assert "limit" in result["message"]
+    assert "sites.upwork.limit" in result["message"]
 
 
 @pytest.mark.parametrize(
@@ -154,7 +184,7 @@ def test_update_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch)
     db = mongomock.MongoClient()["job_scraper"]
     monkeypatch.setattr(server.mongo, "get_database", lambda: db)
 
-    result = server.update_config({"limit": 9})
+    result = server.update_config(UPWORK_LIMIT_9)
 
     assert result["ok"] is False
     assert result["reason"] == "unavailable"

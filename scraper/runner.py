@@ -11,7 +11,13 @@ from urllib.parse import urlparse
 from .api.client import DETAIL_DELAY_SECONDS, ApiClient, ApiError
 from .api.registry import API_SOURCES
 from .api.source import ApiSource, search_all
-from .config_loader import ALLOWED_URL_HOSTS, ApiConfig, AppConfig, keyword_slug
+from .config_loader import (
+    ALLOWED_URL_HOSTS,
+    ApiConfig,
+    AppConfig,
+    keyword_slug,
+    resolve_concurrency,
+)
 from .fetchers import (
     CloudscraperFetcher,
     CurlCffiFetcher,
@@ -26,6 +32,8 @@ from .sites._location import refresh_index
 from .types import CANONICAL_FIELDS, Job
 
 _LOG = get_logger()
+
+KEYWORDS_REQUIRED = "keywords are required"
 
 Payload = dict[str, Any]
 PairKey = tuple[str, str]
@@ -372,7 +380,7 @@ def _site_payloads(
     if site_cfg is None:
         _LOG.warning("[runner] '%s' has no entry in the job settings; skipping", name)
         return pair_error(keyword, "skipped: site has no entry in the job settings")
-    scraper = SCRAPERS[name](url=site_cfg.url_for(keyword), limit=config.limit_for(name))
+    scraper = SCRAPERS[name](url=site_cfg.url_for(keyword), limit=site_cfg.limit)
     api_search: Callable[[], list[Job]] | None = None
     api_detail: Callable[[Job], str | None] | None = None
     api_cfg = site_cfg.api
@@ -382,16 +390,16 @@ def _site_payloads(
             api_cfg,
             keyword,
             proxy_url=proxy_url,
-            max_age_hours=config.max_age_for(name),
-            limit=config.limit_for(name),
+            max_age_hours=site_cfg.max_age_hours,
+            limit=site_cfg.limit,
         )
     return run_one(
         scraper,
         fetcher,
         keyword,
         config.fields_for(name),
-        config.max_age_for(name),
-        config.filter_for(name),
+        site_cfg.max_age_hours,
+        site_cfg.filter,
         api_search=api_search,
         api_detail=api_detail,
     )
@@ -411,7 +419,7 @@ def _safe_site_payloads(
 def _run_pairs(
     config: AppConfig, pairs: list[PairKey], fetcher: FetchChain, proxy_url: str | None
 ) -> dict[PairKey, SitePayloads]:
-    workers = max(1, min(config.concurrency, len(pairs)))
+    workers = max(1, min(resolve_concurrency(), len(pairs)))
     if workers == 1:
         return {pair: _safe_site_payloads(config, pair, fetcher, proxy_url) for pair in pairs}
 
@@ -427,14 +435,19 @@ def _run_pairs(
         return {futures[fut]: fut.result() for fut in as_completed(futures)}
 
 
+def normalize_keywords(keywords: Iterable[str] | None) -> list[str]:
+    stripped = (keyword.strip() for keyword in keywords or ())
+    return [keyword for keyword in stripped if keyword]
+
+
 def _selection_error(selected: list[str], keywords: list[str]) -> str | None:
+    if not keywords:
+        return KEYWORDS_REQUIRED
     if not selected:
         return "no sites selected (none enabled in config and no CLI args)"
     unknown = [name for name in selected if name not in SCRAPERS]
     if unknown:
         return f"unknown sites: {', '.join(unknown)}. available: {', '.join(SCRAPERS)}"
-    if not keywords:
-        return "no keywords to scrape"
     return None
 
 
@@ -444,7 +457,7 @@ def run(
     keywords: Iterable[str] | None = None,
 ) -> RunResult:
     selected = _select_targets(config, targets)
-    keyword_list = list(keywords) if keywords else list(config.keywords)
+    keyword_list = normalize_keywords(keywords)
     error = _selection_error(selected, keyword_list)
     if error is not None:
         _LOG.error("[runner] %s", error)
