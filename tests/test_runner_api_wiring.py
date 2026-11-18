@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -67,7 +66,7 @@ def test_search_falls_back_to_default_delay():
     assert RecordingSource.instances[0].client["delay"] == DEFAULT_DELAY_SECONDS
 
 
-def test_run_wires_api_callbacks_into_run_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_run_wires_api_callbacks_into_run_one(monkeypatch: pytest.MonkeyPatch):
     raw_config = yaml.safe_load(
         """
 keywords: [devops]
@@ -95,13 +94,14 @@ sites:
         built.append((keyword, api_cfg.locations, api_cfg.delay_seconds))
         return search, detail
 
-    def fake_run_one(*args: Any, **kwargs: Any) -> None:
+    def fake_run_one(*args: Any, **kwargs: Any) -> runner.SitePayloads:
         received.append(kwargs)
+        return runner.SitePayloads(filtered={"count": 0, "jobs": []}, raw={"count": 0, "jobs": []})
 
     monkeypatch.setattr(runner, "refresh_index", lambda: None)
     monkeypatch.setattr(runner, "build_api_callbacks", fake_build)
     monkeypatch.setattr(runner, "run_one", fake_run_one)
 
-    assert runner.run(parse(raw_config, None), output_dir=tmp_path / "out") == 0
+    assert runner.run(parse(raw_config, None)).exit_code == 0
     assert built == [("devops", ("Jakarta Raya",), (4.0, 6.0))]
     assert received == [{"api_search": search, "api_detail": detail}]

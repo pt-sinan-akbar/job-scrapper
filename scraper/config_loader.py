@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -29,8 +28,6 @@ ALLOWED_URL_HOSTS: frozenset[str] = frozenset(
 )
 
 PROXY_ENV_VAR = "PROXY_URL"
-
-OUTPUT_DIR = Path("output")
 
 DEFAULT_CONCURRENCY = 2
 
@@ -82,7 +79,6 @@ class AppConfig:
     keywords: tuple[str, ...]
     limit: int
     concurrency: int
-    output_dir: Path
     default_fields: tuple[str, ...]
     max_age_hours: int | None
     filter: dict[str, list[str]]
@@ -416,7 +412,6 @@ def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
         keywords=keywords,
         limit=limit,
         concurrency=concurrency,
-        output_dir=OUTPUT_DIR,
         default_fields=default_fields,
         filter=global_filter,
         max_age_hours=max_age_hours,

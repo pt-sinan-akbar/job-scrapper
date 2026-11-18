@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 from scraper import runner
@@ -10,72 +9,70 @@ def _job(title: str, location: str) -> dict:
     return {"title": title, "company": "ACME", "url": f"https://x/{title}", "location": location}
 
 
-def test_run_one_writes_raw_before_filter(tmp_path):
-    """raw.json holds ALL parsed jobs; the filtered json is cut down by filter+limit."""
+def _scraper() -> MagicMock:
     scraper = MagicMock()
     scraper.name = "fake"
     scraper.url = "https://example.test/search"
     scraper.limit = 5
     scraper.requires_search_html = True
     scraper.api_only = False
-    # 3 parsed jobs: 2 in jakarta, 1 in surabaya
+    return scraper
+
+
+def _fetcher(html: str) -> MagicMock:
+    fetcher = MagicMock()
+    fetcher.fetch.return_value.html = html
+    fetcher.fetch.return_value.attempts = []
+    return fetcher
+
+
+def test_run_one_returns_raw_before_filter():
+    scraper = _scraper()
     scraper.parse.return_value = [
         _job("A", "Jakarta"),
         _job("B", "Jakarta"),
         _job("C", "Surabaya"),
     ]
 
-    fetcher = MagicMock()
-    fetcher.fetch.return_value.html = "<html>ok</html>"
-    fetcher.fetch.return_value.attempts = []
-
-    runner.run_one(
+    result = runner.run_one(
         scraper,
-        fetcher,
-        tmp_path,
+        _fetcher("<html>ok</html>"),
         "data analyst",
         frozenset({"title", "company", "url", "location"}),
-        None,  # max_age_hours
-        {"location": ["jakarta"]},  # content_filter drops Surabaya
+        None,
+        {"location": ["jakarta"]},
     )
 
-    raw = json.loads((tmp_path / "fake.raw.json").read_text())
-    filtered = json.loads((tmp_path / "fake.json").read_text())
-
-    assert raw["count"] == 3  # all parsed jobs survive
-    assert {j["title"] for j in raw["jobs"]} == {"A", "B", "C"}
-    assert filtered["count"] == 2  # Surabaya filtered out
-    assert {j["title"] for j in filtered["jobs"]} == {"A", "B"}
+    assert result.raw["count"] == 3
+    assert {j["title"] for j in result.raw["jobs"]} == {"A", "B", "C"}
+    assert result.filtered["count"] == 2
+    assert {j["title"] for j in result.filtered["jobs"]} == {"A", "B"}
 
 
-def test_run_one_resets_raw_on_fetch_failure(tmp_path):
-    """A later fetch failure must not leave the previous run's raw file on disk.
-
-    output/ is a persistent volume; if the raw file is only written on success, a
-    failed run would mis-attribute the previous run's jobs as its own raw_results.
-    """
-    scraper = MagicMock()
-    scraper.name = "fake"
-    scraper.url = "https://example.test/search"
-    scraper.limit = 5
-    scraper.requires_search_html = True
-    scraper.api_only = False
-    scraper.parse.return_value = [_job("A", "Jakarta"), _job("B", "Jakarta")]
-
-    fetcher = MagicMock()
-    fetcher.fetch.return_value.attempts = []
+def test_run_one_returns_empty_raw_on_fetch_failure():
+    scraper = _scraper()
+    scraper.parse.return_value = [_job("A", "Jakarta")]
     fields = frozenset({"title", "company", "url", "location"})
 
-    # run 1: success → writes raw with 2 jobs
-    fetcher.fetch.return_value.html = "<html>ok</html>"
-    runner.run_one(scraper, fetcher, tmp_path, "data analyst", fields, None, {})
-    assert json.loads((tmp_path / "fake.raw.json").read_text())["count"] == 2
+    result = runner.run_one(scraper, _fetcher(""), "data analyst", fields, None, {})
 
-    # run 2: fetch failure (no html) → raw must be reset, not stale
-    fetcher.fetch.return_value.html = ""
-    runner.run_one(scraper, fetcher, tmp_path, "data analyst", fields, None, {})
+    assert result.raw == {
+        "keyword": "data analyst",
+        "count": 0,
+        "jobs": [],
+        "error": "fetch failed",
+    }
+    assert result.filtered["error"] == "fetch failed"
 
-    raw = json.loads((tmp_path / "fake.raw.json").read_text())
-    assert raw["count"] == 0
-    assert raw["jobs"] == []
-    assert raw.get("error") == "fetch failed"
+
+def test_run_one_saves_no_html(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    scraper = _scraper()
+    scraper.parse.return_value = [_job("A", "Jakarta")]
+
+    runner.run_one(
+        scraper, _fetcher("<html>ok</html>"), "data analyst", frozenset({"title"}), None, {}
+    )
+
+    assert list(tmp_path.rglob("*.html")) == []
+    assert not (tmp_path / "output").exists()

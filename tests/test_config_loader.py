@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from scraper.config_loader import (
     DEFAULT_CONCURRENCY,
-    OUTPUT_DIR,
     PROXY_ENV_VAR,
     ConfigError,
     parse,
@@ -34,11 +31,11 @@ def test_parse_without_proxy():
     assert parse(SETTINGS, None).proxy is None
 
 
-def test_parse_uses_fixed_output_dir_and_default_concurrency():
+def test_parse_uses_default_concurrency_and_has_no_output_dir():
     config = parse(SETTINGS, None)
 
-    assert config.output_dir == OUTPUT_DIR == Path("output")
     assert config.concurrency == DEFAULT_CONCURRENCY
+    assert not hasattr(config, "output_dir")
 
 
 def test_validate_job_settings_accepts_concurrency():
@@ -55,7 +52,7 @@ def test_parse_uses_default_concurrency_for_a_stored_null():
     assert parse({**SETTINGS, "concurrency": None}, None).concurrency == DEFAULT_CONCURRENCY
 
 
-def test_validate_job_settings_refuses_output_dir():
+def test_validate_job_settings_refuses_unknown_keys():
     with pytest.raises(ConfigError, match="not a job setting: output_dir"):
         validate_job_settings({**SETTINGS, "output_dir": "elsewhere"})
 

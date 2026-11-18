@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +26,36 @@ from .sites._location import refresh_index
 from .types import CANONICAL_FIELDS, Job
 
 _LOG = get_logger()
+
+Payload = dict[str, Any]
+PairKey = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class SitePayloads:
+    filtered: Payload
+    raw: Payload
+
+
+@dataclass(frozen=True)
+class RunResult:
+    exit_code: int
+    results: Mapping[PairKey, SitePayloads] = field(default_factory=lambda: MappingProxyType({}))
+    error: str | None = None
+
+    def get(self, keyword: str, site: str) -> SitePayloads | None:
+        return self.results.get((keyword, site))
+
+
+def _empty_raw(keyword: str, error: str) -> Payload:
+    return {"keyword": keyword, "count": 0, "jobs": [], "error": error}
+
+
+def pair_error(keyword: str, reason: str) -> SitePayloads:
+    return SitePayloads(
+        filtered={"error": reason, "keyword": keyword, "source": None, "fallback_reason": None},
+        raw=_empty_raw(keyword, reason),
+    )
 
 
 def default_fetch_chain(proxy: str | None = None) -> FetchChain:
@@ -109,22 +139,32 @@ def _fetch_requirements(
                 jobs[idx]["requirements"] = None
 
 
-def _write_api_failure(json_path: Path, raw_path: Path, keyword: str, reason: str) -> None:
+def _api_failure(keyword: str, reason: str) -> SitePayloads:
     error = f"api failed: {reason}"
-    json_path.write_text(
-        json.dumps(
-            {
-                "error": error,
-                "keyword": keyword,
-                "source": "api",
-                "fallback_reason": None,
-            },
-            indent=2,
-        )
+    return SitePayloads(
+        filtered={
+            "error": error,
+            "keyword": keyword,
+            "source": "api",
+            "fallback_reason": None,
+        },
+        raw=_empty_raw(keyword, error),
     )
-    # same reset as _html_jobs: a stale raw file must not be credited to this run
-    raw_path.write_text(
-        json.dumps({"keyword": keyword, "count": 0, "jobs": [], "error": error}, indent=2)
+
+
+def _fetch_failure(
+    scraper: Scraper, keyword: str, attempts: list[Payload], fallback_reason: str | None
+) -> SitePayloads:
+    return SitePayloads(
+        filtered={
+            "error": "fetch failed",
+            "url": scraper.url,
+            "keyword": keyword,
+            "attempts": attempts,
+            "source": "html",
+            "fallback_reason": fallback_reason,
+        },
+        raw=_empty_raw(keyword, "fetch failed"),
     )
 
 
@@ -133,41 +173,18 @@ def _html_jobs(
     fetcher: FetchChain,
     keyword: str,
     label: str,
-    paths: tuple[Path, Path, Path],
     fallback_reason: str | None,
-) -> list[Job] | None:
-    json_path, raw_path, debug_path = paths
+) -> list[Job] | SitePayloads:
     _LOG.info("[%s] fetching %s", label, scraper.url)
     result = fetcher.fetch(scraper.url)
     html = result.html
     if not html and scraper.requires_search_html:
         _LOG.error("[%s] FAILED: no html", label)
-        json_path.write_text(
-            json.dumps(
-                {
-                    "error": "fetch failed",
-                    "url": scraper.url,
-                    "keyword": keyword,
-                    "attempts": [a.to_dict() for a in result.attempts],
-                    "source": "html",
-                    "fallback_reason": fallback_reason,
-                },
-                indent=2,
-            )
-        )
-        # keep raw output in lockstep with json_path: reset it so a stale
-        # prior-run raw file is never mis-attributed to this failed run
-        raw_path.write_text(
-            json.dumps(
-                {"keyword": keyword, "count": 0, "jobs": [], "error": "fetch failed"},
-                indent=2,
-            )
-        )
-        return None
+        attempts = [a.to_dict() for a in result.attempts]
+        return _fetch_failure(scraper, keyword, attempts, fallback_reason)
 
     if html:
-        debug_path.write_text(html)
-        _LOG.info("[%s] saved raw html → %s (%d bytes)", label, debug_path.name, len(html))
+        _LOG.info("[%s] fetched search html (%d bytes)", label, len(html))
     else:
         _LOG.info("[%s] no search html (scraper handles fetch internally)", label)
     return scraper.parse(html or "")
@@ -176,7 +193,6 @@ def _html_jobs(
 def run_one(
     scraper: Scraper,
     fetcher: FetchChain,
-    output_dir: Path,
     keyword: str,
     fields: frozenset[str],
     max_age_hours: int | None,
@@ -184,12 +200,8 @@ def run_one(
     *,
     api_search: Callable[[], list[Job]] | None = None,
     api_detail: Callable[[Job], str | None] | None = None,
-) -> None:
+) -> SitePayloads:
     label = f"{scraper.name}:{keyword_slug(keyword)}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / f"{scraper.name}.json"
-    raw_path = output_dir / f"{scraper.name}.raw.json"
-    debug_path = output_dir / f"{scraper.name}.debug.html"
 
     jobs: list[Job] | None = None
     source = "html"
@@ -210,17 +222,15 @@ def run_one(
             _LOG.exception("[%s] api crashed", label)
 
     if jobs is None and scraper.api_only:
-        _write_api_failure(json_path, raw_path, keyword, fallback_reason or "api_disabled")
-        return
+        return _api_failure(keyword, fallback_reason or "api_disabled")
 
     if jobs is None:
         if fallback_reason is not None:
             _LOG.warning("[%s] falling back to html (%s)", label, fallback_reason)
-        jobs = _html_jobs(
-            scraper, fetcher, keyword, label, (json_path, raw_path, debug_path), fallback_reason
-        )
-        if jobs is None:
-            return
+        html_outcome = _html_jobs(scraper, fetcher, keyword, label, fallback_reason)
+        if isinstance(html_outcome, SitePayloads):
+            return html_outcome
+        jobs = html_outcome
 
     parsed_count = len(jobs)
     _LOG.info("[%s] parsed %d job(s) via %s", label, parsed_count, source)
@@ -231,20 +241,15 @@ def run_one(
     # any Python-level filter/limit/projection. project_jobs builds fresh dicts, so the
     # later in-place requirements enrichment cannot leak back into this raw record.
     raw_jobs = project_jobs(jobs, CANONICAL_FIELDS)
-    raw_path.write_text(
-        json.dumps(
-            {
-                "keyword": keyword,
-                "fields": sorted(CANONICAL_FIELDS),
-                "count": len(raw_jobs),
-                "jobs": raw_jobs,
-                "source": source,
-                "fallback_reason": fallback_reason,
-            },
-            indent=2,
-        )
-    )
-    _LOG.info("[%s] wrote %s (%d raw job(s))", label, raw_path.name, len(raw_jobs))
+    raw_payload: Payload = {
+        "keyword": keyword,
+        "fields": sorted(CANONICAL_FIELDS),
+        "count": len(raw_jobs),
+        "jobs": raw_jobs,
+        "source": source,
+        "fallback_reason": fallback_reason,
+    }
+    _LOG.info("[%s] kept %d raw job(s)", label, len(raw_jobs))
 
     cutoff: datetime | None = None
     if max_age_hours is not None:
@@ -301,22 +306,18 @@ def run_one(
     )
 
     projected = project_jobs(jobs, fields)
-    json_path.write_text(
-        json.dumps(
-            {
-                "keyword": keyword,
-                "fields": sorted(fields),
-                "max_age_hours": max_age_hours,
-                "filter": content_filter or None,
-                "count": len(projected),
-                "jobs": projected,
-                "source": source,
-                "fallback_reason": fallback_reason,
-            },
-            indent=2,
-        )
-    )
-    _LOG.info("[%s] wrote %s", label, json_path.name)
+    filtered_payload: Payload = {
+        "keyword": keyword,
+        "fields": sorted(fields),
+        "max_age_hours": max_age_hours,
+        "filter": content_filter or None,
+        "count": len(projected),
+        "jobs": projected,
+        "source": source,
+        "fallback_reason": fallback_reason,
+    }
+    _LOG.info("[%s] done with %d job(s)", label, len(projected))
+    return SitePayloads(filtered=filtered_payload, raw=raw_payload)
 
 
 def build_api_callbacks(
@@ -364,34 +365,90 @@ def _build_pairs(sites: list[str], keywords: list[str]) -> list[tuple[str, str]]
     return [(keyword, site) for keyword in keywords for site in sites]
 
 
+def _site_payloads(
+    config: AppConfig, keyword: str, name: str, fetcher: FetchChain, proxy_url: str | None
+) -> SitePayloads:
+    site_cfg = config.site(name)
+    if site_cfg is None:
+        _LOG.warning("[runner] '%s' has no entry in the job settings; skipping", name)
+        return pair_error(keyword, "skipped: site has no entry in the job settings")
+    scraper = SCRAPERS[name](url=site_cfg.url_for(keyword), limit=config.limit_for(name))
+    api_search: Callable[[], list[Job]] | None = None
+    api_detail: Callable[[Job], str | None] | None = None
+    api_cfg = site_cfg.api
+    if api_cfg is not None and _can_call_api(scraper, api_cfg, name):
+        api_search, api_detail = build_api_callbacks(
+            API_SOURCES[name],
+            api_cfg,
+            keyword,
+            proxy_url=proxy_url,
+            max_age_hours=config.max_age_for(name),
+            limit=config.limit_for(name),
+        )
+    return run_one(
+        scraper,
+        fetcher,
+        keyword,
+        config.fields_for(name),
+        config.max_age_for(name),
+        config.filter_for(name),
+        api_search=api_search,
+        api_detail=api_detail,
+    )
+
+
+def _safe_site_payloads(
+    config: AppConfig, pair: PairKey, fetcher: FetchChain, proxy_url: str | None
+) -> SitePayloads:
+    keyword, name = pair
+    try:
+        return _site_payloads(config, keyword, name, fetcher, proxy_url)
+    except Exception as exc:
+        _LOG.exception("[%s:%s] pair crashed", name, keyword_slug(keyword))
+        return pair_error(keyword, f"crashed: {type(exc).__name__}")
+
+
+def _run_pairs(
+    config: AppConfig, pairs: list[PairKey], fetcher: FetchChain, proxy_url: str | None
+) -> dict[PairKey, SitePayloads]:
+    workers = max(1, min(config.concurrency, len(pairs)))
+    if workers == 1:
+        return {pair: _safe_site_payloads(config, pair, fetcher, proxy_url) for pair in pairs}
+
+    _LOG.info(
+        "[runner] running %d (keyword,site) pair(s) with concurrency=%d",
+        len(pairs),
+        workers,
+    )
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scraper") as ex:
+        futures = {
+            ex.submit(_safe_site_payloads, config, pair, fetcher, proxy_url): pair for pair in pairs
+        }
+        return {futures[fut]: fut.result() for fut in as_completed(futures)}
+
+
+def _selection_error(selected: list[str], keywords: list[str]) -> str | None:
+    if not selected:
+        return "no sites selected (none enabled in config and no CLI args)"
+    unknown = [name for name in selected if name not in SCRAPERS]
+    if unknown:
+        return f"unknown sites: {', '.join(unknown)}. available: {', '.join(SCRAPERS)}"
+    if not keywords:
+        return "no keywords to scrape"
+    return None
+
+
 def run(
     config: AppConfig,
     targets: Iterable[str] = (),
-    output_dir: Path | None = None,
     keywords: Iterable[str] | None = None,
-) -> int:
-    out = output_dir or config.output_dir
-    if not out.is_absolute():
-        out = (Path.cwd() / out).resolve()
-
+) -> RunResult:
     selected = _select_targets(config, targets)
-    if not selected:
-        _LOG.error("[runner] no sites selected (none enabled in config and no CLI args)")
-        return 1
-
-    unknown = [name for name in selected if name not in SCRAPERS]
-    if unknown:
-        _LOG.error(
-            "[runner] unknown sites: %s. available: %s",
-            ", ".join(unknown),
-            ", ".join(SCRAPERS),
-        )
-        return 1
-
     keyword_list = list(keywords) if keywords else list(config.keywords)
-    if not keyword_list:
-        _LOG.error("[runner] no keywords to scrape")
-        return 1
+    error = _selection_error(selected, keyword_list)
+    if error is not None:
+        _LOG.error("[runner] %s", error)
+        return RunResult(exit_code=1, error=error)
 
     pairs = _build_pairs(selected, keyword_list)
     proxy_url = config.proxy.url if config.proxy else None
@@ -404,60 +461,6 @@ def run(
     # get_index() during filtering. Degrades to legacy substring if Mongo is absent.
     refresh_index()
 
-    def _process(pair: tuple[str, str]) -> None:
-        keyword, name = pair
-        site_cfg = config.site(name)
-        if site_cfg is None:
-            _LOG.warning("[runner] '%s' has no entry in the job settings; skipping", name)
-            return
-        scraper_cls = SCRAPERS[name]
-        url = site_cfg.url_for(keyword)
-        scraper = scraper_cls(url=url, limit=config.limit_for(name))
-        keyword_dir = out / keyword_slug(keyword)
-        if not keyword_dir.resolve().is_relative_to(out):
-            _LOG.warning("[runner] keyword '%s' slug escapes output_dir; skipping", keyword)
-            return
-        api_search: Callable[[], list[Job]] | None = None
-        api_detail: Callable[[Job], str | None] | None = None
-        api_cfg = site_cfg.api
-        if api_cfg is not None and _can_call_api(scraper, api_cfg, name):
-            api_search, api_detail = build_api_callbacks(
-                API_SOURCES[name],
-                api_cfg,
-                keyword,
-                proxy_url=proxy_url,
-                max_age_hours=config.max_age_for(name),
-                limit=config.limit_for(name),
-            )
-        run_one(
-            scraper,
-            fetcher,
-            keyword_dir,
-            keyword,
-            config.fields_for(name),
-            config.max_age_for(name),
-            config.filter_for(name),
-            api_search=api_search,
-            api_detail=api_detail,
-        )
-
-    workers = max(1, min(config.concurrency, len(pairs)))
-    if workers == 1 or len(pairs) == 1:
-        for pair in pairs:
-            _process(pair)
-        return 0
-
-    _LOG.info(
-        "[runner] running %d (keyword,site) pair(s) with concurrency=%d",
-        len(pairs),
-        workers,
-    )
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scraper") as ex:
-        futures = {ex.submit(_process, pair): pair for pair in pairs}
-        for fut in as_completed(futures):
-            keyword, name = futures[fut]
-            try:
-                fut.result()
-            except Exception as exc:
-                _LOG.error("[%s:%s] thread error: %s", name, keyword_slug(keyword), exc)
-    return 0
+    results = _run_pairs(config, pairs, fetcher, proxy_url)
+    ordered = {pair: results[pair] for pair in pairs}
+    return RunResult(exit_code=0, results=MappingProxyType(ordered))

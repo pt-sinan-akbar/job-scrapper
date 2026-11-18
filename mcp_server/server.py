@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -19,7 +20,7 @@ from mcp_server import mongo
 from mcp_server.discord_tools import DISCORD_TOOLS
 from scraper.api.locations import location_options_payload
 from scraper.config import ACCEPT_LANGUAGE, USER_AGENT
-from scraper.config_loader import AppConfig, ConfigError, keyword_slug
+from scraper.config_loader import AppConfig, ConfigError
 from scraper.job_settings import (
     JobSettingsStore,
     SettingsConflictError,
@@ -30,6 +31,7 @@ from scraper.job_settings import (
 )
 from scraper.log import get_logger as _get_logger
 from scraper.log import redact_proxy_url as _redact_proxy_url
+from scraper.runner import RunResult, SitePayloads
 from scraper.runner import run as run_scraper
 from scraper.types import JOB_FIELD_ORDER, MANDATORY_FIELDS
 
@@ -73,26 +75,6 @@ def _settings_store() -> JobSettingsStore:
 
 def _load_config() -> AppConfig:
     return load_app_config(_settings_store())
-
-
-def _read_site_output(config: AppConfig, keyword: str, name: str) -> dict[str, Any] | None:
-    path = config.output_dir / keyword_slug(keyword) / f"{name}.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return None
-
-
-def _read_site_raw_output(config: AppConfig, keyword: str, name: str) -> dict[str, Any] | None:
-    path = config.output_dir / keyword_slug(keyword) / f"{name}.raw.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return None
 
 
 def _build_per_site_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -140,17 +122,6 @@ def _to_payload(stored: StoredSettings) -> dict[str, Any]:
         "updated_at": stored.updated_at,
         "updated_by": stored.updated_by,
         "settings": stored.settings,
-    }
-
-
-def _to_history_entry(entry: StoredSettings) -> dict[str, Any]:
-    sites = entry.settings.get("sites", {})
-    return {
-        "version": entry.version,
-        "updated_at": entry.updated_at,
-        "updated_by": entry.updated_by,
-        "keywords": entry.settings.get("keywords", []),
-        "enabled_sites": [name for name, site in sites.items() if site.get("enabled", True)],
     }
 
 
@@ -452,7 +423,7 @@ def update_config(
 
     Top-level keys are replaced whole. `sites` merges by site name, and each
     field of a site is replaced whole. A null value removes that key, so a site
-    field goes back to the global value. The old version is kept in history.
+    field goes back to the global value.
 
     Args:
         patch: changes to apply. Examples:
@@ -470,35 +441,6 @@ def update_config(
         "conflict", or "unavailable".
     """
     return _save_result(lambda: _settings_store().save(patch, expected_version, source))
-
-
-@mcp.tool()
-def get_config_history() -> dict[str, Any]:
-    """Return the saved older versions of the job settings, newest first."""
-    try:
-        entries = _settings_store().history()
-    except ConfigError as exc:
-        return {"error": str(exc)}
-    return {"entries": [_to_history_entry(entry) for entry in entries]}
-
-
-@mcp.tool()
-def restore_config(
-    version: int, expected_version: int, source: SaveSource = "mcp"
-) -> dict[str, Any]:
-    """Make an older saved version the current job settings.
-
-    The restore creates a new version, so it can be undone the same way.
-
-    Args:
-        version: the saved version to bring back.
-        expected_version: the current version you read with get_config.
-        source: who made the change, kept with the version.
-
-    Returns:
-        The same shape as update_config.
-    """
-    return _save_result(lambda: _settings_store().restore(version, expected_version, source))
 
 
 @mcp.tool()
@@ -678,6 +620,55 @@ def test_proxy_connection(
     return merged
 
 
+@dataclass(frozen=True)
+class _CollectedResults:
+    results: list[dict[str, Any]]
+    errors: list[dict[str, Any]]
+    filtered_results: list[dict[str, Any]]
+    raw_results: list[dict[str, Any]]
+
+
+def _payload_error(keyword: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    err: dict[str, Any] = {"keyword": keyword, "site": name, "reason": str(payload.get("error"))}
+    attempts = payload.get("attempts")
+    return {**err, "attempts": attempts} if isinstance(attempts, list) else err
+
+
+def _missing_pair_error(keyword: str, name: str, run_result: RunResult) -> dict[str, Any]:
+    fallback = f"scraper returned no result for this pair (exit code {run_result.exit_code})"
+    return {"keyword": keyword, "site": name, "reason": run_result.error or fallback}
+
+
+def _pair_entry(keyword: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"keyword": keyword, "site": name, "payload": payload}
+
+
+def _collect_results(
+    run_result: RunResult, keywords: list[str], sites: list[str]
+) -> _CollectedResults:
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    filtered_results: list[dict[str, Any]] = []
+    raw_results: list[dict[str, Any]] = []
+    for keyword in keywords:
+        per_site: list[dict[str, Any]] = []
+        for name in sites:
+            payloads: SitePayloads | None = run_result.get(keyword, name)
+            if payloads is None:
+                errors.append(_missing_pair_error(keyword, name, run_result))
+                continue
+            filtered_results.append(_pair_entry(keyword, name, payloads.filtered))
+            raw_results.append(_pair_entry(keyword, name, payloads.raw))
+            if "error" in payloads.filtered:
+                errors.append(_payload_error(keyword, name, payloads.filtered))
+                continue
+            per_site.append(
+                _normalize_site_payload(payload=payloads.filtered, site_name=name, keyword=keyword)
+            )
+        results.append({"keyword": keyword, "sites": per_site})
+    return _CollectedResults(results, errors, filtered_results, raw_results)
+
+
 def _payload_extras(
     include_payloads: bool,
     raw_results: list[dict[str, Any]],
@@ -707,8 +698,8 @@ def scrape_jobs(
         save_run: when false, return the results without storing the run in
             Mongo, so it never reaches the scrape history. mongo_id is then null.
         include_payloads: when true, the response also carries raw_results (each
-            site's output before max-age, filter and limit) and filtered_results
-            (each site's final output file), both lists of {keyword, site, payload}.
+            site's payload before max-age, filter and limit) and filtered_results
+            (each site's final payload), both lists of {keyword, site, payload}.
             Off by default to keep the response small.
 
     Returns:
@@ -754,45 +745,11 @@ def scrape_jobs(
     target_sites = list(sites) if sites else list(config.enabled_site_names())
     target_keywords = list(keywords) if keywords else list(config.keywords)
 
-    # run scraper — writes per-site JSON output files
-    exit_code: int = run_scraper(config, targets=target_sites, keywords=target_keywords)
-
-    # read output files: raw (all jobs) + filtered (post-filter) payloads for Mongo,
-    # normalize the filtered jobs for the response
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    filtered_results: list[dict[str, Any]] = []
-    raw_results: list[dict[str, Any]] = []
-    for keyword in target_keywords:
-        per_site: list[dict[str, Any]] = []
-        for name in target_sites:
-            raw_payload = _read_site_raw_output(config, keyword, name)
-            if raw_payload is not None:
-                raw_results.append({"keyword": keyword, "site": name, "payload": raw_payload})
-
-            payload = _read_site_output(config, keyword, name)
-            if payload is None:
-                errors.append(
-                    {"keyword": keyword, "site": name, "reason": "missing or invalid output JSON"}
-                )
-                continue
-            filtered_results.append({"keyword": keyword, "site": name, "payload": payload})
-            if isinstance(payload, dict) and "error" in payload:
-                err: dict[str, Any] = {
-                    "keyword": keyword,
-                    "site": name,
-                    "reason": str(payload.get("error")),
-                }
-                attempts = payload.get("attempts")
-                if isinstance(attempts, list):
-                    err["attempts"] = attempts
-                errors.append(err)
-                continue
-            normalized_site = _normalize_site_payload(
-                payload=payload, site_name=name, keyword=keyword
-            )
-            per_site.append(normalized_site)
-        results.append({"keyword": keyword, "sites": per_site})
+    run_result = run_scraper(config, targets=target_sites, keywords=target_keywords)
+    exit_code = run_result.exit_code
+    collected = _collect_results(run_result, target_keywords, target_sites)
+    results, errors = collected.results, collected.errors
+    filtered_results, raw_results = collected.filtered_results, collected.raw_results
 
     total_jobs = sum(s.get("count", 0) for r in results for s in r.get("sites", []))
     note = _build_note(errors)
