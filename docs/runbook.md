@@ -17,37 +17,43 @@ For the tool catalog see [`mcp.md`](mcp.md).
 
 User: "switch the search to data analyst" / "add backend developer to the keywords"
 
-```json
-{"patch": {"keywords": ["data analyst"]}}
-```
-
-Or to add without losing existing:
+Keywords are not a job setting, so there is nothing to patch. Pass them to
+`scrape_jobs` on every call:
 
 ```json
-{"patch": {"keywords": ["software engineer", "backend developer"]}}
+{"keywords": ["software engineer", "backend developer"]}
 ```
 
-Note: `keywords` is a list — patches replace the list, they do not append.
-Always include all desired keywords in the new patch.
+`keywords` is required. A call with `null` or `[]` runs nothing and returns
+`ok: false` with the error reason `keywords are required`. An `update_config`
+patch with `keywords` is refused with `not a job setting: keywords`.
 
 ## "Only show jobs from last X hours"
 
 User: "tighten to last 6 hours" / "show me last week's jobs"
 
+`max_age_hours` is per site. There is no global value, so patch every site the
+user means (all enabled sites when they say "everything"):
+
 ```json
-{"patch": {"max_age_hours": 6}}
+{"patch": {"sites": {
+  "jobstreet": {"max_age_hours": 6},
+  "glints":    {"max_age_hours": 6},
+  "linkedin":  {"max_age_hours": 6},
+  "indeed":    {"max_age_hours": 6},
+  "upwork":    {"max_age_hours": 6}
+}}}
 ```
 
-Pair with URL params if you also want server-side filtering. See
+`null` turns a site's age cut off. Pair with URL params if you also want server-side filtering. See
 [`sites.md`](sites.md) for the param table per site. Example for last
 week (jobstreet + linkedin):
 
 ```json
 {"patch": {
-  "max_age_hours": 168,
   "sites": {
-    "jobstreet": {"url_template": "https://id.jobstreet.com/id/{keyword_slug}-jobs?daterange=7"},
-    "linkedin":  {"url_template": "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={keyword}&location=Indonesia&f_TPR=r604800&start=0"}
+    "jobstreet": {"max_age_hours": 168, "url_template": "https://id.jobstreet.com/id/{keyword_slug}-jobs?daterange=7"},
+    "linkedin":  {"max_age_hours": 168, "url_template": "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={keyword}&location=Indonesia&f_TPR=r604800&start=0"}
   }
 }}
 ```
@@ -70,11 +76,19 @@ To re-enable:
 
 User: "only Jakarta" / "Jakarta or Bandung please"
 
+Each site has its own `filter`, replaced whole. Patch every site the user
+means, and keep that site's other filter keys:
+
 ```json
-{"patch": {"filter": {"location": ["jakarta", "bandung"]}}}
+{"patch": {"sites": {
+  "jobstreet": {"filter": {"location": ["jakarta", "bandung"]}},
+  "glints":    {"filter": {"location": ["jakarta", "bandung"]}},
+  "linkedin":  {"filter": {"location": ["jakarta", "bandung"]}},
+  "indeed":    {"filter": {"location": ["jakarta", "bandung"]}}
+}}}
 ```
 
-Substring + case-insensitive — `jakarta` catches Jakarta Barat, Jakarta
+Leave `upwork` out: its jobs are remote and worldwide. Substring + case-insensitive — `jakarta` catches Jakarta Barat, Jakarta
 Selatan, Area DKI Jakarta, etc. See [`filters.md`](filters.md) for full
 filter semantics.
 
@@ -84,12 +98,12 @@ User: "internships only" / "exclude internships, full-time only"
 
 Internships only:
 ```json
-{"patch": {"filter": {"employment_type": "internship"}}}
+{"patch": {"sites": {"glints": {"filter": {"location": ["jakarta"], "employment_type": "internship"}}}}}
 ```
 
 Full-time only:
 ```json
-{"patch": {"filter": {"employment_type": "full-time"}}}
+{"patch": {"sites": {"glints": {"filter": {"location": ["jakarta"], "employment_type": "full-time"}}}}}
 ```
 
 Note: `employment_type` is reliably populated only by Glints. Other sites
@@ -101,7 +115,7 @@ narrows Glints' output.
 User: "remote work only" / "remote or hybrid is fine"
 
 ```json
-{"patch": {"filter": {"work_type": ["remote", "hybrid"]}}}
+{"patch": {"sites": {"glints": {"filter": {"work_type": ["remote", "hybrid"]}}}}}
 ```
 
 Same coverage caveat as `employment_type` — Glints reliably emits
@@ -111,23 +125,37 @@ Same coverage caveat as `employment_type` — Glints reliably emits
 
 User: "give me 10 per site instead of 2" / "lower to 1, this is too noisy"
 
+`limit` is per site and required on every site (1 to 200). Patch each site the
+user means:
+
 ```json
-{"patch": {"limit": 10}}
+{"patch": {"sites": {
+  "jobstreet": {"limit": 10},
+  "glints":    {"limit": 10},
+  "linkedin":  {"limit": 10},
+  "indeed":    {"limit": 10}
+}}}
 ```
 
-Higher `limit` increases scrape time and block risk. Tighten
-`max_age_hours` or filters at the same time to keep output relevant.
+`limit: null` is refused. Higher `limit` increases scrape time and block risk.
+Tighten that site's `max_age_hours` or filter at the same time to keep output
+relevant.
 
 ## "Speed it up" / "slow it down"
 
 User: "scrape faster" or "running too hot, slow it down"
 
-```json
-{"patch": {"concurrency": 4}}
-```
+Not a job setting, so `update_config` cannot change it (a `concurrency` patch
+is refused). Concurrency is the `SCRAPER_CONCURRENCY` env var: how many
+`(keyword, site)` pairs run at once. Default 2, valid 1 to 10; an invalid value
+logs a warning and uses 2. In prod it is the `SCRAPER_CONCURRENCY` GitHub
+variable, applied on the next deploy (see [`deploy.md`](deploy.md)). Locally,
+set it in `.env` and recreate the containers:
 
-`concurrency` is how many `(keyword, site)` pairs run at once. Default is 2. The UI
-(`/config`, General section, "Sites scraped at once") allows 1 to 10.
+```bash
+SCRAPER_CONCURRENCY=4
+docker compose up -d scraper-mcp scraper-ui
+```
 
 Each Playwright fallback consumes ~250-300MB RAM. On a 2GB host, stay at
 2; on a bigger host, 4 is safe.
@@ -136,36 +164,31 @@ Each Playwright fallback consumes ~250-300MB RAM. On a 2GB host, stay at
 
 User: "drop the filter, show everything"
 
-```json
-{"patch": {"filter": null}}
-```
-
-`null` clears the filter. To clear a single key, send the remaining keys
-without the one to drop:
+Send `{}` for each site whose filter should go:
 
 ```json
-{"patch": {"filter": {"location": ["jakarta"]}}}
+{"patch": {"sites": {"jobstreet": {"filter": {}}, "glints": {"filter": {}}}}}
 ```
 
-(Removes `employment_type` and `work_type` if they were set.)
+To clear a single key, send that site's remaining keys without the one to
+drop:
 
-## "Apply a per-site override"
+```json
+{"patch": {"sites": {"glints": {"filter": {"location": ["jakarta"]}}}}}
+```
 
-User: "Glints should only show internships" (while global filter stays
-permissive)
+(Removes `employment_type` and `work_type` from Glints if they were set.)
+
+## "Change one site's filter"
+
+User: "Glints should only show internships"
 
 ```json
 {"patch": {"sites": {"glints": {"filter": {"employment_type": "internship"}}}}}
 ```
 
-Per-site `filter` blocks REPLACE the global block (no merge across
-the boundary). Once a per-site filter is set, the global filter doesn't
-apply to that site at all. A site with `filter: {}` has no filter. To go back
-to the global filter, send `null`:
-
-```json
-{"patch": {"sites": {"glints": {"filter": null}}}}
-```
+The site's whole `filter` is replaced, and no other site changes. There is no
+global filter to fall back to: `filter: {}` means no filter for that site.
 
 ## "Add new fields to the output"
 
@@ -194,8 +217,8 @@ Skip `update_config` entirely; use `scrape_jobs` with explicit args:
 {"keywords": ["fullstack engineer"], "sites": ["linkedin", "jobstreet"]}
 ```
 
-The saved job settings are unchanged; only the run is overridden. Add `"save_run": false`
-to keep the run out of MongoDB as well.
+The saved job settings are unchanged. Add `"save_run": false` to keep the run
+out of MongoDB as well.
 
 ## "Show me the current settings"
 
@@ -216,12 +239,38 @@ For a higher-level view (resolved sample URLs, enabled list):
 
 | Error fragment                                    | Cause                                              |
 |---------------------------------------------------|----------------------------------------------------|
-| `'limit' must be >= 1`                            | Sent `0` or negative integer                       |
+| `sites.<name>.limit is required`                  | Site has no `limit`, or the patch sent `limit: null` |
+| `sites.<name>.limit must be a whole number from 1 to 200` | Sent `0`, over 200, or a non-integer       |
 | `not a job setting: proxy`                        | Sent `proxy` or another key that is not a job setting |
-| `'max_age_hours' must be a positive integer`      | Sent `0`, negative, or non-integer                 |
-| `'keywords' must be a non-empty list of strings`  | Empty list or non-string entries                   |
+| `not a job setting: limit` (or `concurrency`, `max_age_hours`, `filter`) | Sent a global value; put it on each site instead, concurrency is `SCRAPER_CONCURRENCY` |
+| `not a job setting: keywords`                     | Keywords are not stored; pass them to `scrape_jobs` instead |
+| `sites.<name>.max_age_hours must be >= 1`         | Sent `0` or negative                               |
 | `url_template uses unknown placeholder ...`       | URL has `{x}` not in `keyword/keyword_slug/keyword_plus` |
-| `filter.<key>.<subkey> must be a string or list` | Sent a number, dict, or other non-string value     |
+| `sites.<name>.filter.<key> must be a string or list` | Sent a number, dict, or other non-string value     |
+
+When a read fails with `The stored job settings could not be migrated and were
+left unchanged: <problem>`, an old document still has global values and the
+migrated result would not be valid. Nothing was written. Fix `<problem>` in the
+`active` document by hand, then read again.
 
 When you see these, don't loop blindly. Surface the verbatim `message` to the
 user and ask how to proceed (or whether to drop the offending key).
+
+## Restore settings from before the migration
+
+The global value migration is one-way: older images cannot read the migrated
+document. The original is kept once as `_id: "active_pre_migration_backup"`
+in `job_settings`. Stop the scraper containers, then in `mongosh`:
+
+```js
+use job_scraper
+const backup = db.job_settings.findOne({ _id: "active_pre_migration_backup" })
+db.job_settings.replaceOne(
+  { _id: "active" },
+  { version: backup.version, settings: backup.settings,
+    updated_at: backup.updated_at, updated_by: backup.updated_by }
+)
+```
+
+Start the old image after that. Changes saved after the migration are lost.
+See [`deploy.md`](deploy.md#job-settings-migration-is-one-way).

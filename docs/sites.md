@@ -35,7 +35,7 @@ affect Glints. Other sites pass via the conservative null-rule.
 ## URL template recency params
 
 Each site has its own server-side recency filter. Keep the URL param
-aligned with `max_age_hours` to minimize wasted fetches.
+aligned with that site's `max_age_hours` to minimize wasted fetches.
 
 | Site      | Param          | Format                      | Example for last 24h           |
 |-----------|----------------|-----------------------------|--------------------------------|
@@ -44,7 +44,7 @@ aligned with `max_age_hours` to minimize wasted fetches.
 | indeed    | `fromage`      | days (integer)              | `&fromage=1`                   |
 | glints    | none           | n/a                         | client-side `max_age_hours` only |
 
-Coupling: if you increase `max_age_hours`, also widen these URL params
+Coupling: if you increase a site's `max_age_hours`, also widen these URL params
 (`daterange=7` for last week, `f_TPR=r604800`, `fromage=7`). Otherwise
 the URL only returns the past day and the wider client window has nothing
 extra to admit.
@@ -70,7 +70,7 @@ of the four.
 Glints' `posted_date` from `__NEXT_DATA__` is the listing **creation** date,
 not when it was last refreshed/reposted. A job that's been re-shared today
 may still show as months old to the filter. Expect Glints to dry up first
-under tight `max_age_hours`. There is no public server-side recency param
+under a tight `sites.glints.max_age_hours`. There is no public server-side recency param
 on Glints' search URL.
 
 ### Indeed selectors
@@ -135,7 +135,7 @@ reason in the site payload and run metadata.
 | indeed    | 403                | required (extra ~10-15s, ~280MB Chromium) |
 
 Indeed's 403 is consistent and not a transient failure — every run hits
-the playwright fallback. RAM cost matters when scaling `concurrency`.
+the playwright fallback. RAM cost matters when scaling `SCRAPER_CONCURRENCY`.
 
 ## Adding new sites
 

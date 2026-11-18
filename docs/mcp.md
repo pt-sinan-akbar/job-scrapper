@@ -54,22 +54,24 @@ Read-only. Inspect resolved config without running anything.
 
 ```json
 {
-  "keywords": ["software engineer", "data analyst"],
-  "limit": 2,
   "sites": [
     {
       "name": "jobstreet",
       "enabled": true,
       "url_template": "https://id.jobstreet.com/id/{keyword_slug}-jobs?daterange=1",
-      "sample_url": "https://id.jobstreet.com/id/software-engineer-jobs?daterange=1"
+      "sample_url": "https://id.jobstreet.com/id/data-analyst-jobs?daterange=1"
     },
     ...
   ]
 }
 ```
 
-Use this first to confirm what `keywords` and which `sites` are active before
-calling `scrape_jobs` or proposing a `update_config` patch.
+`sample_url` is the template formatted with the placeholder keyword
+`data analyst`. The job settings hold no keywords, so there is no keyword list
+here: every `scrape_jobs` call names its own.
+
+Use this first to confirm which `sites` are active before calling
+`scrape_jobs` or proposing a `update_config` patch.
 
 ### `get_config`
 
@@ -85,12 +87,16 @@ Read-only. Returns the job settings from Mongo, with their version.
   "updated_at": "2026-11-02T01:00:00+00:00",
   "updated_by": "ui",
   "settings": {
-    "keywords": ["software engineer"],
-    "limit": 2,
-    "concurrency": 2,
-    "max_age_hours": 24,
-    "filter": {"location": ["jakarta"]},
-    "sites": {}
+    "default_fields": ["title", "company", "location", "url"],
+    "sites": {
+      "jobstreet": {
+        "enabled": true,
+        "limit": 3,
+        "max_age_hours": 72,
+        "filter": {"location": ["jakarta"]},
+        "url_template": "https://id.jobstreet.com/id/{keyword_slug}-jobs?daterange=1"
+      }
+    }
   },
   "job_fields": ["site", "matched_keyword", "title", "..."],
   "mandatory_fields": ["site", "matched_keyword", "title", "company", "url"],
@@ -111,7 +117,11 @@ Read-only. Returns the job settings from Mongo, with their version.
 Returns `{"error": "..."}` when Mongo is down or the document is missing.
 
 Always call `get_config` before `update_config` to know the current shape so
-your patch is minimal.
+your patch is minimal. A stored document that still has global `limit`,
+`concurrency`, `max_age_hours` or `filter` is migrated into the sites on the
+first read, with a new version and `updated_by: "migration"`, after a copy of
+the original is kept as `active_pre_migration_backup` (see
+[`configuration.md`](configuration.md#migration-from-global-values)).
 
 ### `get_scrape_response_structure`
 
@@ -146,11 +156,11 @@ Write. Applies a patch to the job settings, and validates the result.
 { "patch": { }, "expected_version": 4, "source": "mcp" }
 ```
 
-- `patch`: top-level keys are replaced whole. `sites` merges by site name. Each field of a site is replaced whole, so send the full `filter` or `api`. A `null` removes the key, so a site field goes back to the global value
+- `patch`: top-level keys (`default_fields`, `sites`) are replaced whole. `sites` merges by site name. Each field of a site is replaced whole, so send the full `filter` or `api`. A `null` removes the key: `max_age_hours: null` means no age cut for that site. `limit` cannot be removed, every site needs one
 - `expected_version`: optional. The version you read. A mismatch saves nothing
 - `source`: `ui` or `mcp`. Kept with the version
 
-Only job setting keys are allowed, and `concurrency` is one of them. `proxy` is refused. Field names in `default_fields` or `sites.<name>.fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`.
+Only job setting keys are allowed: `default_fields`, `sites`. `limit`, `max_age_hours` and `filter` are per site only, so a top-level `limit`, `concurrency`, `max_age_hours`, `filter`, `keywords` or `proxy` is refused with `not a job setting: <key>`. Keywords are not stored: pass them to `scrape_jobs` on every call. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Field names in `default_fields` or `sites.<name>.fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`.
 
 **Returns** (success):
 
@@ -161,21 +171,26 @@ Only job setting keys are allowed, and `concurrency` is one of them. `proxy` is 
 **Returns** (failure, nothing changed):
 
 ```json
-{ "ok": false, "reason": "invalid", "message": "'limit' must be >= 1, got -5" }
+{ "ok": false, "reason": "invalid", "message": "sites.glints.limit must be a whole number from 1 to 200, got -5" }
 ```
 
 `reason` is `invalid`, `conflict`, or `unavailable`.
 
 #### Patch examples
 
-Change keyword:
+Change the default job fields:
 ```json
-{"patch": {"keywords": ["data analyst"]}}
+{"patch": {"default_fields": ["title", "company", "url", "salary"]}}
 ```
 
-Tighten recency:
+Tighten recency on one site:
 ```json
-{"patch": {"max_age_hours": 6}}
+{"patch": {"sites": {"glints": {"max_age_hours": 6}}}}
+```
+
+Raise how many jobs one site returns:
+```json
+{"patch": {"sites": {"indeed": {"limit": 10}}}}
 ```
 
 Disable LinkedIn for the next runs:
@@ -183,17 +198,22 @@ Disable LinkedIn for the next runs:
 {"patch": {"sites": {"linkedin": {"enabled": false}}}}
 ```
 
-Add a new search location to the filter (the whole list is replaced, so send every location):
+Add a search location to one site's filter (the whole filter is replaced, so send every location and key):
 ```json
-{"patch": {"filter": {"location": ["jakarta", "bandung", "surabaya"]}}}
+{"patch": {"sites": {"jobstreet": {"filter": {"location": ["jakarta", "bandung", "surabaya"]}}}}}
 ```
 
-Per-site filter override (replaces the whole filter of that site):
+Change the filter of a site:
 ```json
 {"patch": {"sites": {"glints": {"filter": {"employment_type": "internship"}}}}}
 ```
 
-Return a site field to the global value:
+Turn a site's filter off:
+```json
+{"patch": {"sites": {"upwork": {"filter": {}}}}}
+```
+
+Turn a site's age cut off:
 ```json
 {"patch": {"sites": {"glints": {"max_age_hours": null}}}}
 ```
@@ -207,8 +227,8 @@ Replace LinkedIn URL template (e.g. switch to a different geoId):
 
 Every patch is merged, then run through `scraper.config_loader.parse` before
 anything is saved. The same rules listed in
-[`configuration.md`](configuration.md) apply: malformed `limit`, missing
-required keys, invalid URL placeholders, etc. all return
+[`configuration.md`](configuration.md) apply: a missing or malformed site
+`limit`, top-level global keys, missing required keys, invalid URL placeholders, etc. all return
 `{ok: false, reason: "invalid", message: …}`.
 
 ### `test_proxy_connection`
@@ -261,19 +281,24 @@ deployments where docs aren't expected to change at runtime.
 Run the scraper. Triggers fetches across `(keyword, site)` pairs and returns
 aggregated results.
 
-**Args** (all optional):
+**Args** (`keywords` required, the rest optional):
 
 ```json
 {
-  "sites": ["linkedin", "indeed"],
   "keywords": ["data analyst"],
+  "sites": ["linkedin", "indeed"],
   "save_run": true,
   "include_payloads": false
 }
 ```
 
+- `keywords`: required list of keywords to scrape. The job settings hold no
+  keywords, so there is no fallback. Each keyword is trimmed and blank ones
+  are dropped. `null`, `[]` or only blank keywords is refused (see below).
 - `sites`: list of site names to scrape. Omitted = all enabled sites.
-- `keywords`: list of keywords to scrape. Omitted = all configured keywords.
+
+In Python, `sites` is the only positional parameter; `keywords` and the rest
+are keyword-only: `scrape_jobs(["glints"], keywords=["data analyst"])`.
 - `save_run`: store the run in MongoDB. Omitted = `true`. The job-match search
   box and the scraper UI send `false`, so their results are shown once and stay
   out of the scrape history. `mongo_id` is then `null`.
@@ -315,7 +340,26 @@ aggregated results.
 any pair whose fetch failed, that was skipped (`skipped: site has no entry in the
 job settings`), that crashed (`crashed: <ExceptionType>`), or that the runner gave
 no result for (`scraper returned no result for this pair (exit code 1)`, when the
-site or keyword selection was invalid).
+site selection was invalid).
+
+**Returns** (no keywords): when `keywords` is `null`, empty or only blank, nothing runs, no
+status is written and nothing is saved to Mongo:
+
+```json
+{
+  "ok": false,
+  "keywords": [],
+  "requested_sites": ["linkedin", "indeed"],
+  "exit_code": 1,
+  "results": [],
+  "errors": [{"keyword": null, "site": null, "reason": "keywords are required"}],
+  "mongo_id": null
+}
+```
+
+`requested_sites` echoes the `sites` argument (`[]` when omitted). Leaving the
+`keywords` argument out entirely is rejected by the MCP argument check before
+the tool runs.
 
 Results come straight back from `scraper.runner.run`. Nothing is written to disk.
 

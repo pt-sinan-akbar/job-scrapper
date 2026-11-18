@@ -1,8 +1,10 @@
 # Filter options
 
-The `filter` job setting drops jobs from the output before they
-reach the JSON files. It runs after the recency filter (`max_age_hours`) and
-before fields are projected for output.
+Each site's `filter` (`sites.<name>.filter`) drops that site's jobs from the
+output. It runs after the site's recency cut (`sites.<name>.max_age_hours`)
+and before fields are projected for output. There is no global filter: a site
+without a `filter` key, with `filter: {}`, or with only empty lists has no
+filter.
 
 > **Ordering:** for `linkedin`, `glints`, and `jobstreet`, both `filter:` and
 > `max_age_hours` run **before** the per-site `limit` cap, so `limit` means "up
@@ -14,10 +16,12 @@ before fields are projected for output.
 ## Quick reference
 
 ```yaml
-filter:
-  location: [jakarta, bandung]
-  employment_type: [full-time, internship]
-  work_type: [remote, hybrid]
+sites:
+  jobstreet:
+    filter:
+      location: [jakarta, bandung]
+      employment_type: [full-time, internship]
+      work_type: [remote, hybrid]
 ```
 
 ## Matching semantics
@@ -90,25 +94,26 @@ Allowed values:
 Coverage today: **Glints** emits all three. Other sites currently emit `null`
 and pass via the null-rule.
 
-## Per-site override
+## One filter per site
 
-A site-level `filter:` block fully replaces the global one (no deep-merge).
+Each site has its own filter and nothing is shared or merged between sites.
+To use the same filter on several sites, set it on each one. The seed gives
+`jobstreet`, `glints`, `linkedin` and `indeed` the same Indonesian city list
+and leaves `upwork` with `filter: {}`, because all Upwork jobs are remote.
 
 ```yaml
-filter:
-  location: jakarta
-  work_type: remote
-
 sites:
   glints:
-    enabled: true
-    url_template: "..."
     filter:
-      employment_type: full-time   # only this filter runs on glints
+      employment_type: full-time
+  upwork:
+    filter: {}
 ```
 
-In this example, the global `location` and `work_type` filters do **not** apply
-to Glints — only its own `employment_type: full-time` runs.
+Here Glints keeps only full-time jobs and Upwork has no filter. Older settings
+documents with a global `filter` are migrated on first read: the global filter
+is copied into every site that had no `filter` key (see
+[`configuration.md`](configuration.md#migration-from-global-values)).
 
 ## Reading the runtime log
 
@@ -134,6 +139,8 @@ Each site payload (`filtered_results[*].payload` in Mongo, and the CLI's stdout)
 ```
 
 ## Common recipes
+
+Each recipe is the `filter` block of one site, `sites.<name>.filter`.
 
 ### Jakarta + nearby cities, full-time only
 
