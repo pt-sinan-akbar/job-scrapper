@@ -46,6 +46,11 @@ class RunNotFoundError(AppError):
     default_message = "Run not found."
 
 
+class RunStorageUnavailableError(AppError):
+    status_code = 503
+    default_message = "Run storage is unavailable."
+
+
 class RunInProgressError(AppError):
     status_code = 409
     default_message = "A scrape is already running."

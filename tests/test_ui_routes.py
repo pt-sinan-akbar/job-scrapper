@@ -5,20 +5,24 @@ import time
 from pathlib import Path
 from typing import Any
 
+import mongomock
 import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from ui_server.app import create_app
 from ui_server.errors import McpUnavailableError
+from ui_server.services.run_repository import (
+    UI_RUNS_COLLECTION,
+    MongoRunRepository,
+    RunStoreUnavailableError,
+)
 from ui_server.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
 DEV_LOGIN_KEY = "dev-login-key-for-tests"
 LOCAL_URL = "http://127.0.0.1:8090"
 SITES = {
-    "keywords": ["devops"],
-    "limit": 3,
     "sites": [{"name": "upwork", "enabled": True, "url_template": "x", "sample_url": "x"}],
 }
 CONFIG = {
@@ -26,10 +30,6 @@ CONFIG = {
     "updated_at": "2026-11-02T01:00:00+00:00",
     "updated_by": "ui",
     "settings": {
-        "keywords": ["devops"],
-        "limit": 3,
-        "max_age_hours": 72,
-        "filter": {"location": "jakarta", "work_type": []},
         "default_fields": ["title"],
         "sites": {
             "upwork": {
@@ -39,7 +39,12 @@ CONFIG = {
                 "url_template": "x",
                 "api": {"locations": ["Remote"]},
             },
-            "indeed": {"url_template": "x"},
+            "indeed": {
+                "limit": 3,
+                "max_age_hours": 72,
+                "filter": {"location": "jakarta", "work_type": []},
+                "url_template": "x",
+            },
         },
     },
     "job_fields": ["site", "title", "salary_min"],
@@ -47,6 +52,7 @@ CONFIG = {
     "location_options": {"jobstreet": [{"label": "Jakarta", "value": "Jakarta Raya"}]},
 }
 SAVED = {"ok": True, "version": 5}
+SITE_LIMIT = {"upwork": {"limit": 9}}
 DISCORD_SETTINGS = {
     "configured": True,
     "default_channel_id": "123456789012345678",
@@ -56,6 +62,40 @@ SCRAPE_RESULT = {
     "ok": True,
     "results": [{"keyword": "devops", "sites": [{"site": "upwork", "jobs": [{"title": "A"}]}]}],
     "errors": [],
+    "raw_results": [{"keyword": "devops", "site": "upwork", "payload": {"jobs": [{"t": "A"}]}}],
+    "filtered_results": [{"keyword": "devops", "site": "upwork", "payload": {"jobs": []}}],
+}
+STORED_RUN = {
+    "_id": "20261118T010000Z-abcdef",
+    "saved_at": "2026-11-18T01:01:00+00:00",
+    "record": {
+        "id": "20261118T010000Z-abcdef",
+        "status": "succeeded",
+        "keywords": ["django"],
+        "sites": ["upwork"],
+        "started_at": "2026-11-18T01:00:00+00:00",
+        "finished_at": "2026-11-18T01:01:00+00:00",
+        "job_count": 1,
+        "error_count": 0,
+        "error": None,
+        "discord_status": "sent",
+        "discord_sent": 1,
+        "discord_failed": 0,
+        "discord_error": None,
+    },
+    "jobs": [
+        {
+            "site": "upwork",
+            "matched_keyword": "django",
+            "title": "Stored",
+            "company": "Acme",
+            "location": None,
+            "url": "https://example.com/1",
+            "posted_at": None,
+        }
+    ],
+    "failures": [],
+    "payloads": [{"keyword": "django", "site": "upwork", "raw": {"a": 1}, "filtered": None}],
 }
 
 
@@ -123,8 +163,13 @@ def gateway() -> FakeGateway:
 
 
 @pytest.fixture
-def guest_client(tmp_path: Path, gateway: FakeGateway):
-    app = create_app(_settings(tmp_path), gateway)
+def database() -> Any:
+    return mongomock.MongoClient()["job_scraper"]
+
+
+@pytest.fixture
+def guest_client(tmp_path: Path, gateway: FakeGateway, database: Any):
+    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         yield test_client
 
@@ -136,8 +181,8 @@ def client(guest_client: TestClient):
 
 
 @pytest.fixture
-def prod_client(tmp_path: Path, gateway: FakeGateway):
-    app = create_app(_prod_settings(tmp_path), gateway)
+def prod_client(tmp_path: Path, gateway: FakeGateway, database: Any):
+    app = create_app(_prod_settings(tmp_path), gateway, MongoRunRepository(database))
     with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
 
@@ -197,7 +242,7 @@ def test_dev_wrong_login_key_returns_401(guest_client: TestClient):
 def test_sites_returns_options(client: TestClient):
     data = client.get("/api/sites").json()["data"]
 
-    assert data["keywords"] == ["devops"]
+    assert set(data) == {"sites", "is_stale"}
     assert data["sites"] == [{"name": "upwork", "enabled": True}]
     assert data["is_stale"] is False
 
@@ -228,8 +273,16 @@ RECORD_FIELDS = {
 }
 
 
-def _read_record(client: TestClient, run_id: str) -> dict:
+DETAIL_FIELDS = {"record", "jobs", "failures", "payloads"}
+JOB_FIELDS = {"site", "matched_keyword", "title", "company", "location", "url", "posted_at"}
+
+
+def _read_detail(client: TestClient, run_id: str) -> dict:
     return client.get(f"/api/runs/{run_id}").json()["data"]
+
+
+def _read_record(client: TestClient, run_id: str) -> dict:
+    return _read_detail(client, run_id)["record"]
 
 
 def _wait_for(client: TestClient, run_id: str, is_pending: Any) -> dict:
@@ -270,7 +323,7 @@ def test_read_run_keeps_record_after_finish(client: TestClient):
     response = client.get(f"/api/runs/{run['id']}")
 
     assert response.status_code == 200
-    assert response.json()["data"]["status"] == "succeeded"
+    assert response.json()["data"]["record"]["status"] == "succeeded"
 
 
 def test_new_run_replaces_previous_record(client: TestClient):
@@ -278,8 +331,8 @@ def test_new_run_replaces_previous_record(client: TestClient):
     _wait_for_finish(client, first["id"])
     second = _run(client)
 
-    assert client.get(f"/api/runs/{first['id']}").status_code == 404
     assert _wait_for_finish(client, second["id"])["id"] == second["id"]
+    assert client.get(f"/api/runs/{first['id']}").status_code == 404
 
 
 def test_read_run_reports_failed_scrape(client: TestClient, gateway: FakeGateway):
@@ -292,7 +345,7 @@ def test_read_run_reports_failed_scrape(client: TestClient, gateway: FakeGateway
     assert record["error_count"] == 1
 
 
-def test_scrape_does_not_ask_for_payloads(client: TestClient, gateway: FakeGateway):
+def test_scrape_asks_for_payloads_without_saving_the_run(client: TestClient, gateway: FakeGateway):
     run = _run(client)
     _wait_for_finish(client, run["id"])
 
@@ -300,6 +353,7 @@ def test_scrape_does_not_ask_for_payloads(client: TestClient, gateway: FakeGatew
         "sites": ["upwork"],
         "keywords": ["devops"],
         "save_run": False,
+        "include_payloads": True,
     }
 
 
@@ -378,32 +432,86 @@ def test_unknown_run_returns_404(client: TestClient):
     assert client.get("/api/runs/nope").status_code == 404
 
 
+class _UnavailableRepository(MongoRunRepository):
+    def find(self, run_id: str) -> Any:
+        raise RunStoreUnavailableError("down")
+
+
+def test_unknown_run_returns_503_when_run_storage_is_down(
+    tmp_path: Path, gateway: FakeGateway, database: Any
+):
+    app = create_app(_settings(tmp_path), gateway, _UnavailableRepository(database))
+    with TestClient(app, base_url=LOCAL_URL) as test_client:
+        test_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
+        response = test_client.get("/api/runs/nope")
+        latest = test_client.get("/api/runs/latest")
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "Run storage is unavailable."
+    assert latest.status_code == 200
+    assert latest.json()["data"] is None
+
+
+def test_app_without_a_repository_uses_the_short_timeout_run_store(
+    tmp_path: Path, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch
+):
+    from ui_server import app as app_module
+
+    opened: list[bool] = []
+
+    def fake_open() -> MongoRunRepository:
+        opened.append(True)
+        return MongoRunRepository(mongomock.MongoClient()["job_scraper"])
+
+    monkeypatch.setattr(app_module, "open_run_repository", fake_open)
+
+    create_app(_settings(tmp_path), gateway)
+
+    assert opened == [True]
+
+
 def test_config_read_returns_values_and_version(client: TestClient):
     data = client.get("/api/config").json()["data"]
 
     assert data["version"] == 4
     assert data["updated_by"] == "ui"
     assert data["is_stale"] is False
-    assert data["values"]["filter"] == {"location": ["jakarta"]}
+    assert set(data["values"]) == {"default_fields", "sites"}
     assert "proxy_url" not in data["values"]
 
 
-def test_config_read_returns_concurrency(client: TestClient, gateway: FakeGateway):
-    data = client.get("/api/config").json()["data"]
+@pytest.mark.parametrize("key", ["limit", "concurrency", "max_age_hours", "filter"])
+def test_config_update_refuses_global_job_values(
+    client: TestClient, gateway: FakeGateway, key: str
+):
+    response = client.put("/api/config", json={"version": 4, key: 3})
 
-    assert data["values"]["concurrency"] is None
-
-
-def test_config_update_sends_concurrency(client: TestClient, gateway: FakeGateway):
-    response = client.put("/api/config", json={"version": 4, "concurrency": 3})
-
-    assert response.status_code == 200
-    assert gateway.arguments["update_config"]["patch"] == {"concurrency": 3}
+    assert response.status_code == 422
+    assert "update_config" not in gateway.calls
 
 
-@pytest.mark.parametrize("value", [0, 11, 2.5])
-def test_config_update_refuses_concurrency_out_of_range(client: TestClient, value: float):
-    assert client.put("/api/config", json={"version": 4, "concurrency": value}).status_code == 422
+@pytest.mark.parametrize("key", ["limit", "filter"])
+def test_config_update_refuses_a_null_site_limit_or_filter(
+    client: TestClient, gateway: FakeGateway, key: str
+):
+    response = client.put("/api/config", json={"version": 4, "sites": {"upwork": {key: None}}})
+
+    assert response.status_code == 422
+    assert "update_config" not in gateway.calls
+
+
+@pytest.mark.parametrize("value", [0, 201, 2.5])
+def test_config_update_refuses_a_site_limit_out_of_range(client: TestClient, value: float):
+    body = {"version": 4, "sites": {"upwork": {"limit": value}}}
+
+    assert client.put("/api/config", json=body).status_code == 422
+
+
+def test_config_update_sends_an_empty_site_filter(client: TestClient, gateway: FakeGateway):
+    body = {"version": 4, "sites": {"upwork": {"filter": {}}}}
+
+    assert client.put("/api/config", json=body).status_code == 200
+    assert gateway.arguments["update_config"]["patch"] == {"sites": {"upwork": {"filter": {}}}}
 
 
 def test_config_read_lists_job_fields_and_the_always_saved_ones(client: TestClient):
@@ -432,17 +540,36 @@ def test_config_read_defaults_city_options_to_empty_for_an_older_scraper(
 def test_config_read_keeps_site_filter_states_apart(client: TestClient):
     sites = client.get("/api/config").json()["data"]["values"]["sites"]
 
-    assert sites[0]["filter"] == {}
-    assert sites[0]["api"] == {"locations": ["Remote"]}
+    assert sites[0] == {
+        "name": "upwork",
+        "enabled": True,
+        "limit": 30,
+        "max_age_hours": None,
+        "filter": {},
+        "fields": None,
+        "api": {"locations": ["Remote"]},
+    }
     assert sites[1] == {
         "name": "indeed",
         "enabled": True,
-        "limit": None,
-        "max_age_hours": None,
-        "filter": None,
+        "limit": 3,
+        "max_age_hours": 72,
+        "filter": {"location": ["jakarta"]},
         "fields": None,
         "api": None,
     }
+
+
+def test_config_read_gives_an_empty_filter_when_a_site_has_none(
+    client: TestClient, gateway: FakeGateway
+):
+    settings = {**CONFIG["settings"], "sites": {"indeed": {"limit": 3, "url_template": "x"}}}
+    gateway.config = {**CONFIG, "settings": settings}
+
+    site = client.get("/api/config").json()["data"]["values"]["sites"][0]
+
+    assert site["filter"] == {}
+    assert site["max_age_hours"] is None
 
 
 def test_config_read_marks_stale_values_when_mcp_is_down(client: TestClient, gateway: FakeGateway):
@@ -457,9 +584,9 @@ def test_config_update_sends_only_changed_fields(client: TestClient, gateway: Fa
         "/api/config",
         json={
             "version": 4,
-            "limit": 9,
             "sites": {
                 "upwork": {
+                    "limit": 9,
                     "max_age_hours": None,
                     "filter": {"work_type": ["remote"]},
                     "api": {
@@ -476,9 +603,9 @@ def test_config_update_sends_only_changed_fields(client: TestClient, gateway: Fa
     assert response.status_code == 200
     assert gateway.arguments["update_config"] == {
         "patch": {
-            "limit": 9,
             "sites": {
                 "upwork": {
+                    "limit": 9,
                     "max_age_hours": None,
                     "filter": {"work_type": ["remote"]},
                     "api": {
@@ -496,7 +623,7 @@ def test_config_update_sends_only_changed_fields(client: TestClient, gateway: Fa
 
 
 def test_config_update_requires_version(client: TestClient):
-    assert client.put("/api/config", json={"limit": 9}).status_code == 422
+    assert client.put("/api/config", json={"sites": SITE_LIMIT}).status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -520,17 +647,24 @@ def _delay_body(delay: list[float]) -> dict:
     [
         _delay_body([1, 61]),
         _delay_body([61, 62]),
-        {"version": 4, "keywords": ["devops"] * 101},
+        {"version": 4, "default_fields": ["title"] * 101},
     ],
 )
 def test_config_update_refuses_values_over_the_cap(client: TestClient, body: dict):
     assert client.put("/api/config", json=body).status_code == 422
 
 
+def test_config_update_refuses_keywords(client: TestClient, gateway: FakeGateway):
+    response = client.put("/api/config", json={"version": 4, "keywords": ["devops"]})
+
+    assert response.status_code == 422
+    assert "update_config" not in gateway.calls
+
+
 def test_config_update_returns_409_on_conflict(client: TestClient, gateway: FakeGateway):
     gateway.save_result = {"ok": False, "reason": "conflict", "message": "changed"}
 
-    response = client.put("/api/config", json={"version": 4, "limit": 9})
+    response = client.put("/api/config", json={"version": 4, "sites": SITE_LIMIT})
 
     assert response.status_code == 409
     assert response.json()["error"] == "changed"
@@ -539,7 +673,7 @@ def test_config_update_returns_409_on_conflict(client: TestClient, gateway: Fake
 def test_config_update_returns_422_on_invalid_settings(client: TestClient, gateway: FakeGateway):
     gateway.save_result = {"ok": False, "reason": "invalid", "message": "bad filter"}
 
-    response = client.put("/api/config", json={"version": 4, "limit": 9})
+    response = client.put("/api/config", json={"version": 4, "sites": SITE_LIMIT})
 
     assert response.status_code == 422
     assert response.json()["error"] == "bad filter"
@@ -558,13 +692,15 @@ def test_config_restore_endpoint_is_gone(client: TestClient, gateway: FakeGatewa
 
 def test_prod_config_needs_login(prod_client: TestClient):
     assert prod_client.get("/api/config").status_code == 401
-    assert prod_client.put("/api/config", json={"version": 4, "limit": 9}).status_code == 401
+    assert (
+        prod_client.put("/api/config", json={"version": 4, "sites": SITE_LIMIT}).status_code == 401
+    )
 
 
 def test_prod_config_can_be_saved_after_login(prod_client: TestClient, gateway: FakeGateway):
     prod_client.post("/api/auth/login", json={"password": PASSWORD})
 
-    response = prod_client.put("/api/config", json={"version": 4, "limit": 9})
+    response = prod_client.put("/api/config", json={"version": 4, "sites": SITE_LIMIT})
 
     assert response.status_code == 200
     assert "update_config" in gateway.calls
@@ -572,7 +708,7 @@ def test_prod_config_can_be_saved_after_login(prod_client: TestClient, gateway: 
 
 def test_cross_site_write_is_refused(client: TestClient):
     response = client.put(
-        "/api/config", json={"limit": 9}, headers={"sec-fetch-site": "cross-site"}
+        "/api/config", json={"sites": SITE_LIMIT}, headers={"sec-fetch-site": "cross-site"}
     )
 
     assert response.status_code == 403
@@ -630,3 +766,116 @@ def test_favicon_files_are_served_instead_of_index(tmp_path: Path, gateway: Fake
     assert svg.headers["content-type"].startswith("image/svg+xml")
     assert svg.text == "<svg></svg>"
     assert ico.content == b"\x00\x00\x01\x00"
+
+
+def test_read_run_returns_detail_shape(client: TestClient):
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    detail = _read_detail(client, run["id"])
+
+    assert set(detail) == DETAIL_FIELDS
+    assert set(detail["record"]) == RECORD_FIELDS
+    assert [set(job) for job in detail["jobs"]] == [JOB_FIELDS]
+    assert detail["jobs"][0]["title"] == "A"
+    assert detail["jobs"][0]["site"] == "upwork"
+    assert detail["jobs"][0]["matched_keyword"] == "devops"
+    assert detail["failures"] == []
+    assert detail["payloads"] == [
+        {
+            "keyword": "devops",
+            "site": "upwork",
+            "raw": {"jobs": [{"t": "A"}]},
+            "filtered": {"jobs": []},
+        }
+    ]
+
+
+def test_read_run_lists_failures(client: TestClient, gateway: FakeGateway):
+    gateway.scrape_result = {
+        "ok": False,
+        "results": [],
+        "errors": [{"keyword": "devops", "site": "upwork", "reason": "timeout", "attempts": []}],
+    }
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    detail = _read_detail(client, run["id"])
+
+    assert detail["failures"] == [{"keyword": "devops", "site": "upwork", "reason": "timeout"}]
+    assert detail["jobs"] == []
+    assert detail["payloads"] == []
+
+
+def test_running_run_detail_has_empty_lists(client: TestClient, gateway: FakeGateway):
+    gateway.scrape_delay = 0.2
+    run = _run(client)
+
+    detail = _read_detail(client, run["id"])
+
+    assert detail["record"]["status"] == "running"
+    assert (detail["jobs"], detail["failures"], detail["payloads"]) == ([], [], [])
+    _wait_for_finish(client, run["id"])
+
+
+def test_finished_run_is_stored_in_ui_runs(client: TestClient, database: Any):
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    documents = list(database[UI_RUNS_COLLECTION].find())
+
+    assert [document["_id"] for document in documents] == [run["id"]]
+    assert documents[0]["record"]["status"] == "succeeded"
+
+
+def test_latest_without_any_run_is_null(client: TestClient):
+    response = client.get("/api/runs/latest")
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+
+
+def test_latest_returns_the_stored_run(client: TestClient, database: Any):
+    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+
+    data = client.get("/api/runs/latest").json()["data"]
+
+    assert data == {key: STORED_RUN[key] for key in DETAIL_FIELDS}
+
+
+def test_read_stored_run_by_id(client: TestClient, database: Any):
+    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+
+    response = client.get(f"/api/runs/{STORED_RUN['_id']}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["jobs"][0]["title"] == "Stored"
+
+
+def test_latest_returns_the_current_running_run(
+    client: TestClient, gateway: FakeGateway, database: Any
+):
+    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+    gateway.scrape_delay = 0.2
+    run = _run(client)
+
+    data = client.get("/api/runs/latest").json()["data"]
+
+    assert data["record"]["id"] == run["id"]
+    assert data["record"]["status"] == "running"
+    assert (data["jobs"], data["failures"], data["payloads"]) == ([], [], [])
+    _wait_for_finish(client, run["id"])
+
+
+def test_latest_returns_the_finished_current_run(client: TestClient):
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    data = client.get("/api/runs/latest").json()["data"]
+
+    assert data["record"]["id"] == run["id"]
+    assert data["jobs"][0]["title"] == "A"
+
+
+def test_latest_needs_login(guest_client: TestClient):
+    assert guest_client.get("/api/runs/latest").status_code == 401

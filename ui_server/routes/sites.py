@@ -15,7 +15,6 @@ async def read_sites(services: ServicesDep) -> dict[str, Any]:
     read = await services.scraper.read_sites()
     return ok(
         {
-            "keywords": read.value.get("keywords", []),
             "sites": [
                 {"name": site["name"], "enabled": site["enabled"]}
                 for site in read.value.get("sites", [])

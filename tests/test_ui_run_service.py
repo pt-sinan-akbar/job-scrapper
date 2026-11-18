@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import Any
 
+import mongomock
 import pytest
+from pymongo import MongoClient
 
 from ui_server.errors import (
     ConfigInvalidError,
@@ -12,8 +16,10 @@ from ui_server.errors import (
     McpUnavailableError,
     RunInProgressError,
     RunNotFoundError,
+    RunStorageUnavailableError,
 )
 from ui_server.services.run_record import DiscordStatus, RunStatus
+from ui_server.services.run_repository import UI_RUNS_COLLECTION, MongoRunRepository
 from ui_server.services.run_service import RunService
 
 CHANNEL_ID = "123456789012345678"
@@ -95,8 +101,12 @@ def _jobs_result(count: int) -> dict:
     }
 
 
-def _service(scraper: FakeScraper) -> RunService:
-    return RunService(scraper)
+def _database() -> Any:
+    return mongomock.MongoClient()["job_scraper"]
+
+
+def _service(scraper: FakeScraper, database: Any = None) -> RunService:
+    return RunService(scraper, MongoRunRepository(_database() if database is None else database))
 
 
 def test_run_finishes_and_saves_result():
@@ -106,7 +116,7 @@ def test_run_finishes_and_saves_result():
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id).status
+        return service.get(record.id).record.status
 
     assert asyncio.run(scenario()) is RunStatus.SUCCEEDED
 
@@ -135,7 +145,7 @@ def test_new_run_replaces_the_previous_record():
         await service.wait()
         with pytest.raises(RunNotFoundError):
             service.get(first.id)
-        assert service.get(second.id).keywords == ("flask",)
+        assert service.get(second.id).record.keywords == ("flask",)
 
     asyncio.run(scenario())
 
@@ -145,7 +155,7 @@ def test_get_returns_running_record_before_finish():
         scraper = FakeScraper({"ok": True})
         service = _service(scraper)
         record = service.start(("django",), ("upwork",), notify_discord=False)
-        status = service.get(record.id).status
+        status = service.get(record.id).record.status
         scraper.release.set()
         await service.wait()
         return status
@@ -181,7 +191,7 @@ def test_finished_run_counts_jobs_and_errors():
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id)
+        return service.get(record.id).record
 
     record = asyncio.run(scenario())
 
@@ -197,7 +207,7 @@ def test_mcp_failure_marks_run_failed():
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id).error
+        return service.get(record.id).record.error
 
     assert asyncio.run(scenario()) == "MCP down"
 
@@ -209,7 +219,7 @@ def test_unexpected_failure_hides_detail():
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id).error
+        return service.get(record.id).record.error
 
     assert asyncio.run(scenario()) == "The scrape failed."
 
@@ -220,7 +230,7 @@ def _notified_run(scraper: FakeScraper):
         record = service.start(("django",), ("upwork",), notify_discord=True)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id)
+        return service.get(record.id).record
 
     return asyncio.run(scenario())
 
@@ -233,7 +243,7 @@ def test_run_without_notify_never_touches_discord():
         record = service.start(("django",), ("upwork",), notify_discord=False)
         scraper.release.set()
         await service.wait()
-        return service.get(record.id)
+        return service.get(record.id).record
 
     record = asyncio.run(scenario())
 
@@ -489,7 +499,7 @@ def test_run_stays_busy_while_discord_is_sending():
         scraper.release.set()
         for _ in range(20):
             await asyncio.sleep(0)
-        current = service.get(record.id)
+        current = service.get(record.id).record
         is_busy = False
         try:
             service.ensure_idle()
@@ -500,3 +510,252 @@ def test_run_stays_busy_while_discord_is_sending():
         return current.discord_status, is_busy
 
     assert asyncio.run(scenario()) == (DiscordStatus.SENDING, True)
+
+
+def _payload_result() -> dict:
+    return {
+        **_jobs_result(1),
+        "ok": False,
+        "errors": [{"keyword": "django", "site": "glints", "reason": "timeout"}],
+        "raw_results": [{"keyword": "django", "site": "upwork", "payload": {"jobs": [1]}}],
+        "filtered_results": [{"keyword": "django", "site": "upwork", "payload": {"jobs": []}}],
+    }
+
+
+def _finished(scraper: FakeScraper, database: Any, notify_discord: bool = False):
+    async def scenario():
+        service = _service(scraper, database)
+        record = service.start(("django",), ("upwork",), notify_discord=notify_discord)
+        scraper.release.set()
+        await service.wait()
+        return service, record
+
+    return asyncio.run(scenario())
+
+
+def test_running_detail_has_empty_lists():
+    async def scenario():
+        scraper = FakeScraper(_jobs_result(1))
+        service = _service(scraper)
+        record = service.start(("django",), ("upwork",), notify_discord=False)
+        detail = service.get(record.id)
+        scraper.release.set()
+        await service.wait()
+        return detail
+
+    detail = asyncio.run(scenario())
+
+    assert detail.record.status is RunStatus.RUNNING
+    assert (detail.jobs, detail.failures, detail.payloads) == ((), (), ())
+
+
+def test_finished_run_detail_has_jobs_failures_and_payloads():
+    service, record = _finished(FakeScraper(_payload_result()), _database())
+
+    detail = service.get(record.id)
+
+    assert detail.jobs[0]["title"] == "job 0"
+    assert detail.jobs[0]["site"] == "upwork"
+    assert detail.jobs[0]["matched_keyword"] == "django"
+    assert detail.failures == ({"keyword": "django", "site": "glints", "reason": "timeout"},)
+    assert detail.payloads == (
+        {"keyword": "django", "site": "upwork", "raw": {"jobs": [1]}, "filtered": {"jobs": []}},
+    )
+
+
+def test_finished_run_is_saved_to_ui_runs():
+    database = _database()
+
+    service, record = _finished(FakeScraper(_payload_result()), database)
+
+    document = database[UI_RUNS_COLLECTION].find_one({"_id": record.id})
+    assert document["record"]["status"] == "partial"
+    assert document["jobs"][0]["title"] == "job 0"
+    assert document["failures"] == [{"keyword": "django", "site": "glints", "reason": "timeout"}]
+    assert document["payloads"][0]["raw"] == {"jobs": [1]}
+
+
+def test_failed_run_is_saved_with_empty_lists():
+    database = _database()
+
+    _, record = _finished(FakeScraper(McpUnavailableError("MCP down")), database)
+
+    document = database[UI_RUNS_COLLECTION].find_one({"_id": record.id})
+    assert document["record"]["status"] == "failed"
+    assert document["record"]["error"] == "MCP down"
+    assert (document["jobs"], document["failures"], document["payloads"]) == ([], [], [])
+
+
+def test_scrape_runs_collection_is_never_written():
+    database = _database()
+
+    _finished(FakeScraper(_payload_result()), database)
+
+    assert "scrape_runs" not in database.list_collection_names()
+
+
+def test_only_the_latest_run_stays_in_ui_runs():
+    async def scenario(database: Any) -> tuple[str, str]:
+        scraper = FakeScraper(_jobs_result(1))
+        service = _service(scraper, database)
+        scraper.release.set()
+        first = service.start(("django",), ("upwork",), notify_discord=False)
+        await service.wait()
+        second = service.start(("flask",), ("upwork",), notify_discord=False)
+        await service.wait()
+        return first.id, second.id
+
+    database = _database()
+    _, second_id = asyncio.run(scenario(database))
+
+    ids = [document["_id"] for document in database[UI_RUNS_COLLECTION].find()]
+    assert ids == [second_id]
+
+
+def test_discord_status_is_saved_to_the_stored_record():
+    database = _database()
+    scraper = FakeScraper(_jobs_result(2))
+    scraper.send_outcomes = [_delivery(2, 0)]
+
+    _, record = _finished(scraper, database, notify_discord=True)
+
+    stored = database[UI_RUNS_COLLECTION].find_one({"_id": record.id})["record"]
+    assert stored["discord_status"] == "sent"
+    assert (stored["discord_sent"], stored["discord_failed"]) == (2, 0)
+    assert stored["status"] == "succeeded"
+
+
+def test_discord_failure_is_saved_to_the_stored_record():
+    database = _database()
+    scraper = FakeScraper(_jobs_result(1))
+    scraper.settings = {**DISCORD_SETTINGS, "configured": False}
+
+    _, record = _finished(scraper, database, notify_discord=True)
+
+    stored = database[UI_RUNS_COLLECTION].find_one({"_id": record.id})["record"]
+    assert stored["discord_status"] == "failed"
+    assert stored["discord_error"] == "Discord token is not configured."
+
+
+def test_new_service_reads_the_stored_run():
+    database = _database()
+    _, record = _finished(FakeScraper(_payload_result()), database)
+
+    fresh = _service(FakeScraper({"ok": True}), database)
+
+    assert fresh.latest().record.id == record.id
+    assert fresh.get(record.id).jobs[0]["title"] == "job 0"
+
+
+def test_latest_without_any_run_is_none():
+    assert _service(FakeScraper({"ok": True})).latest() is None
+
+
+def test_latest_prefers_the_current_run_over_the_stored_one():
+    async def scenario(database: Any, old_id: str):
+        scraper = FakeScraper(_jobs_result(1))
+        service = _service(scraper, database)
+        record = service.start(("flask",), ("upwork",), notify_discord=False)
+        latest = service.latest()
+        stored = service.get(old_id)
+        scraper.release.set()
+        await service.wait()
+        return record, latest, stored
+
+    database = _database()
+    _, old = _finished(FakeScraper(_jobs_result(1)), database)
+    record, latest, stored = asyncio.run(scenario(database, old.id))
+
+    assert latest.record.id == record.id
+    assert latest.record.status is RunStatus.RUNNING
+    assert stored.record.id == old.id
+
+
+def test_run_works_from_memory_when_mongo_is_down(caplog: pytest.LogCaptureFixture):
+    client: Any = MongoClient("mongodb://127.0.0.1:1", serverSelectionTimeoutMS=50)
+    scraper = FakeScraper(_payload_result())
+    scraper.send_outcomes = [_delivery(1, 0)]
+
+    with caplog.at_level(logging.WARNING, logger="scraper-ui"):
+        service, record = _finished(scraper, client["job_scraper"], notify_discord=True)
+
+    detail = service.get(record.id)
+    assert detail.record.status is RunStatus.PARTIAL
+    assert detail.record.discord_status is DiscordStatus.SENT
+    assert detail.jobs[0]["title"] == "job 0"
+    assert service.latest() == detail
+    assert "ui_runs" in caplog.text
+    with pytest.raises(RunStorageUnavailableError):
+        service.get("20261101T010000Z-abc123")
+
+
+def test_storage_unavailable_error_is_503_with_a_clear_message():
+    error = RunStorageUnavailableError()
+
+    assert error.status_code == 503
+    assert error.message == "Run storage is unavailable."
+
+
+def test_latest_is_none_when_mongo_is_down_and_nothing_is_in_memory():
+    client: Any = MongoClient("mongodb://127.0.0.1:1", serverSelectionTimeoutMS=50)
+
+    assert _service(FakeScraper({"ok": True}), client["job_scraper"]).latest() is None
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"ok": True, "results": [None], "errors": []},
+        {"ok": True, "results": "garbage", "errors": []},
+        {"ok": True, "results": [{"keyword": "django", "sites": [{"jobs": 5}]}], "errors": []},
+        {"ok": True, "results": [], "errors": 7},
+    ],
+)
+def test_malformed_result_fails_the_run_with_the_generic_message(result: dict):
+    async def scenario(database: Any):
+        scraper = FakeScraper(result)
+        service = _service(scraper, database)
+        record = service.start(("django",), ("upwork",), notify_discord=False)
+        scraper.release.set()
+        await service.wait()
+        service.ensure_idle()
+        return service.get(record.id).record
+
+    database = _database()
+    record = asyncio.run(scenario(database))
+
+    assert record.status is RunStatus.FAILED
+    assert record.error == "The scrape failed."
+    assert record.finished_at is not None
+    stored = database[UI_RUNS_COLLECTION].find_one({"_id": record.id})
+    assert stored["record"]["status"] == "failed"
+
+
+def test_malformed_result_still_reports_the_failure_to_discord():
+    scraper = FakeScraper({"ok": True, "results": [None], "errors": []})
+
+    record = _notified_run(scraper)
+
+    assert record.status is RunStatus.FAILED
+    assert record.discord_status is DiscordStatus.SENT
+    assert "The scrape failed." in scraper.sent_messages[0][2]
+
+
+class _BrokenSaveRepository(MongoRunRepository):
+    def save(self, detail: Any) -> None:
+        raise RuntimeError("boom")
+
+
+def test_run_ends_with_a_terminal_status_when_saving_crashes():
+    async def scenario():
+        scraper = FakeScraper(_jobs_result(1))
+        service = RunService(scraper, _BrokenSaveRepository(_database()))
+        service.start(("django",), ("upwork",), notify_discord=False)
+        scraper.release.set()
+        await service.wait()
+        service.ensure_idle()
+        return service.latest()
+
+    detail = asyncio.run(scenario())
+
+    assert detail.record.status is not RunStatus.RUNNING

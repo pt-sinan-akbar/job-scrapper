@@ -124,6 +124,7 @@ class ScraperClient:
             "sites": list(sites),
             "keywords": list(keywords),
             "save_run": False,
+            "include_payloads": True,
         }
         return await self._gateway.call("scrape_jobs", arguments, SCRAPE_TIMEOUT_SECONDS)
 
