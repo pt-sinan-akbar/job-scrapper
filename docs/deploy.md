@@ -101,8 +101,7 @@ Job settings and Discord settings live in Mongo. The rest is baked in:
 | Change Discord per-message cap | Edit max chars in the Discord section of `/config` |
 | Change Discord token or channel | Edit the Discord section of the UI. Stored in Mongo `discord_settings`, no deploy |
 
-Note: `update_config` MCP tool writes go to Mongo and survive deploys. The
-last 20 versions stay in history, see "Version history" in `runbook.md`.
+Note: `update_config` MCP tool writes go to Mongo and survive deploys.
 
 ## Manual rollback
 
@@ -150,7 +149,7 @@ If it boots, the same Dockerfile target will build in CI.
 Start the dev stack and run a scrape from the UI:
 
 ```bash
-./scripts/run_dev.sh          # mcp + ui
+./scripts/run_dev.sh          # mcp + ui, hot reload at http://localhost:5174
 ./scripts/run_dev.sh mcp      # MCP server only
 ```
 

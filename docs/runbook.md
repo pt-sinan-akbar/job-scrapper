@@ -225,10 +225,3 @@ For a higher-level view (resolved sample URLs, enabled list):
 
 When you see these, don't loop blindly. Surface the verbatim `message` to the
 user and ask how to proceed (or whether to drop the offending key).
-
-## Version history
-
-Every save keeps the old version in `job_settings_history`, last 20 kept. To
-roll back, use **Restore** on `/config`, or call `restore_config` with the
-version from `get_config_history`. A restore creates a new version, so it can
-be undone the same way.

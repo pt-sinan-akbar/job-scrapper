@@ -2,8 +2,8 @@
 
 Job settings live in the `job_settings` Mongo collection, one document per
 environment. Edit them at `/config`, or with the `update_config` MCP tool.
-The proxy lives in the `PROXY_URL` env var. Output always goes to `output/`
-(`OUTPUT_DIR` in `scraper/config_loader.py`), which is not a setting.
+The proxy lives in the `PROXY_URL` env var. Results are never written to disk:
+the runner returns them and `scrape_jobs` stores them in Mongo.
 
 `scraper/config_loader.py::parse` validates all of them into an `AppConfig`
 dataclass. A malformed value raises `ConfigError`. A save with a malformed value
@@ -30,8 +30,8 @@ sites: {...}                                   # required, non-empty
 ### `keywords` (required)
 
 List of strings. Each keyword is run against every enabled site, producing
-a `(keyword, site)` cross-product. Output lands under
-`output/<keyword-slug>/<site>.json`.
+a `(keyword, site)` cross-product. Each pair gets its own payload in the
+`RunResult` that `scraper.runner.run` returns.
 
 - Backwards-compatible alias: `keyword: <string>` is accepted and treated as
   a single-element list.
@@ -313,7 +313,6 @@ config = load_app_config(open_store())
 config.keywords           # tuple[str, ...]
 config.limit              # int
 config.concurrency        # int
-config.output_dir         # Path, always output/
 config.default_fields     # tuple[str, ...]
 config.max_age_hours      # int | None
 config.filter             # dict[str, list[str]]

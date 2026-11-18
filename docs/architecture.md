@@ -10,7 +10,7 @@ scraper/                    # CLI + library
 ├── __main__.py             # `python -m scraper [--keyword KW] [sites...]`
 ├── runner.py               # orchestrates (keyword, site) pairs through a thread pool
 ├── config_loader.py        # settings dict → AppConfig dataclass + validation
-├── job_settings.py         # JobSettingsStore: Mongo job settings, versions, history
+├── job_settings.py         # JobSettingsStore: Mongo job settings and versions
 ├── seed_settings.py        # seeds Mongo from seeds/job_settings.yaml
 ├── types.py                # canonical Job TypedDict + CANONICAL_FIELDS
 ├── config.py               # static constants (USER_AGENT, CHALLENGE_MARKERS, etc.)
@@ -31,7 +31,7 @@ scraper/                    # CLI + library
     └── indeed.py
 
 mcp_server/                 # MCP HTTP server
-├── server.py               # FastMCP, tools: list_sites, get_config, update_config, get_config_history, restore_config, get_scrape_status, test_proxy_connection, scrape_jobs
+├── server.py               # FastMCP, tools: list_sites, get_config, update_config, get_scrape_status, test_proxy_connection, scrape_jobs
 ├── discord_tools.py        # Discord tools: settings, test, channels, preview_discord_message, send_discord_message
 └── __init__.py             # (empty)
 ```
@@ -44,11 +44,11 @@ thread with `asyncio.to_thread`, async ones are awaited.
 
 - `GET /api/config`: the job settings plus `location_options`, the same
   `{site: [{label, value}]}` map `get_config` returns.
-- `GET /api/runs/{id}`: the run record plus `payloads`, a list of
-  `{keyword, site, raw, filtered}` (`raw` / `filtered` are `null` when that
-  side was not stored). Pairs from the run's keywords and sites come first,
-  any other stored pair follows. Runs made before payloads were stored return `[]`.
-  The data comes from `scrape_jobs` called with `include_payloads: true`.
+- `POST /api/runs`: starts one run at a time (409 while one is running) and
+  returns its record. UI runs call `scrape_jobs` with `save_run: false`, so
+  nothing is stored.
+- `GET /api/runs/{id}`: the record of the latest run, held in memory only. It
+  is replaced by the next run and lost on restart, and any other id returns 404.
 
 ## Request flow (per scrape run)
 
@@ -78,8 +78,14 @@ runner.run(config, targets, keywords)
    │   ├─ apply_filter()               → drop content-mismatch jobs
    │   └─ project_jobs(fields)         → strip to configured fields
    │
-   └─ write output/<keyword-slug>/<site>.json   (OUTPUT_DIR, fixed)
+   └─ return RunResult(exit_code, results)   results keyed by (keyword, site)
 ```
+
+`run` writes nothing to disk. Each pair gives a `SitePayloads(filtered, raw)`.
+A pair that was skipped or crashed still gets an entry, with an `error` such as
+`skipped: site has no entry in the job settings` or `crashed: RuntimeError`.
+When the selection is invalid (no sites, unknown site, no keywords) `run` returns
+`exit_code=1` and no results.
 
 ## Lifecycle of a Job dict
 
@@ -89,7 +95,7 @@ runner.run(config, targets, keywords)
 3. **Enriched** by the runner: `matched_keyword`, `posted_at` (parsed UTC).
 4. **Filtered** by max-age, then content filter.
 5. **Projected** to the configured fields list — extra keys dropped.
-6. **Serialized** as one entry in the per-site output JSON.
+6. **Returned** as one entry in the per-site payload `jobs` list.
 
 Steps 3 and 4 happen on the in-memory dict before projection, so even
 fields you didn't configure still drive the filter.
@@ -101,8 +107,8 @@ fields you didn't configure still drive the filter.
   when needed — never share the instance across threads.
 - cloudscraper sessions are created per call (not reused), so they're
   thread-safe by virtue of being thread-local.
-- Output writes go to different files (`output/<slug>/<site>.json`) per
-  thread, so no inter-thread file contention.
+- Each worker returns its pair's payloads, and `run` gathers them after the
+  pool finishes, so threads share no output state.
 
 ## URL templating
 
@@ -120,7 +126,11 @@ config load time (`parse()` formats with a sample keyword and rejects
 unknown placeholders) so a bad template fails loudly on startup, not
 mid-scrape.
 
-## Output JSON shape
+## Site payload shape
+
+This is the `filtered` payload for one `(keyword, site)` pair. `scrape_jobs`
+stores it in Mongo as `filtered_results[*].payload`, and `python -m scraper`
+prints the same list on stdout.
 
 ```json
 {
@@ -146,7 +156,16 @@ mid-scrape.
 
 `fields` lists what was actually emitted (post-projection). `count` is
 the post-filter, post-projection count. `jobs[*]` only contains keys that
-were in `fields` (plus the always-on anchors).
+were in `fields` (plus the always-on anchors). Every payload also has
+`source` (`api` or `html`) and `fallback_reason`.
+
+A failed pair has an `error` key instead of `jobs`, for example
+`{"error": "fetch failed", "url": ..., "keyword": ..., "attempts": [...], "source": "html", "fallback_reason": null}`.
+
+The `raw` payload (`raw_results[*].payload` in Mongo) has the same shape
+without `max_age_hours` and `filter`, holds every parsed job before max-age,
+filter and limit, and is `{"keyword", "count": 0, "jobs": [], "error"}` when
+the pair failed.
 
 ## MCP layer relationship
 
@@ -155,7 +174,7 @@ were in `fields` (plus the always-on anchors).
 tool delegates to the same code paths the CLI uses, so MCP behavior
 matches `python -m scraper` exactly.
 
-`update_config` and `restore_config` are the mutating tools. Both validate
+`update_config` is the mutating tool. It validates
 with the same parser (`config_loader.parse`) before writing to Mongo.
 See [`mcp.md`](mcp.md) for tool details.
 

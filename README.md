@@ -264,9 +264,7 @@ Each host's Mongo has its own document, so dev and prod differ without a patch f
 
 `seeds/job_settings.yaml` is only the first version. After seeding, `/config` is the source. `url_template` can change only through the `update_config` MCP tool
 
-The last 20 versions stay in `job_settings_history`, and `/config` can restore any of them
-
-Output always goes to `output/` (`OUTPUT_DIR` in `scraper/config_loader.py`). It is not a setting
+Nothing is written to disk. `scrape_jobs` gets each site's results straight from the runner and stores them in Mongo
 
 > **Note on the bot schedule:** `/config` shows a bot schedule field. It is
 > display-only and turned off. Scheduled runs come from a separate service outside
@@ -285,7 +283,7 @@ Pipeline in `run_one` (`scraper/runner.py`):
 3. Drop jobs older than `max_age_hours`
 4. **`apply_filter`** — drop jobs not matching `filter:` criteria
 5. Fetch detail pages — only for jobs that survived step 4
-6. Write output JSON
+6. Return the site's payload to the caller
 
 `apply_filter` (`scraper/sites/_filter.py`) does case-insensitive substring
 matching per field. `location: [jakarta, tangerang]` keeps a job if
@@ -307,6 +305,13 @@ no Discord post):
 
 # Or directly:
 docker exec job-scraper-mcp python -m scraper
+```
+
+The CLI prints every site's filtered payload as JSON on stdout, so it pipes into `jq`.
+Logs go to stderr
+
+```bash
+docker exec job-scraper-mcp python -m scraper jobstreet | jq '.[].payload.count'
 ```
 
 # Query MongoDB data
@@ -384,12 +389,12 @@ The full MCP tool list is in [docs/mcp.md](docs/mcp.md). Quick checks from the T
 
 # Scraper UI
 
-Web control panel for this repo: run scrapes, see results, edit config, and watch
-live logs. It does not depend on the job-agent frontend or backend.
+Web control panel for this repo: run scrapes, see results, and edit config.
+It does not depend on the job-agent frontend or backend.
 
 Start it in dev with Vue hot reload, then open http://localhost:5174:
 
-    ./scripts/run_dev.sh ui
+    ./scripts/run_dev.sh
 
 This starts `scraper-mcp` and `scraper-ui` in Docker, then runs the Vite dev server in
 the foreground. Ctrl+C stops Vite only, the containers keep running.
@@ -397,7 +402,6 @@ http://127.0.0.1:8090 serves the UI baked into the image, so it only changes aft
 
 - Runs go through `scraper-mcp`, one at a time, with no stop button
 - A run with **Notify Discord** on posts its jobs to Discord, using the Discord settings saved in the UI
-- Each run is saved to `output/ui-runs/<run_id>/`, last 50 kept, and never to Mongo
 - Config saves go through `scraper-mcp` into Mongo. Saving is off while a scrape runs, because MCP is busy then
 - Prod is public through Caddy with one password
 - Compose needs the external `job-net` network. The scripts in `scripts/` create it.

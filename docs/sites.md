@@ -123,7 +123,7 @@ data).
 | linkedin  | `GET linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search` (`location`, `f_TPR` from `max_age_hours`, `start` paging) | HTML via `url_template` | 10 jobs per page; returns 429 when called quickly; no detail API, so detail stays on the job-page fetch |
 
 Each run records the source used per site (`api` or `html`) and the fallback
-reason in the output and run metadata.
+reason in the site payload and run metadata.
 
 ## Anti-bot considerations
 
