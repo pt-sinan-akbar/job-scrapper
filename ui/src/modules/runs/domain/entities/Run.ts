@@ -18,13 +18,48 @@ export interface RunRecord {
   discordError: string | null
 }
 
+export interface RunJob {
+  site: string | null
+  matchedKeyword: string | null
+  title: string | null
+  company: string | null
+  location: string | null
+  url: string | null
+  postedAt: string | null
+}
+
+export interface RunFailure {
+  keyword: string
+  site: string
+  reason: string | null
+}
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject
+
+export interface JsonObject {
+  [key: string]: JsonValue
+}
+
+export interface RunPayload {
+  keyword: string
+  site: string
+  raw: JsonValue
+  filtered: JsonValue
+}
+
+export interface RunDetail {
+  record: RunRecord
+  jobs: RunJob[]
+  failures: RunFailure[]
+  payloads: RunPayload[]
+}
+
 export interface SiteOption {
   name: string
   isEnabled: boolean
 }
 
 export interface RunOptions {
-  keywords: string[]
   sites: SiteOption[]
   isStale: boolean
 }

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   EMPTY_FILTER,
+  DELAY_SECONDS_MAX,
+  findSiteIssue,
   hasConfigChanges,
+  MAX_AGE_HOURS_MAX,
+  SITE_LIMIT_MAX,
   toConfigChanges,
   toDelaySeconds,
   toJobFieldLabel,
-  toOptionalNumber,
+  type ApiSetting,
   type ConfigValues,
   type SiteSetting,
 } from '@/modules/config/domain/entities/ScraperConfig'
@@ -14,18 +18,19 @@ const SITE: SiteSetting = {
   name: 'upwork',
   isEnabled: true,
   limit: 30,
-  maxAgeHours: null,
+  maxAgeHours: 72,
   filter: EMPTY_FILTER,
   fields: null,
-  api: { isEnabled: true, locations: ['Remote'], isCountryWide: false, delaySeconds: null },
+  api: {
+    isEnabled: true,
+    locations: ['Remote'],
+    isCountryWide: false,
+    delayMin: null,
+    delayMax: null,
+  },
 }
 
 const ORIGINAL: ConfigValues = {
-  keywords: ['django'],
-  limit: 3,
-  concurrency: 2,
-  maxAgeHours: 72,
-  filter: { ...EMPTY_FILTER, location: ['jakarta'] },
   defaultFields: ['title'],
   sites: [SITE],
 }
@@ -34,19 +39,13 @@ function withSite(changes: Partial<SiteSetting>): ConfigValues {
   return { ...ORIGINAL, sites: [{ ...SITE, ...changes }] }
 }
 
+function withApi(changes: Partial<ApiSetting>): ConfigValues {
+  return withSite({ api: { ...SITE.api!, ...changes } })
+}
+
 describe('toConfigChanges', () => {
   it('sends nothing when nothing changed', () => {
     expect(hasConfigChanges(toConfigChanges(ORIGINAL, ORIGINAL))).toBe(false)
-  })
-
-  it('sends only the changed field', () => {
-    expect(toConfigChanges({ ...ORIGINAL, limit: 9 }, ORIGINAL)).toEqual({ limit: 9 })
-  })
-
-  it('sends a changed filter whole', () => {
-    const filter = { ...EMPTY_FILTER, workType: ['remote'] }
-
-    expect(toConfigChanges({ ...ORIGINAL, filter }, ORIGINAL)).toEqual({ filter })
   })
 
   it('sends changed default fields', () => {
@@ -61,53 +60,147 @@ describe('toConfigChanges', () => {
     })
   })
 
-  it('sends null when a site goes back to the global value', () => {
-    expect(toConfigChanges(withSite({ limit: null, filter: null }), ORIGINAL)).toEqual({
-      sites: { upwork: { limit: null, filter: null } },
+  it('sends a changed site limit', () => {
+    expect(toConfigChanges(withSite({ limit: 9 }), ORIGINAL)).toEqual({
+      sites: { upwork: { limit: 9 } },
+    })
+  })
+
+  it('never sends an emptied site limit', () => {
+    expect(toConfigChanges(withSite({ limit: null }), ORIGINAL)).toEqual({})
+  })
+
+  it('sends null when the site max age is emptied, for no age cut', () => {
+    expect(toConfigChanges(withSite({ maxAgeHours: null }), ORIGINAL)).toEqual({
+      sites: { upwork: { maxAgeHours: null } },
+    })
+  })
+
+  it('sends a changed site filter whole', () => {
+    const filter = { ...EMPTY_FILTER, workType: ['remote'] }
+
+    expect(toConfigChanges(withSite({ filter }), ORIGINAL)).toEqual({
+      sites: { upwork: { filter } },
+    })
+  })
+
+  it('sends an emptied site filter as empty lists, never null', () => {
+    const original = withSite({ filter: { ...EMPTY_FILTER, location: ['jakarta'] } })
+
+    expect(toConfigChanges(withSite({ filter: EMPTY_FILTER }), original)).toEqual({
+      sites: { upwork: { filter: EMPTY_FILTER } },
     })
   })
 
   it('sends a changed api block whole', () => {
-    const api = { ...SITE.api!, delaySeconds: [4, 6] as [number, number] }
+    const api = { ...SITE.api!, delayMin: 4, delayMax: 6 }
 
     expect(toConfigChanges(withSite({ api }), ORIGINAL)).toEqual({
       sites: { upwork: { api } },
     })
   })
 
-  it('sends a changed concurrency', () => {
-    expect(toConfigChanges({ ...ORIGINAL, concurrency: 4 }, ORIGINAL)).toEqual({ concurrency: 4 })
-  })
+  it('has no global job settings', () => {
+    const changes = toConfigChanges(
+      { ...withSite({ limit: 9 }), defaultFields: ['title', 'url'] },
+      ORIGINAL,
+    )
 
-  it('leaves out emptied global numbers', () => {
-    expect(
-      toConfigChanges({ ...ORIGINAL, limit: null, maxAgeHours: null, concurrency: null }, ORIGINAL),
-    ).toEqual({})
+    expect(Object.keys(changes).sort()).toEqual(['defaultFields', 'sites'])
   })
 })
 
-describe('toOptionalNumber', () => {
-  it('turns input text into a number', () => {
-    expect(toOptionalNumber('12')).toBe(12)
+describe('findSiteIssue', () => {
+  it('finds nothing when every site is valid', () => {
+    expect(findSiteIssue(ORIGINAL)).toBeUndefined()
   })
 
-  it('turns empty input into null', () => {
-    expect(toOptionalNumber('')).toBeNull()
+  it.each([null, 0, SITE_LIMIT_MAX + 1, 2.5])('finds the site with limit %s', (limit) => {
+    expect(findSiteIssue(withSite({ limit }))).toEqual({
+      siteName: 'upwork',
+      field: 'limit',
+      message: 'Set a limit from 1 to 200 for upwork',
+    })
+  })
+
+  it('accepts the highest limit', () => {
+    expect(findSiteIssue(withSite({ limit: SITE_LIMIT_MAX }))).toBeUndefined()
+  })
+
+  it.each([0, MAX_AGE_HOURS_MAX + 1, 2.5, -3])('finds the site with max age %s', (maxAgeHours) => {
+    expect(findSiteIssue(withSite({ maxAgeHours }))).toEqual({
+      siteName: 'upwork',
+      field: 'maxAgeHours',
+      message: 'Set a max job age from 1 to 720 hours for upwork, or leave it empty',
+    })
+  })
+
+  it.each([null, 1, MAX_AGE_HOURS_MAX])('accepts max age %s', (maxAgeHours) => {
+    expect(findSiteIssue(withSite({ maxAgeHours }))).toBeUndefined()
+  })
+
+  it('checks every site, not only the first one', () => {
+    const values: ConfigValues = {
+      ...ORIGINAL,
+      sites: [SITE, { ...SITE, name: 'indeed', maxAgeHours: 0 }],
+    }
+
+    expect(findSiteIssue(values)?.siteName).toBe('indeed')
+  })
+
+  it.each<[number | null, number | null]>([
+    [null, null],
+    [0, 0],
+    [0, DELAY_SECONDS_MAX],
+    [2.5, 4],
+  ])('accepts delay %s to %s', (delayMin, delayMax) => {
+    expect(findSiteIssue(withApi({ delayMin, delayMax }))).toBeUndefined()
+  })
+
+  it.each<[number | null, number | null, 'delayMin' | 'delayMax']>([
+    [null, 4, 'delayMin'],
+    [4, null, 'delayMax'],
+  ])('asks for both delay values when only one is set (%s, %s)', (delayMin, delayMax, field) => {
+    expect(findSiteIssue(withApi({ delayMin, delayMax }))).toEqual({
+      siteName: 'upwork',
+      field,
+      message: 'Set both delay values for upwork',
+    })
+  })
+
+  it.each<[number, number, 'delayMin' | 'delayMax']>([
+    [-1, 4, 'delayMin'],
+    [1, DELAY_SECONDS_MAX + 1, 'delayMax'],
+  ])('finds a delay out of range (%s, %s)', (delayMin, delayMax, field) => {
+    expect(findSiteIssue(withApi({ delayMin, delayMax }))).toEqual({
+      siteName: 'upwork',
+      field,
+      message: 'Set delays from 0 to 60 seconds for upwork',
+    })
+  })
+
+  it('finds a min delay above the max delay', () => {
+    expect(findSiteIssue(withApi({ delayMin: 8, delayMax: 3 }))).toEqual({
+      siteName: 'upwork',
+      field: 'delayMin',
+      message: 'Set a min delay no higher than the max delay for upwork',
+    })
+  })
+
+  it('ignores delays on a site without an API', () => {
+    expect(findSiteIssue(withSite({ api: null }))).toBeUndefined()
   })
 })
 
 describe('toDelaySeconds', () => {
-  it('keeps both values', () => {
+  it('builds the pair from both values', () => {
     expect(toDelaySeconds(4, 6)).toEqual([4, 6])
   })
 
-  it('turns two empty values into null', () => {
+  it('has no pair when a value is empty', () => {
     expect(toDelaySeconds(null, null)).toBeNull()
-  })
-
-  it('fills a missing value from the other one', () => {
-    expect(toDelaySeconds(4, null)).toEqual([4, 4])
-    expect(toDelaySeconds(null, 6)).toEqual([6, 6])
+    expect(toDelaySeconds(4, null)).toBeNull()
+    expect(toDelaySeconds(null, 6)).toBeNull()
   })
 })
 

@@ -14,6 +14,7 @@ const login = { execute: vi.fn() }
 const logout = { execute: vi.fn() }
 const getOptions = { execute: vi.fn() }
 const getRun = { execute: vi.fn() }
+const getLatestRun = { execute: vi.fn() }
 const startRun = { execute: vi.fn() }
 
 const RUNNING: RunRecord = {
@@ -61,10 +62,10 @@ describe('useSignOut', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     setActivePinia(createPinia())
     provideAuthUseCases({ getSession, login, logout })
-    provideRunUseCases({ getOptions, getRun, startRun })
+    provideRunUseCases({ getOptions, getRun, getLatestRun, startRun })
     logout.execute.mockResolvedValue(undefined)
     startRun.execute.mockResolvedValue(RUNNING)
-    getRun.execute.mockResolvedValue(RUNNING)
+    getRun.execute.mockResolvedValue({ record: RUNNING, jobs: [], failures: [], payloads: [] })
   })
 
   afterEach(() => {
@@ -85,6 +86,25 @@ describe('useSignOut', () => {
     expect(getRun.execute).not.toHaveBeenCalled()
     expect(runs.isRunning).toBe(false)
     expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it('clears the latest run shown in Results', async () => {
+    getLatestRun.execute.mockResolvedValue({
+      record: { ...RUNNING, status: 'succeeded' },
+      jobs: [],
+      failures: [],
+      payloads: [],
+    })
+    const router = createTestRouter()
+    const signOut = await mountSignOut(router)
+    const runs = useRunStore()
+    await runs.loadLatest()
+
+    await signOut()
+    await flushPromises()
+
+    expect(runs.latestRun).toBeNull()
+    expect(runs.latestStatus).toBe('idle')
   })
 
   it('keeps following the run when the sign out fails', async () => {

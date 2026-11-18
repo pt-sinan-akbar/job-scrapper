@@ -5,22 +5,26 @@ import { nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { createMemoryStorage } from '@/__tests__/memoryStorage'
-import { EMPTY_FILTER, type ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
+import type { ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 import type { DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
-import type { RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunDetail, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import RunsPage from '@/modules/runs/presentation/pages/RunsPage.vue'
 import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
-import { POLL_INTERVAL_MS, useRunStore } from '@/modules/runs/presentation/stores/useRunStore'
+import {
+  MAX_POLL_FAILURES,
+  POLL_INTERVAL_MS,
+  useRunStore,
+} from '@/modules/runs/presentation/stores/useRunStore'
 
 const getSettings = { execute: vi.fn() }
 const getOptions = { execute: vi.fn() }
 const getRun = { execute: vi.fn() }
+const getLatestRun = { execute: vi.fn() }
 const startRun = { execute: vi.fn() }
 
 const OPTIONS: RunOptions = {
-  keywords: ['django'],
   sites: [{ name: 'upwork', isEnabled: true }],
   isStale: false,
 }
@@ -41,6 +45,41 @@ const RUN: RunRecord = {
   discordError: null,
 }
 
+function detailOf(record: RunRecord, overrides: Partial<RunDetail> = {}): RunDetail {
+  return { record, jobs: [], failures: [], payloads: [], ...overrides }
+}
+
+const LATEST: RunDetail = detailOf(
+  { ...RUN, id: 'run-0', keywords: ['vue'], sites: ['indeed'] },
+  {
+    jobs: [
+      {
+        site: 'indeed',
+        matchedKeyword: 'vue',
+        title: 'Vue dev',
+        company: 'Acme',
+        location: 'Remote',
+        url: 'https://example.com/vue',
+        postedAt: null,
+      },
+    ],
+  },
+)
+
+const FINISHED: RunDetail = detailOf(RUN, {
+  jobs: [
+    {
+      site: 'upwork',
+      matchedKeyword: 'django',
+      title: 'Django dev',
+      company: 'Beta',
+      location: null,
+      url: 'https://example.com/django',
+      postedAt: null,
+    },
+  ],
+})
+
 const SETTINGS: DiscordSettings = {
   isConfigured: true,
   tokenHint: '••••1234',
@@ -53,11 +92,6 @@ const SETTINGS: DiscordSettings = {
 
 const CONFIG_SNAPSHOT: ConfigSnapshot = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    concurrency: 2,
-    maxAgeHours: 72,
-    filter: EMPTY_FILTER,
     defaultFields: ['title'],
     sites: [],
   },
@@ -113,7 +147,7 @@ async function startWith(wrapper: Wrapper): Promise<void> {
 describe('RunsPage', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    provideRunUseCases({ getOptions, getRun, startRun })
+    provideRunUseCases({ getOptions, getRun, getLatestRun, startRun })
     provideDiscordUseCases({
       getSettings,
       saveSettings: { execute: vi.fn() },
@@ -123,6 +157,7 @@ describe('RunsPage', () => {
       sendMessage: { execute: vi.fn() },
     })
     getSettings.execute.mockResolvedValue(SETTINGS)
+    getLatestRun.execute.mockResolvedValue(null)
     vi.stubGlobal('localStorage', createMemoryStorage())
   })
 
@@ -185,7 +220,7 @@ describe('RunsPage', () => {
     expect(keywordInput(wrapper).value).toBe('')
   })
 
-  it('shows only Start a run with Config right below it', async () => {
+  it('hides Results when there has been no run yet', async () => {
     getOptions.execute.mockResolvedValue(OPTIONS)
     const wrapper = await mountPage()
     await flushPromises()
@@ -196,12 +231,80 @@ describe('RunsPage', () => {
     expect(wrapper.find('[role="log"]').exists()).toBe(false)
   })
 
-  it('gives the config card the config anchor', async () => {
+  it('shows Results for the latest run between Start a run and Config', async () => {
     getOptions.execute.mockResolvedValue(OPTIONS)
+    getLatestRun.execute.mockResolvedValue(LATEST)
     const wrapper = await mountPage()
     await flushPromises()
 
-    expect(wrapper.findAll('section')[1]!.attributes('id')).toBe('config')
+    const headings = wrapper.findAll('section h3').map((heading) => heading.text())
+
+    expect(headings).toEqual(['Start a run', 'Results', 'Config'])
+    expect(getLatestRun.execute).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('Vue dev')
+  })
+
+  it('shows a skeleton in Results while the latest run loads', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    const latest = deferred<RunDetail | null>()
+    getLatestRun.execute.mockReturnValue(latest.promise)
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    const skeleton = wrapper.get('[data-slot="results-skeleton"]')
+    expect(skeleton.attributes('role')).toBe('status')
+    expect(skeleton.attributes('aria-busy')).toBe('true')
+    expect(skeleton.findAll('[data-slot="skeleton"]').length).toBeGreaterThan(0)
+
+    latest.resolve(LATEST)
+    await flushPromises()
+
+    expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Vue dev')
+  })
+
+  it('drops Results once the latest load finds no run', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    const latest = deferred<RunDetail | null>()
+    getLatestRun.execute.mockReturnValue(latest.promise)
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    latest.resolve(null)
+    await flushPromises()
+
+    expect(wrapper.findAll('section h3').map((heading) => heading.text())).toEqual([
+      'Start a run',
+      'Config',
+    ])
+  })
+
+  it('says so in Results when the latest run cannot be loaded and retries', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    getLatestRun.execute.mockRejectedValueOnce(new Error('Scraper down')).mockResolvedValue(LATEST)
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    const alert = wrapper.get('[data-slot="results-error"]')
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('Scraper down')
+
+    await alert.get('button').trigger('click')
+    await flushPromises()
+
+    expect(getLatestRun.execute).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('Vue dev')
+  })
+
+  it('gives the config card the config anchor', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    getLatestRun.execute.mockResolvedValue(LATEST)
+    const wrapper = await mountPage()
+    await flushPromises()
+
+    const sections = wrapper.findAll('section')
+
+    expect(sections[sections.length - 1]!.attributes('id')).toBe('config')
   })
 
   it('blocks Run scrape while the config has unsaved changes', async () => {
@@ -212,7 +315,7 @@ describe('RunsPage', () => {
 
     const config = useConfigStore()
     config.snapshot = CONFIG_SNAPSHOT
-    config.values = { ...structuredClone(CONFIG_SNAPSHOT.values), limit: 9 }
+    config.values = { ...structuredClone(CONFIG_SNAPSHOT.values), defaultFields: ['url'] }
     await nextTick()
 
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
@@ -232,7 +335,9 @@ describe('RunsPage', () => {
     })
 
     it('locks the start button while the run is active', async () => {
-      getRun.execute.mockResolvedValueOnce({ ...RUN, status: 'running' }).mockResolvedValue(RUN)
+      getRun.execute
+        .mockResolvedValueOnce(detailOf({ ...RUN, status: 'running' }))
+        .mockResolvedValue(detailOf(RUN))
       const wrapper = await mountPage()
       await flushPromises()
 
@@ -247,24 +352,56 @@ describe('RunsPage', () => {
       expect(wrapper.get('button[type="submit"]').text()).toContain('Run scrape')
     })
 
-    it('shows no inline status block for the run', async () => {
-      getRun.execute.mockResolvedValue(RUN)
+    it('shows a skeleton in Results while the run is processing', async () => {
+      getLatestRun.execute.mockResolvedValue(LATEST)
+      getRun.execute.mockResolvedValue(detailOf({ ...RUN, status: 'running' }))
+      const wrapper = await mountPage()
+      await flushPromises()
+
+      await startWith(wrapper)
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+      expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Loading results')
+      expect(wrapper.text()).not.toContain('Vue dev')
+    })
+
+    it('shows the detail of the run once it ends', async () => {
+      getRun.execute
+        .mockResolvedValueOnce(detailOf({ ...RUN, status: 'running' }))
+        .mockResolvedValue(FINISHED)
+      const wrapper = await mountPage()
+      await flushPromises()
+      await startWith(wrapper)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
+
+      expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('Django dev')
+      expect(wrapper.findAll('section h3').map((heading) => heading.text())).toEqual([
+        'Start a run',
+        'Results',
+        'Config',
+      ])
+    })
+
+    it('shows no history or live log block for the run', async () => {
+      getRun.execute.mockResolvedValue(detailOf(RUN))
       const wrapper = await mountPage()
       await flushPromises()
       await startWith(wrapper)
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
 
-      expect(wrapper.text()).not.toContain('Results')
       expect(wrapper.text()).not.toContain('History')
-      expect(wrapper.text()).not.toContain('4 jobs')
+      expect(wrapper.find('[role="log"]').exists()).toBe(false)
     })
 
     it('keeps polling after the user leaves the Runs page', async () => {
       getRun.execute
-        .mockResolvedValueOnce({ ...RUN, status: 'running' })
-        .mockResolvedValueOnce({ ...RUN, status: 'running' })
-        .mockResolvedValueOnce(RUN)
+        .mockResolvedValueOnce(detailOf({ ...RUN, status: 'running' }))
+        .mockResolvedValueOnce(detailOf({ ...RUN, status: 'running' }))
+        .mockResolvedValueOnce(detailOf(RUN))
       const wrapper = await mountPage()
       await flushPromises()
       await startWith(wrapper)
@@ -278,8 +415,42 @@ describe('RunsPage', () => {
       expect(store.runOutcome?.status).toBe('succeeded')
     })
 
+    it('follows a run that is still going after a reload until it ends', async () => {
+      getLatestRun.execute.mockResolvedValue(detailOf({ ...RUN, status: 'running' }))
+      getRun.execute
+        .mockResolvedValueOnce(detailOf({ ...RUN, status: 'running' }))
+        .mockResolvedValue(FINISHED)
+      const wrapper = await mountPage()
+      await flushPromises()
+
+      expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(true)
+      expect(wrapper.get('button[type="submit"]').text()).toContain('Scrape running')
+      expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
+
+      expect(getRun.execute).toHaveBeenCalledWith('run-1')
+      expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('Django dev')
+      expect(wrapper.get('button[type="submit"]').text()).toContain('Run scrape')
+      expect(useRunStore().runOutcome?.status).toBe('succeeded')
+    })
+
+    it('says the run was lost instead of showing the older results', async () => {
+      getLatestRun.execute.mockResolvedValue(LATEST)
+      getRun.execute.mockRejectedValue(new Error('timeout'))
+      const wrapper = await mountPage()
+      await flushPromises()
+      await startWith(wrapper)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * MAX_POLL_FAILURES)
+
+      expect(wrapper.get('[data-slot="results-lost"]').text()).toContain('Lost track of this run')
+      expect(wrapper.text()).not.toContain('Vue dev')
+    })
+
     it('does not start a second poll loop when the page mounts again', async () => {
-      getRun.execute.mockResolvedValue({ ...RUN, status: 'running' })
+      getRun.execute.mockResolvedValue(detailOf({ ...RUN, status: 'running' }))
       const wrapper = await mountPage()
       await flushPromises()
       await startWith(wrapper)

@@ -1,8 +1,13 @@
 import type { HttpClient } from '@/core/http/httpClient'
-import type { RunOptionsModel, RunRecordModel } from '@/modules/runs/data/models/RunModel'
+import type {
+  RunDetailModel,
+  RunOptionsModel,
+  RunRecordModel,
+} from '@/modules/runs/data/models/RunModel'
 
 const SITES_PATH = '/sites'
 const RUNS_PATH = '/runs'
+const LATEST_RUN_PATH = '/runs/latest'
 
 export class RunRemoteDataSource {
   private readonly client: HttpClient
@@ -15,8 +20,12 @@ export class RunRemoteDataSource {
     return this.client.get<RunOptionsModel>(SITES_PATH)
   }
 
-  getRun(id: string): Promise<RunRecordModel> {
-    return this.client.get<RunRecordModel>(`${RUNS_PATH}/${encodeURIComponent(id)}`)
+  getRun(id: string): Promise<RunDetailModel> {
+    return this.client.get<RunDetailModel>(`${RUNS_PATH}/${encodeURIComponent(id)}`)
+  }
+
+  getLatestRun(): Promise<RunDetailModel | null> {
+    return this.client.get<RunDetailModel | null>(LATEST_RUN_PATH)
   }
 
   startRun(keywords: string[], sites: string[], notifyDiscord: boolean): Promise<RunRecordModel> {

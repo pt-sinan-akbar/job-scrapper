@@ -7,10 +7,6 @@ import {
 
 const MODEL: ConfigModel = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    max_age_hours: 72,
-    filter: { location: ['jakarta'] },
     default_fields: ['title'],
     sites: [
       {
@@ -25,9 +21,9 @@ const MODEL: ConfigModel = {
       {
         name: 'indeed',
         enabled: false,
-        limit: null,
+        limit: 10,
         max_age_hours: 24,
-        filter: null,
+        filter: { location: ['jakarta'] },
         fields: ['title'],
         api: null,
       },
@@ -42,25 +38,31 @@ const MODEL: ConfigModel = {
 }
 
 describe('toConfigSnapshot', () => {
-  it('maps API names and fills filter lists', () => {
+  it('maps API names', () => {
     const snapshot = toConfigSnapshot(MODEL)
 
     expect(snapshot.version).toBe(4)
     expect(snapshot.updatedBy).toBe('ui')
-    expect(snapshot.values.filter).toEqual({
-      location: ['jakarta'],
-      employmentType: [],
-      workType: [],
-    })
     expect(snapshot.values.defaultFields).toEqual(['title'])
   })
 
-  it('reads concurrency, or null when the settings have none', () => {
-    expect(toConfigSnapshot(MODEL).values.concurrency).toBeNull()
-    expect(
-      toConfigSnapshot({ ...MODEL, values: { ...MODEL.values, concurrency: 3 } }).values
-        .concurrency,
-    ).toBe(3)
+  it('has no global job settings and no keywords', () => {
+    expect(Object.keys(toConfigSnapshot(MODEL).values).sort()).toEqual(['defaultFields', 'sites'])
+  })
+
+  it('ignores keywords from an older API response', () => {
+    const model = { ...MODEL, values: { ...MODEL.values, keywords: ['django'] } } as ConfigModel
+
+    expect(toConfigSnapshot(model).values).not.toHaveProperty('keywords')
+  })
+
+  it('reads the limit and max age of each site', () => {
+    const [upwork, indeed] = toConfigSnapshot(MODEL).values.sites
+
+    expect(upwork?.limit).toBe(30)
+    expect(upwork?.maxAgeHours).toBeNull()
+    expect(indeed?.limit).toBe(10)
+    expect(indeed?.maxAgeHours).toBe(24)
   })
 
   it('lists the job fields and the always-saved ones', () => {
@@ -93,11 +95,11 @@ describe('toConfigSnapshot', () => {
     expect(upwork?.fields).toBeNull()
   })
 
-  it('keeps no filter apart from the global filter', () => {
+  it('always gives each site a filter with every list filled', () => {
     const [upwork, indeed] = toConfigSnapshot(MODEL).values.sites
 
     expect(upwork?.filter).toEqual({ location: [], employmentType: [], workType: [] })
-    expect(indeed?.filter).toBeNull()
+    expect(indeed?.filter).toEqual({ location: ['jakarta'], employmentType: [], workType: [] })
   })
 
   it('fills api defaults', () => {
@@ -107,9 +109,26 @@ describe('toConfigSnapshot', () => {
       isEnabled: true,
       locations: ['Remote'],
       isCountryWide: false,
-      delaySeconds: null,
+      delayMin: null,
+      delayMax: null,
     })
     expect(indeed?.api).toBeNull()
+  })
+
+  it('splits the saved delay into a min and a max value', () => {
+    const model: ConfigModel = {
+      ...MODEL,
+      values: {
+        ...MODEL.values,
+        sites: MODEL.values.sites.map((site) =>
+          site.api === null ? site : { ...site, api: { ...site.api, delay_seconds: [2, 5] } },
+        ),
+      },
+    }
+    const [upwork] = toConfigSnapshot(model).values.sites
+
+    expect(upwork?.api?.delayMin).toBe(2)
+    expect(upwork?.api?.delayMax).toBe(5)
   })
 })
 
@@ -167,52 +186,71 @@ describe('toConfigSnapshot location options', () => {
 describe('toConfigChangesModel', () => {
   it('maps changed fields to API names', () => {
     const model = toConfigChangesModel({
-      maxAgeHours: 24,
       defaultFields: ['title'],
       sites: {
         upwork: {
           isEnabled: false,
+          limit: 20,
           maxAgeHours: null,
           filter: { location: [], employmentType: ['contract'], workType: [] },
           api: {
             isEnabled: true,
             locations: ['Remote'],
             isCountryWide: true,
-            delaySeconds: [4, 6],
+            delayMin: 4,
+            delayMax: 6,
           },
         },
       },
     })
 
     expect(model).toEqual({
-      max_age_hours: 24,
       default_fields: ['title'],
       sites: {
         upwork: {
           enabled: false,
+          limit: 20,
           max_age_hours: null,
-          filter: { employment_type: ['contract'] },
+          filter: { location: [], employment_type: ['contract'], work_type: [] },
           api: { enabled: true, locations: ['Remote'], country_wide: true, delay_seconds: [4, 6] },
         },
       },
     })
   })
 
-  it('keeps null for a site that goes back to the global filter', () => {
-    expect(toConfigChangesModel({ sites: { upwork: { filter: null } } })).toEqual({
-      sites: { upwork: { filter: null } },
+  it('sends no delay when both delay values are empty', () => {
+    const model = toConfigChangesModel({
+      sites: {
+        upwork: {
+          api: {
+            isEnabled: true,
+            locations: [],
+            isCountryWide: true,
+            delayMin: null,
+            delayMax: null,
+          },
+        },
+      },
     })
+
+    expect(model.sites?.upwork?.api?.delay_seconds).toBeNull()
   })
 
-  it('sends an empty filter for no filter', () => {
+  it('sends empty lists for no filter', () => {
     const filter = { location: [], employmentType: [], workType: [] }
 
     expect(toConfigChangesModel({ sites: { upwork: { filter } } })).toEqual({
-      sites: { upwork: { filter: {} } },
+      sites: { upwork: { filter: { location: [], employment_type: [], work_type: [] } } },
+    })
+  })
+
+  it('keeps null for a site that goes back to the default job fields', () => {
+    expect(toConfigChangesModel({ sites: { upwork: { fields: null } } })).toEqual({
+      sites: { upwork: { fields: null } },
     })
   })
 
   it('leaves out fields that did not change', () => {
-    expect(toConfigChangesModel({ limit: 9 })).toEqual({ limit: 9 })
+    expect(toConfigChangesModel({ defaultFields: ['url'] })).toEqual({ default_fields: ['url'] })
   })
 })

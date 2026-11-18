@@ -7,7 +7,7 @@ import type {
   SiteChanges,
   SiteSetting,
 } from '@/modules/config/domain/entities/ScraperConfig'
-import { toPickedFields } from '@/modules/config/domain/entities/ScraperConfig'
+import { toDelaySeconds, toPickedFields } from '@/modules/config/domain/entities/ScraperConfig'
 
 export interface FilterModel {
   location?: string[]
@@ -25,9 +25,9 @@ export interface ApiModel {
 export interface SiteModel {
   name: string
   enabled: boolean
-  limit: number | null
+  limit: number
   max_age_hours: number | null
-  filter: FilterModel | null
+  filter: FilterModel
   fields: string[] | null
   api: ApiModel | null
 }
@@ -39,11 +39,6 @@ export interface LocationOptionModel {
 
 export interface ConfigModel {
   values: {
-    keywords: string[]
-    limit: number | null
-    concurrency?: number | null
-    max_age_hours: number | null
-    filter: FilterModel
     default_fields: string[]
     sites: SiteModel[]
   }
@@ -56,21 +51,22 @@ export interface ConfigModel {
   location_options?: Record<string, LocationOptionModel[]>
 }
 
+export interface FilterChangesModel {
+  location: string[]
+  employment_type: string[]
+  work_type: string[]
+}
+
 export interface SiteChangesModel {
   enabled?: boolean
-  limit?: number | null
+  limit?: number
   max_age_hours?: number | null
-  filter?: FilterModel | null
+  filter?: FilterChangesModel
   fields?: string[] | null
   api?: ApiModel | null
 }
 
 export interface ConfigChangesModel {
-  keywords?: string[]
-  limit?: number
-  concurrency?: number
-  max_age_hours?: number
-  filter?: FilterModel
   default_fields?: string[]
   sites?: Record<string, SiteChangesModel>
 }
@@ -88,7 +84,8 @@ function toApiSetting(model: ApiModel): ApiSetting {
     isEnabled: model.enabled ?? true,
     locations: model.locations ?? [],
     isCountryWide: model.country_wide ?? false,
-    delaySeconds: model.delay_seconds ?? null,
+    delayMin: model.delay_seconds?.[0] ?? null,
+    delayMax: model.delay_seconds?.[1] ?? null,
   }
 }
 
@@ -98,7 +95,7 @@ function toSiteSetting(model: SiteModel, pickFields: (fields: string[]) => strin
     isEnabled: model.enabled,
     limit: model.limit,
     maxAgeHours: model.max_age_hours,
-    filter: model.filter === null ? null : toFilterSetting(model.filter),
+    filter: toFilterSetting(model.filter),
     fields: model.fields === null ? null : pickFields(model.fields),
     api: model.api === null ? null : toApiSetting(model.api),
   }
@@ -131,11 +128,6 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     toPickedFields(fields, model.job_fields, model.mandatory_fields)
   return {
     values: {
-      keywords: model.values.keywords,
-      limit: model.values.limit,
-      concurrency: model.values.concurrency ?? null,
-      maxAgeHours: model.values.max_age_hours,
-      filter: toFilterSetting(model.values.filter),
       defaultFields: pickFields(model.values.default_fields),
       sites: model.values.sites.map((site) => toSiteSetting(site, pickFields)),
     },
@@ -149,11 +141,11 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
   }
 }
 
-function toFilterModel(filter: FilterSetting): FilterModel {
+function toFilterChangesModel(filter: FilterSetting): FilterChangesModel {
   return {
-    ...(filter.location.length > 0 ? { location: filter.location } : {}),
-    ...(filter.employmentType.length > 0 ? { employment_type: filter.employmentType } : {}),
-    ...(filter.workType.length > 0 ? { work_type: filter.workType } : {}),
+    location: filter.location,
+    employment_type: filter.employmentType,
+    work_type: filter.workType,
   }
 }
 
@@ -162,7 +154,7 @@ function toApiModel(api: ApiSetting): ApiModel {
     enabled: api.isEnabled,
     locations: api.locations,
     country_wide: api.isCountryWide,
-    delay_seconds: api.delaySeconds,
+    delay_seconds: toDelaySeconds(api.delayMin, api.delayMax),
   }
 }
 
@@ -172,17 +164,14 @@ function toSiteChangesModel(changes: SiteChanges): SiteChangesModel {
     ...shared,
     ...(isEnabled === undefined ? {} : { enabled: isEnabled }),
     ...(maxAgeHours === undefined ? {} : { max_age_hours: maxAgeHours }),
-    ...(filter === undefined ? {} : { filter: filter === null ? null : toFilterModel(filter) }),
+    ...(filter === undefined ? {} : { filter: toFilterChangesModel(filter) }),
     ...(api === undefined ? {} : { api: api === null ? null : toApiModel(api) }),
   }
 }
 
 export function toConfigChangesModel(changes: ConfigChanges): ConfigChangesModel {
-  const { maxAgeHours, filter, defaultFields, sites, ...shared } = changes
+  const { defaultFields, sites } = changes
   return {
-    ...shared,
-    ...(maxAgeHours === undefined ? {} : { max_age_hours: maxAgeHours }),
-    ...(filter === undefined ? {} : { filter: toFilterModel(filter) }),
     ...(defaultFields === undefined ? {} : { default_fields: defaultFields }),
     ...(sites === undefined
       ? {}

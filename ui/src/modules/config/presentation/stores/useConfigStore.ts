@@ -1,17 +1,26 @@
-import { computed, ref, toRaw } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
+  findSiteIssue,
   hasConfigChanges,
   isSame,
   toConfigChanges,
+  toSiteIssues,
   type ConfigSnapshot,
   type ConfigValues,
+  type SiteIssue,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import { requireConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
 import type { LoadStatus } from '@/shared/utils/loadStatus'
 
 const FALLBACK_ERROR_MESSAGE = 'Something went wrong. Try again.'
+
+function toCurrentIssue(values: ConfigValues, issue: SiteIssue): SiteIssue | null {
+  const site = values.sites.find((candidate) => candidate.name === issue.siteName)
+  const issues = site === undefined ? [] : toSiteIssues(site)
+  return issues.find((candidate) => candidate.field === issue.field) ?? null
+}
 
 export const useConfigStore = defineStore('config', () => {
   const status = ref<LoadStatus>('idle')
@@ -20,6 +29,7 @@ export const useConfigStore = defineStore('config', () => {
   const errorMessage = ref<string | null>(null)
   const saveError = ref<string | null>(null)
   const isSaving = ref(false)
+  const siteIssue = ref<SiteIssue | null>(null)
 
   const isDirty = computed(
     () =>
@@ -28,12 +38,32 @@ export const useConfigStore = defineStore('config', () => {
       !isSame(values.value, snapshot.value.values),
   )
 
+  function setSiteIssue(issue: SiteIssue | null): void {
+    siteIssue.value = issue
+    saveError.value = issue?.message ?? null
+  }
+
+  watch(
+    values,
+    (next) => {
+      const issue = siteIssue.value
+      if (issue === null || next === null) {
+        return
+      }
+      const current = toCurrentIssue(next, issue)
+      if (current?.message !== issue.message) {
+        setSiteIssue(current)
+      }
+    },
+    { deep: true },
+  )
+
   function discard(): void {
     if (snapshot.value === null) {
       return
     }
     values.value = structuredClone(toRaw(snapshot.value.values))
-    saveError.value = null
+    setSiteIssue(null)
   }
 
   async function load(): Promise<void> {
@@ -56,6 +86,12 @@ export const useConfigStore = defineStore('config', () => {
     if (current === null || loaded === null || loaded.isStale) {
       return false
     }
+    const issue = findSiteIssue(current)
+    if (issue !== undefined) {
+      setSiteIssue(issue)
+      return false
+    }
+    siteIssue.value = null
     const changes = toConfigChanges(current, loaded.values)
     if (!hasConfigChanges(changes)) {
       return true
@@ -80,6 +116,7 @@ export const useConfigStore = defineStore('config', () => {
     snapshot,
     errorMessage,
     saveError,
+    siteIssue,
     isSaving,
     isDirty,
     discard,

@@ -1,4 +1,4 @@
-import type { RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunDetail } from '@/modules/runs/domain/entities/Run'
 import type { RunRepository } from '@/modules/runs/domain/repositories/RunRepository'
 
 export class GetRunUseCase {
@@ -8,7 +8,7 @@ export class GetRunUseCase {
     this.repository = repository
   }
 
-  execute(id: string): Promise<RunRecord> {
+  execute(id: string): Promise<RunDetail> {
     return this.repository.getRun(id)
   }
 }
