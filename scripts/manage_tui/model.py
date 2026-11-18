@@ -24,7 +24,6 @@ CONTAINER_NAMES = {
     "scraper-mcp": "job-scraper-mcp",
     "mongo": "job-scraper-mongo",
     "scraper-ui": "job-scraper-ui",
-    "output-init": "job-scraper-init",
 }
 
 

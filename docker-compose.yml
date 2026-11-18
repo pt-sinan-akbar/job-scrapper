@@ -1,21 +1,6 @@
 name: scraper
 
 services:
-  # SERVICE: output-init — fixes output dir ownership before scraper runs (Playwright image runs as root)
-  output-init:
-    image: mcr.microsoft.com/playwright/python:v1.59.0-noble
-    container_name: job-scraper-init
-    user: "0:0"
-    entrypoint:
-      [
-        "sh",
-        "-c",
-        "mkdir -p /out/ui-runs && chown -R pwuser:pwuser /out",
-      ]
-    restart: "no"
-    volumes:
-      - ./output:/out
-
   # SERVICE: scraper — one-shot CLI scraper; network_mode:host for SOCKS5 proxy passthrough
   # Disabled, this is just to test if the scraper works independently
   # scraper:
@@ -29,11 +14,6 @@ services:
   #   restart: "no"
   #   profiles: ["scraper"]
   #   network_mode: host
-  #   depends_on:
-  #     output-init:
-  #       condition: service_completed_successfully
-  #   volumes:
-  #     - ./output:/app/output
   #   environment:
   #     - PROXY_URL
   #     - MONGO_URI=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongo:27017
@@ -49,7 +29,7 @@ services:
     volumes:
       - mongo-data:/data/db
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER:-admin}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
@@ -72,8 +52,6 @@ services:
     restart: unless-stopped
     profiles: ["mcp"]
     depends_on:
-      output-init:
-        condition: service_completed_successfully
       mongo:
         condition: service_healthy
     healthcheck:
@@ -85,7 +63,6 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./output:/app/output
       - ./docs:/app/docs:ro
       - scraper-logs:/app/logs
     environment:
@@ -109,8 +86,6 @@ services:
     restart: unless-stopped
     profiles: ["ui"]
     depends_on:
-      output-init:
-        condition: service_completed_successfully
       mongo:
         condition: service_healthy
     healthcheck:
@@ -125,9 +100,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    volumes:
-      - ./output:/app/output
-      - scraper-logs:/app/logs
     environment:
       - MONGO_URI=${MONGO_URI}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}

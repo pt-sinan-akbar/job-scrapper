@@ -36,7 +36,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MCP_PORT=8080 \
     UI_HOST=0.0.0.0
 
-RUN mkdir -p /app/output /app/logs \
+RUN mkdir -p /app/logs \
  && chown -R pwuser:pwuser /app
 
 COPY --from=builder /opt/python /opt/python
