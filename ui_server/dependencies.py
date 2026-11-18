@@ -9,7 +9,6 @@ from ui_server.errors import CrossSiteRequestError, NotSignedInError
 from ui_server.services.auth_service import SESSION_COOKIE, AuthService
 from ui_server.services.mcp_gateway import ScraperClient
 from ui_server.services.run_service import RunService
-from ui_server.services.run_store import RunStore
 from ui_server.settings import Settings
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -20,7 +19,6 @@ ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
 class Services:
     settings: Settings
     scraper: ScraperClient
-    run_store: RunStore
     run_service: RunService
     auth: AuthService
 

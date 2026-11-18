@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 
 from ui_server.app import create_app
 from ui_server.errors import McpUnavailableError
-from ui_server.services.run_store import DISCORD_INTERRUPTED_MESSAGE, DiscordStatus
 from ui_server.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
@@ -47,15 +46,6 @@ CONFIG = {
     "mandatory_fields": ["site", "title"],
     "location_options": {"jobstreet": [{"label": "Jakarta", "value": "Jakarta Raya"}]},
 }
-HISTORY = [
-    {
-        "version": 3,
-        "updated_at": "2026-11-01T01:00:00+00:00",
-        "updated_by": "seed",
-        "keywords": ["devops"],
-        "enabled_sites": ["upwork"],
-    }
-]
 SAVED = {"ok": True, "version": 5}
 DISCORD_SETTINGS = {
     "configured": True,
@@ -92,10 +82,8 @@ class FakeGateway:
         responses: dict[str, dict[str, Any]] = {
             "list_sites": SITES,
             "get_config": self.config,
-            "get_config_history": {"entries": HISTORY},
             "scrape_jobs": self.scrape_result,
             "update_config": self.save_result,
-            "restore_config": self.save_result,
             "get_discord_settings": self.discord_settings,
             "send_discord_message": {
                 "ok": True,
@@ -114,8 +102,6 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     values = {
         "env": "dev",
         "dev_login_key": DEV_LOGIN_KEY,
-        "runs_dir": tmp_path / "runs",
-        "log_path": tmp_path / "scraper.log",
         "static_dir": tmp_path / "dist",
     }
     return Settings(**{**values, **overrides})
@@ -187,7 +173,7 @@ def test_dev_session_needs_login(guest_client: TestClient):
         "auth_required": True,
         "signed_in": False,
     }
-    assert guest_client.get("/api/runs").status_code == 401
+    assert guest_client.get("/api/sites").status_code == 401
 
 
 def test_dev_login_key_opens_api(guest_client: TestClient):
@@ -198,14 +184,14 @@ def test_dev_login_key_opens_api(guest_client: TestClient):
         "auth_required": True,
         "signed_in": True,
     }
-    assert guest_client.get("/api/runs").status_code == 200
+    assert guest_client.get("/api/sites").status_code == 200
 
 
 def test_dev_wrong_login_key_returns_401(guest_client: TestClient):
     response = guest_client.post("/api/auth/login", json={"password": "wrong"})
 
     assert response.status_code == 401
-    assert guest_client.get("/api/runs").status_code == 401
+    assert guest_client.get("/api/sites").status_code == 401
 
 
 def test_sites_returns_options(client: TestClient):
@@ -225,29 +211,102 @@ def test_sites_returns_503_when_mcp_is_down(client: TestClient, gateway: FakeGat
     assert response.json()["success"] is False
 
 
-def test_start_run_then_read_result(client: TestClient):
-    run = _run(client)
+RECORD_FIELDS = {
+    "id",
+    "status",
+    "keywords",
+    "sites",
+    "started_at",
+    "finished_at",
+    "job_count",
+    "error_count",
+    "error",
+    "discord_status",
+    "discord_sent",
+    "discord_failed",
+    "discord_error",
+}
 
-    detail = client.get(f"/api/runs/{run['id']}").json()["data"]
 
-    assert detail["record"]["status"] == "succeeded"
-    assert detail["record"]["job_count"] == 1
-    assert detail["jobs"] == [{"title": "A"}]
+def _read_record(client: TestClient, run_id: str) -> dict:
+    return client.get(f"/api/runs/{run_id}").json()["data"]
+
+
+def _wait_for(client: TestClient, run_id: str, is_pending: Any) -> dict:
+    deadline = time.monotonic() + 2
+    record = _read_record(client, run_id)
+    while is_pending(record) and time.monotonic() < deadline:
+        time.sleep(0.01)
+        record = _read_record(client, run_id)
+    return record
+
+
+def _wait_for_finish(client: TestClient, run_id: str) -> dict:
+    return _wait_for(client, run_id, lambda record: record["status"] == "running")
 
 
 def _wait_for_discord(client: TestClient, run_id: str) -> dict:
-    deadline = time.monotonic() + 2
-    record = client.get(f"/api/runs/{run_id}").json()["data"]["record"]
-    while record["discord_status"] == "sending" and time.monotonic() < deadline:
-        time.sleep(0.01)
-        record = client.get(f"/api/runs/{run_id}").json()["data"]["record"]
-    return record
+    return _wait_for(client, run_id, lambda record: record["discord_status"] == "sending")
+
+
+def test_start_run_then_read_record(client: TestClient):
+    run = _run(client)
+
+    record = _wait_for_finish(client, run["id"])
+
+    assert set(record) == RECORD_FIELDS
+    assert record["id"] == run["id"]
+    assert record["status"] == "succeeded"
+    assert record["job_count"] == 1
+    assert record["keywords"] == ["devops"]
+    assert record["sites"] == ["upwork"]
+    assert record["finished_at"] is not None
+
+
+def test_read_run_keeps_record_after_finish(client: TestClient):
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    response = client.get(f"/api/runs/{run['id']}")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "succeeded"
+
+
+def test_new_run_replaces_previous_record(client: TestClient):
+    first = _run(client)
+    _wait_for_finish(client, first["id"])
+    second = _run(client)
+
+    assert client.get(f"/api/runs/{first['id']}").status_code == 404
+    assert _wait_for_finish(client, second["id"])["id"] == second["id"]
+
+
+def test_read_run_reports_failed_scrape(client: TestClient, gateway: FakeGateway):
+    gateway.scrape_result = {"ok": False, "results": [], "errors": [{"site": "upwork"}]}
+    run = _run(client)
+
+    record = _wait_for_finish(client, run["id"])
+
+    assert record["status"] == "failed"
+    assert record["error_count"] == 1
+
+
+def test_scrape_does_not_ask_for_payloads(client: TestClient, gateway: FakeGateway):
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    assert gateway.arguments["scrape_jobs"] == {
+        "sites": ["upwork"],
+        "keywords": ["devops"],
+        "save_run": False,
+    }
 
 
 def test_start_run_without_notify_has_no_discord_status(client: TestClient, gateway: FakeGateway):
     run = _run(client)
 
-    record = client.get(f"/api/runs/{run['id']}").json()["data"]["record"]
+    record = _wait_for_finish(client, run["id"])
 
     assert record["discord_status"] is None
     assert "send_discord_message" not in gateway.calls
@@ -260,7 +319,9 @@ def test_start_run_with_notify_sends_to_discord(client: TestClient, gateway: Fak
     )
     assert response.status_code == 202
 
-    record = _wait_for_discord(client, response.json()["data"]["id"])
+    run_id = response.json()["data"]["id"]
+    _wait_for_finish(client, run_id)
+    record = _wait_for_discord(client, run_id)
 
     assert record["status"] == "succeeded"
     assert record["discord_status"] == "sent"
@@ -281,60 +342,12 @@ def test_start_run_rejects_non_boolean_notify(client: TestClient):
     assert response.status_code == 422
 
 
-def test_restart_marks_sending_discord_failed(tmp_path: Path, gateway: FakeGateway):
-    app = create_app(_settings(tmp_path), gateway)
-    store = app.state.services.run_store
-    finished = store.finish(store.create(("devops",), ("upwork",)), SCRAPE_RESULT)
-    store.update_discord(finished, DiscordStatus.SENDING)
-
-    with TestClient(app, base_url=LOCAL_URL) as test_client:
-        test_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
-        record = test_client.get(f"/api/runs/{finished.id}").json()["data"]["record"]
-
-    assert record["discord_status"] == "failed"
-    assert record["discord_error"] == DISCORD_INTERRUPTED_MESSAGE
+def test_run_list_endpoint_is_gone(client: TestClient):
+    assert client.get("/api/runs").status_code in (404, 405)
 
 
-def test_read_run_returns_raw_and_filtered_payloads(client: TestClient, gateway: FakeGateway):
-    gateway.scrape_result = {
-        **SCRAPE_RESULT,
-        "raw_results": [{"keyword": "devops", "site": "upwork", "payload": {"count": 4}}],
-        "filtered_results": [{"keyword": "devops", "site": "upwork", "payload": {"count": 1}}],
-    }
-    run = _run(client)
-
-    detail = client.get(f"/api/runs/{run['id']}").json()["data"]
-
-    assert detail["payloads"] == [
-        {"keyword": "devops", "site": "upwork", "raw": {"count": 4}, "filtered": {"count": 1}}
-    ]
-    assert detail["jobs"] == [{"title": "A"}]
-
-
-def test_read_run_without_stored_payloads_returns_an_empty_list(client: TestClient):
-    run = _run(client)
-
-    detail = client.get(f"/api/runs/{run['id']}").json()["data"]
-
-    assert detail["payloads"] == []
-
-
-def test_read_run_survives_malformed_stored_payloads(client: TestClient, gateway: FakeGateway):
-    gateway.scrape_result = {**SCRAPE_RESULT, "raw_results": "oops", "filtered_results": [1, None]}
-    run = _run(client)
-
-    response = client.get(f"/api/runs/{run['id']}")
-
-    assert response.status_code == 200
-    assert response.json()["data"]["payloads"] == []
-
-
-def test_list_runs_includes_started_run(client: TestClient):
-    run = _run(client)
-
-    runs = client.get("/api/runs").json()["data"]
-
-    assert [item["id"] for item in runs] == [run["id"]]
+def test_log_stream_endpoint_is_gone(client: TestClient):
+    assert client.get("/api/logs/stream").status_code == 404
 
 
 def test_second_run_is_refused_before_reading_sites(client: TestClient, gateway: FakeGateway):
@@ -346,10 +359,7 @@ def test_second_run_is_refused_before_reading_sites(client: TestClient, gateway:
 
     assert response.status_code == 409
     assert "list_sites" not in gateway.calls
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        if client.get(f"/api/runs/{run['id']}").json()["data"]["record"]["status"] != "running":
-            break
+    _wait_for_finish(client, run["id"])
 
 
 def test_start_run_rejects_unknown_site(client: TestClient):
@@ -535,32 +545,20 @@ def test_config_update_returns_422_on_invalid_settings(client: TestClient, gatew
     assert response.json()["error"] == "bad filter"
 
 
-def test_config_history_lists_versions(client: TestClient):
-    data = client.get("/api/config/history").json()["data"]
-
-    assert data["entries"] == HISTORY
+def test_config_history_endpoint_is_gone(client: TestClient):
+    assert client.get("/api/config/history").status_code == 404
 
 
-def test_config_restore_sends_versions(client: TestClient, gateway: FakeGateway):
+def test_config_restore_endpoint_is_gone(client: TestClient, gateway: FakeGateway):
     response = client.post("/api/config/restore", json={"version": 3, "expected_version": 4})
 
-    assert response.status_code == 200
-    assert gateway.arguments["restore_config"] == {
-        "version": 3,
-        "expected_version": 4,
-        "source": "ui",
-    }
+    assert response.status_code in (404, 405)
+    assert "restore_config" not in gateway.calls
 
 
 def test_prod_config_needs_login(prod_client: TestClient):
     assert prod_client.get("/api/config").status_code == 401
     assert prod_client.put("/api/config", json={"version": 4, "limit": 9}).status_code == 401
-    assert (
-        prod_client.post(
-            "/api/config/restore", json={"version": 3, "expected_version": 4}
-        ).status_code
-        == 401
-    )
 
 
 def test_prod_config_can_be_saved_after_login(prod_client: TestClient, gateway: FakeGateway):
@@ -581,8 +579,7 @@ def test_cross_site_write_is_refused(client: TestClient):
 
 
 def test_prod_requires_login(prod_client: TestClient):
-    assert prod_client.get("/api/runs").status_code == 401
-    assert prod_client.get("/api/logs/stream").status_code == 401
+    assert prod_client.get("/api/sites").status_code == 401
 
 
 def test_prod_login_opens_api_and_sets_safe_cookie(prod_client: TestClient):
@@ -593,7 +590,7 @@ def test_prod_login_opens_api_and_sets_safe_cookie(prod_client: TestClient):
     assert "httponly" in cookie
     assert "secure" in cookie
     assert "samesite=strict" in cookie
-    assert prod_client.get("/api/runs").status_code == 200
+    assert prod_client.get("/api/sites").status_code == 200
 
 
 def test_prod_wrong_password_returns_401(prod_client: TestClient):
@@ -607,7 +604,7 @@ def test_prod_logout_clears_session(prod_client: TestClient):
 
     prod_client.post("/api/auth/logout")
 
-    assert prod_client.get("/api/runs").status_code == 401
+    assert prod_client.get("/api/sites").status_code == 401
 
 
 def test_spa_paths_fall_back_to_index(tmp_path: Path, gateway: FakeGateway):

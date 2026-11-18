@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from ui_server.dependencies import ServicesDep, require_session
-from ui_server.schema.config import ConfigRestoreRequest, ConfigUpdateRequest
+from ui_server.schema.config import ConfigUpdateRequest
 from ui_server.schema.response import ok
 
 router = APIRouter(prefix="/api/config", dependencies=[Depends(require_session)])
@@ -63,15 +63,4 @@ async def read_config(services: ServicesDep) -> dict[str, Any]:
 @router.put("")
 async def update_config(body: ConfigUpdateRequest, services: ServicesDep) -> dict[str, Any]:
     await services.scraper.save_config(body.to_patch(), body.version)
-    return ok(None)
-
-
-@router.get("/history")
-async def read_history(services: ServicesDep) -> dict[str, Any]:
-    return ok({"entries": await services.scraper.read_config_history()})
-
-
-@router.post("/restore")
-async def restore_config(body: ConfigRestoreRequest, services: ServicesDep) -> dict[str, Any]:
-    await services.scraper.restore_config(body.version, body.expected_version)
     return ok(None)

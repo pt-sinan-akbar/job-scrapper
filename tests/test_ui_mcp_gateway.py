@@ -88,9 +88,7 @@ def test_local_tools_cover_every_tool_the_ui_calls():
     assert set(mcp_gateway.LOCAL_TOOLS) == {
         "list_sites",
         "get_config",
-        "get_config_history",
         "update_config",
-        "restore_config",
         "scrape_jobs",
         "get_discord_settings",
         "save_discord_settings",
@@ -147,7 +145,6 @@ def test_scrape_jobs_sends_sites_and_keywords_without_saving_the_run_and_asks_fo
                 "sites": ["upwork"],
                 "keywords": ["django"],
                 "save_run": False,
-                "include_payloads": True,
             },
         )
     ]
@@ -188,21 +185,8 @@ def test_save_config_raises_when_store_is_down():
         asyncio.run(ScraperClient(gateway).save_config({"limit": 9}, 1))
 
 
-def test_restore_config_sends_versions_and_source():
-    gateway = FakeGateway()
-    gateway.responses = [{"ok": True, "version": 3}]
+def test_scraper_client_has_no_history_or_restore():
+    client = ScraperClient(FakeGateway())
 
-    asyncio.run(ScraperClient(gateway).restore_config(1, 2))
-
-    assert gateway.calls == [
-        ("restore_config", {"version": 1, "expected_version": 2, "source": "ui"})
-    ]
-
-
-def test_read_config_history_returns_entries():
-    gateway = FakeGateway()
-    gateway.responses = [{"entries": [{"version": 1}]}]
-
-    entries = asyncio.run(ScraperClient(gateway).read_config_history())
-
-    assert entries == [{"version": 1}]
+    assert not hasattr(client, "read_config_history")
+    assert not hasattr(client, "restore_config")

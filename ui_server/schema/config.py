@@ -62,10 +62,3 @@ class ConfigUpdateRequest(BaseModel):
     def to_patch(self) -> dict[str, Any]:
         # exclude_unset keeps explicit nulls, which remove a key from the settings
         return self.model_dump(mode="json", exclude_unset=True, exclude={"version"})
-
-
-class ConfigRestoreRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    version: int = Field(ge=1)
-    expected_version: int = Field(ge=1)

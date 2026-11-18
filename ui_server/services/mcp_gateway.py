@@ -43,9 +43,7 @@ LOCAL_TOOLS: dict[str, Callable[..., Any]] = {
     for tool in (
         server.list_sites,
         server.get_config,
-        server.get_config_history,
         server.update_config,
-        server.restore_config,
         server.scrape_jobs,
         *discord_tools.DISCORD_TOOLS,
     )
@@ -126,7 +124,6 @@ class ScraperClient:
             "sites": list(sites),
             "keywords": list(keywords),
             "save_run": False,
-            "include_payloads": True,
         }
         return await self._gateway.call("scrape_jobs", arguments, SCRAPE_TIMEOUT_SECONDS)
 
@@ -136,22 +133,9 @@ class ScraperClient:
     async def read_config(self) -> CachedRead:
         return await self._read("get_config")
 
-    async def read_config_history(self) -> list[dict[str, Any]]:
-        result = await self._gateway.call("get_config_history", {}, READ_TIMEOUT_SECONDS)
-        return result["entries"]
-
     async def save_config(self, patch: dict[str, Any], expected_version: int) -> None:
         arguments = {"patch": patch, "expected_version": expected_version, "source": SAVE_SOURCE}
         result = await self._gateway.call("update_config", arguments, WRITE_TIMEOUT_SECONDS)
-        _raise_on_failed_save(result)
-
-    async def restore_config(self, version: int, expected_version: int) -> None:
-        arguments = {
-            "version": version,
-            "expected_version": expected_version,
-            "source": SAVE_SOURCE,
-        }
-        result = await self._gateway.call("restore_config", arguments, WRITE_TIMEOUT_SECONDS)
         _raise_on_failed_save(result)
 
     async def read_discord_settings(self) -> dict[str, Any]:
