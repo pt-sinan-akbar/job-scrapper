@@ -1,177 +1,233 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
-import type { SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
+import { EMPTY_FILTER, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
 import SiteSettings from '@/modules/config/presentation/components/SiteSettings.vue'
 
-const SITE: SiteSetting = {
-  name: 'glints',
-  isEnabled: true,
-  limit: 3,
-  maxAgeHours: null,
-  filter: null,
-  fields: null,
-  api: null,
-}
+const SITES: SiteSetting[] = [
+  {
+    name: 'glints',
+    isEnabled: true,
+    limit: 30,
+    maxAgeHours: 72,
+    filter: EMPTY_FILTER,
+    fields: null,
+    api: { isEnabled: true, locations: [], isCountryWide: true, delayMin: null, delayMax: null },
+  },
+  {
+    name: 'indeed',
+    isEnabled: false,
+    limit: 10,
+    maxAgeHours: null,
+    filter: EMPTY_FILTER,
+    fields: null,
+    api: null,
+  },
+  {
+    name: 'linkedin',
+    isEnabled: true,
+    limit: 5,
+    maxAgeHours: 24,
+    filter: EMPTY_FILTER,
+    fields: null,
+    api: null,
+  },
+]
 
-function mountSite(site: SiteSetting) {
+function mountSettings(sites: SiteSetting[] = SITES) {
   return mount(SiteSettings, {
-    props: {
-      site,
-      defaultFields: ['salary_min'],
-      jobFields: ['site', 'title', 'salary_min', 'company_id'],
-      mandatoryFields: ['site', 'title'],
-    },
+    props: { sites, defaultFields: [], jobFields: [], mandatoryFields: [], locationOptions: {} },
     attachTo: document.body,
   })
 }
 
-function lastUpdate(wrapper: ReturnType<typeof mountSite>): SiteSetting | undefined {
+type Wrapper = ReturnType<typeof mountSettings>
+
+function selectButton(wrapper: Wrapper, name: string) {
+  return wrapper
+    .findAll('[data-slot="site-select"]')
+    .find((button) => button.get('[data-slot="site-name"]').text() === name)!
+}
+
+function selectedName(wrapper: Wrapper): string | undefined {
+  return wrapper
+    .find('[data-slot="site-select"][aria-current="true"] [data-slot="site-name"]')
+    .text()
+}
+
+function lastUpdate(wrapper: Wrapper): SiteSetting | undefined {
   const updates = wrapper.emitted('update') ?? []
   return updates[updates.length - 1]?.[0] as SiteSetting | undefined
 }
 
-describe('SiteSettings job fields', () => {
+describe('SiteSettings list and detail', () => {
   afterEach(() => {
     document.body.innerHTML = ''
   })
 
-  it('hides the field grid while the site uses the default job fields', () => {
-    const wrapper = mountSite(SITE)
+  it('lists every site by its name only', () => {
+    const wrapper = mountSettings()
 
-    expect(wrapper.find('#glints-field-salary_min').exists()).toBe(false)
+    expect(selectButton(wrapper, 'glints').text()).toBe('glints')
+    expect(selectButton(wrapper, 'indeed').text()).toBe('indeed')
   })
 
-  it('starts its own job fields from the default ones', async () => {
-    const wrapper = mountSite(SITE)
+  it('picks the first site on load', () => {
+    const wrapper = mountSettings()
 
-    await wrapper.get('#glints-own-fields').trigger('click')
+    expect(selectedName(wrapper)).toBe('glints')
+    expect(wrapper.find('#glints-limit').exists()).toBe(true)
+    expect(wrapper.find('#indeed-limit').exists()).toBe(false)
+  })
+
+  it('marks only the picked site as current and ties it to the detail', () => {
+    const wrapper = mountSettings()
+    const current = wrapper.findAll('[aria-current="true"]')
+    const panelId = current[0]!.attributes('aria-controls')
+
+    expect(current).toHaveLength(1)
+    expect(selectButton(wrapper, 'indeed').attributes('aria-current')).toBeUndefined()
+    expect(wrapper.get(`[id="${panelId}"]`).text()).toContain('glints')
+  })
+
+  it('shows the settings of a clicked site', async () => {
+    const wrapper = mountSettings()
+
+    await selectButton(wrapper, 'indeed').trigger('click')
+
+    expect(selectedName(wrapper)).toBe('indeed')
+    expect(wrapper.find('#indeed-limit').exists()).toBe(true)
+    expect(wrapper.find('#glints-limit').exists()).toBe(false)
+  })
+
+  it.each([
+    ['ArrowDown', 'glints', 'indeed'],
+    ['ArrowRight', 'glints', 'indeed'],
+    ['ArrowUp', 'indeed', 'glints'],
+    ['ArrowLeft', 'indeed', 'glints'],
+    ['ArrowUp', 'glints', 'linkedin'],
+    ['ArrowDown', 'linkedin', 'glints'],
+    ['End', 'glints', 'linkedin'],
+    ['Home', 'linkedin', 'glints'],
+  ])('moves the pick with %s from %s to %s', async (key, from, to) => {
+    const wrapper = mountSettings()
+    await selectButton(wrapper, from).trigger('click')
+
+    await selectButton(wrapper, from).trigger('keydown', { key })
     await flushPromises()
 
-    expect(lastUpdate(wrapper)?.fields).toEqual(['salary_min'])
+    expect(selectedName(wrapper)).toBe(to)
+    expect(document.activeElement).toBe(selectButton(wrapper, to).element)
   })
 
-  it('shows its own job fields as checkboxes with the always-saved ones locked', () => {
-    const wrapper = mountSite({ ...SITE, fields: ['company_id'] })
+  it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey'])(
+    'ignores arrow keys pressed with %s',
+    async (modifier) => {
+      const wrapper = mountSettings()
 
-    expect(wrapper.get('#glints-field-site').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('#glints-field-company_id').attributes('data-state')).toBe('checked')
-    expect(wrapper.get('#glints-field-salary_min').attributes('data-state')).toBe('unchecked')
-  })
+      await selectButton(wrapper, 'glints').trigger('keydown', {
+        key: 'ArrowDown',
+        [modifier]: true,
+      })
+      await flushPromises()
 
-  it('saves an emptied pick as an empty list, not as the default fields', async () => {
-    const wrapper = mountSite({ ...SITE, fields: ['company_id'] })
-
-    await wrapper.get('#glints-field-company_id').trigger('click')
-    await flushPromises()
-
-    expect(lastUpdate(wrapper)?.fields).toEqual([])
-  })
-})
-
-const API_SITE: SiteSetting = {
-  ...SITE,
-  api: { isEnabled: true, locations: [], isCountryWide: false, delaySeconds: null },
-}
-
-const LOCATION_OPTIONS = [
-  { label: 'Jakarta', value: '78d63064-78a1-4577-8516-036a6c5e903e' },
-  { label: 'Bandung', value: 'bandung-id' },
-]
-
-const EMPTY_WARNING = 'No city and no country search: this site finds nothing'
-
-function mountApiSite(site: SiteSetting, locationOptions?: typeof LOCATION_OPTIONS) {
-  vi.stubGlobal(
-    'ResizeObserver',
-    class {
-      observe = vi.fn<ResizeObserver['observe']>()
-      unobserve = vi.fn<ResizeObserver['unobserve']>()
-      disconnect = vi.fn<ResizeObserver['disconnect']>()
+      expect(selectedName(wrapper)).toBe('glints')
     },
   )
-  return mount(SiteSettings, {
-    props: {
-      site,
-      defaultFields: [],
-      jobFields: [],
-      mandatoryFields: [],
-      locationOptions,
-    },
-    attachTo: document.body,
-  })
-}
 
-describe('SiteSettings API locations', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    document.body.innerHTML = ''
+  it('pads the phone chip row so focus rings are not cut off', () => {
+    const list = mountSettings().get('ul[aria-label="Sites"]')
+
+    expect(list.classes()).toEqual(expect.arrayContaining(['px-2', 'py-1']))
   })
 
-  it('shows no locations box when the site has no city list', () => {
-    const wrapper = mountApiSite({ ...API_SITE, api: { ...API_SITE.api!, locations: ['Remote'] } })
+  it('ignores other keys', async () => {
+    const wrapper = mountSettings()
 
-    expect(wrapper.find('#glints-api-locations').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    await selectButton(wrapper, 'glints').trigger('keydown', { key: 'a' })
+
+    expect(selectedName(wrapper)).toBe('glints')
   })
 
-  it('shows no locations box when the city list is empty', () => {
-    const wrapper = mountApiSite({ ...API_SITE, api: { ...API_SITE.api!, locations: [] } }, [])
+  it('turns a site off from its list checkbox without picking it', async () => {
+    const wrapper = mountSettings()
 
-    expect(wrapper.find('#glints-api-locations').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('API locations')
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    await wrapper.get('[aria-label="Turn on linkedin"]').trigger('click')
+    await flushPromises()
+
+    expect(lastUpdate(wrapper)).toEqual({ ...SITES[2], isEnabled: false })
+    expect(selectedName(wrapper)).toBe('glints')
   })
 
-  it('shows the city picker with chips for the saved values', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, locations: [LOCATION_OPTIONS[0]!.value] } },
-      LOCATION_OPTIONS,
-    )
+  it('keeps the checkbox outside the pick button', () => {
+    const wrapper = mountSettings()
 
-    expect(wrapper.find('#glints-api-locations').exists()).toBe(true)
-    expect(wrapper.text()).toContain('API locations')
-    expect(wrapper.text()).not.toContain('one per line')
-    expect(wrapper.text()).toContain('Jakarta')
+    expect(wrapper.find('[data-slot="site-select"] [data-slot="checkbox"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-slot="checkbox"][aria-label^="Turn on"]')).toHaveLength(3)
   })
 
-  it('warns when no city is picked and the whole country is off', () => {
-    const wrapper = mountApiSite(API_SITE, LOCATION_OPTIONS)
+  it('gives the list checkboxes no ids built from site names', () => {
+    const wrapper = mountSettings()
 
-    expect(wrapper.text()).toContain(EMPTY_WARNING)
+    expect(
+      wrapper
+        .findAll('[data-slot="checkbox"][aria-label^="Turn on"]')
+        .map((box) => box.attributes('id')),
+    ).toEqual([undefined, undefined, undefined])
   })
 
-  it('does not warn when the whole country is searched', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, isCountryWide: true } },
-      LOCATION_OPTIONS,
-    )
+  it('builds safe ids for a site name with spaces and symbols', () => {
+    const wrapper = mountSettings([{ ...SITES[1]!, name: 'Job Street (ID)' }])
 
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    expect(wrapper.find('#job-street-id-limit').exists()).toBe(true)
+    expect(wrapper.get('label[for="job-street-id-limit"]').text()).toBe('Job limit')
+    expect(wrapper.find('#job-street-id-location').exists()).toBe(true)
   })
 
-  it('does not warn when a city is picked', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, locations: ['bandung-id'] } },
-      LOCATION_OPTIONS,
-    )
+  it('keeps the pick when the sites change', async () => {
+    const wrapper = mountSettings()
+    await selectButton(wrapper, 'indeed').trigger('click')
 
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    await wrapper.setProps({ sites: SITES.map((site) => ({ ...site, limit: 7 })) })
+
+    expect(selectedName(wrapper)).toBe('indeed')
   })
 
-  it('gives each empty text and number box a placeholder', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, filter: { location: [], employmentType: [], workType: [] } },
-      LOCATION_OPTIONS,
-    )
+  it('falls back to the first site when the picked one is gone', async () => {
+    const wrapper = mountSettings()
+    await selectButton(wrapper, 'indeed').trigger('click')
 
-    expect(wrapper.get('#glints-api-delay-min').attributes('placeholder')).toBe('Min delay')
-    expect(wrapper.get('[aria-label="glints max delay"]').attributes('placeholder')).toBe(
-      'Max delay',
-    )
-    expect(wrapper.get('#glints-max-age').attributes('placeholder')).toBe('Global')
-    expect(wrapper.get('#glints-location').attributes('placeholder')).toBe('Locations')
-    expect(wrapper.get('#glints-employment').attributes('placeholder')).toBe('Employment types')
-    expect(wrapper.get('#glints-work').attributes('placeholder')).toBe('Work types')
+    await wrapper.setProps({ sites: [SITES[2]!, SITES[0]!] })
+
+    expect(selectedName(wrapper)).toBe('linkedin')
+  })
+
+  it('does not jump back to a removed site when it comes back', async () => {
+    const wrapper = mountSettings()
+    await selectButton(wrapper, 'indeed').trigger('click')
+
+    await wrapper.setProps({ sites: [SITES[0]!, SITES[2]!] })
+    await wrapper.setProps({ sites: SITES })
+
+    expect(selectedName(wrapper)).toBe('glints')
+  })
+
+  it('selects the site named by a save issue and marks its field', async () => {
+    const wrapper = mountSettings()
+
+    await wrapper.setProps({
+      issue: { siteName: 'linkedin', field: 'maxAgeHours', message: 'Bad max age' },
+    })
+
+    expect(selectedName(wrapper)).toBe('linkedin')
+    expect(wrapper.get('#linkedin-max-age').attributes('aria-invalid')).toBe('true')
+    expect(wrapper.get('#linkedin-limit').attributes('aria-invalid')).toBeUndefined()
+  })
+
+  it('shows nothing to pick when there are no sites', () => {
+    const wrapper = mountSettings([])
+
+    expect(wrapper.find('[data-slot="site-select"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('No sites')
   })
 })

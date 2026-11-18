@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import { createMemoryStorage } from '@/__tests__/memoryStorage'
-import { EMPTY_FILTER, type ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
+import type { ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
 import { CONFIG_CARD_STORAGE_KEY } from '@/modules/config/presentation/components/configCardStorage'
 import RunConfigSection from '@/modules/config/presentation/components/RunConfigSection.vue'
 import { provideConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
@@ -15,11 +15,6 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    concurrency: 2,
-    maxAgeHours: 72,
-    filter: EMPTY_FILTER,
     defaultFields: ['title'],
     sites: [],
   },
@@ -224,12 +219,12 @@ describe('RunConfigSection', () => {
     const wrapper = mountSection()
     await flushPromises()
     await toggle(wrapper).trigger('click')
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#default-field-title').trigger('click')
 
     await toggle(wrapper).trigger('click')
     await toggle(wrapper).trigger('click')
 
-    expect((wrapper.get('#limit').element as HTMLInputElement).value).toBe('9')
+    expect(wrapper.get('#default-field-title').attributes('data-state')).toBe('unchecked')
     expect(useConfigStore().isDirty).toBe(true)
   })
 

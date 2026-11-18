@@ -8,7 +8,8 @@ export interface ApiSetting {
   isEnabled: boolean
   locations: string[]
   isCountryWide: boolean
-  delaySeconds: [number, number] | null
+  delayMin: number | null
+  delayMax: number | null
 }
 
 export interface SiteSetting {
@@ -16,17 +17,12 @@ export interface SiteSetting {
   isEnabled: boolean
   limit: number | null
   maxAgeHours: number | null
-  filter: FilterSetting | null
+  filter: FilterSetting
   fields: string[] | null
   api: ApiSetting | null
 }
 
 export interface ConfigValues {
-  keywords: string[]
-  limit: number | null
-  concurrency: number | null
-  maxAgeHours: number | null
-  filter: FilterSetting
   defaultFields: string[]
   sites: SiteSetting[]
 }
@@ -47,33 +43,105 @@ export interface ConfigSnapshot {
   locationOptions: Record<string, LocationOption[]>
 }
 
-export type SiteChanges = Partial<Omit<SiteSetting, 'name'>>
+export type SiteChanges = Partial<Omit<SiteSetting, 'name' | 'limit'>> & { limit?: number }
 
 export interface ConfigChanges {
-  keywords?: string[]
-  limit?: number
-  concurrency?: number
-  maxAgeHours?: number
-  filter?: FilterSetting
   defaultFields?: string[]
   sites?: Record<string, SiteChanges>
 }
 
-export const BOT_SCHEDULE = '0 11 * * *'
-
 export const EMPTY_FILTER: FilterSetting = { location: [], employmentType: [], workType: [] }
+
+export const SITE_LIMIT_MIN = 1
+export const SITE_LIMIT_MAX = 200
+export const MAX_AGE_HOURS_MIN = 1
+export const MAX_AGE_HOURS_MAX = 720
+export const DELAY_SECONDS_MIN = 0
+export const DELAY_SECONDS_MAX = 60
+
+export type SiteField = 'limit' | 'maxAgeHours' | 'delayMin' | 'delayMax'
+
+export interface SiteIssue {
+  siteName: string
+  field: SiteField
+  message: string
+}
 
 const SITE_FIELDS = ['isEnabled', 'limit', 'maxAgeHours', 'filter', 'fields', 'api'] as const
 
-export function toOptionalNumber(value: string | number): number | null {
-  return value === '' ? null : Number(value)
+export function isValidSiteLimit(limit: number | null): limit is number {
+  return (
+    limit !== null && Number.isInteger(limit) && limit >= SITE_LIMIT_MIN && limit <= SITE_LIMIT_MAX
+  )
+}
+
+function isInRange(value: number, min: number, max: number): boolean {
+  return Number.isFinite(value) && value >= min && value <= max
+}
+
+function isValidMaxAge(maxAgeHours: number | null): boolean {
+  return (
+    maxAgeHours === null ||
+    (Number.isInteger(maxAgeHours) && isInRange(maxAgeHours, MAX_AGE_HOURS_MIN, MAX_AGE_HOURS_MAX))
+  )
+}
+
+function isValidDelay(seconds: number): boolean {
+  return isInRange(seconds, DELAY_SECONDS_MIN, DELAY_SECONDS_MAX)
+}
+
+function toDelayIssue(site: SiteSetting): Omit<SiteIssue, 'siteName'> | null {
+  if (site.api === null) {
+    return null
+  }
+  const { delayMin, delayMax } = site.api
+  if (delayMin === null && delayMax === null) {
+    return null
+  }
+  if (delayMin === null || delayMax === null) {
+    const field = delayMin === null ? 'delayMin' : 'delayMax'
+    return { field, message: `Set both delay values for ${site.name}` }
+  }
+  const rangeMessage = `Set delays from ${DELAY_SECONDS_MIN} to ${DELAY_SECONDS_MAX} seconds for ${site.name}`
+  if (!isValidDelay(delayMin)) {
+    return { field: 'delayMin', message: rangeMessage }
+  }
+  if (!isValidDelay(delayMax)) {
+    return { field: 'delayMax', message: rangeMessage }
+  }
+  if (delayMin > delayMax) {
+    return {
+      field: 'delayMin',
+      message: `Set a min delay no higher than the max delay for ${site.name}`,
+    }
+  }
+  return null
+}
+
+export function toSiteIssues(site: SiteSetting): SiteIssue[] {
+  const limitIssue = isValidSiteLimit(site.limit)
+    ? null
+    : {
+        field: 'limit' as const,
+        message: `Set a limit from ${SITE_LIMIT_MIN} to ${SITE_LIMIT_MAX} for ${site.name}`,
+      }
+  const maxAgeIssue = isValidMaxAge(site.maxAgeHours)
+    ? null
+    : {
+        field: 'maxAgeHours' as const,
+        message: `Set a max job age from ${MAX_AGE_HOURS_MIN} to ${MAX_AGE_HOURS_MAX} hours for ${site.name}, or leave it empty`,
+      }
+  return [limitIssue, maxAgeIssue, toDelayIssue(site)].flatMap((issue) =>
+    issue === null ? [] : [{ siteName: site.name, ...issue }],
+  )
+}
+
+export function findSiteIssue(values: ConfigValues): SiteIssue | undefined {
+  return values.sites.flatMap(toSiteIssues)[0]
 }
 
 export function toDelaySeconds(min: number | null, max: number | null): [number, number] | null {
-  if (min === null && max === null) {
-    return null
-  }
-  return [min ?? (max as number), max ?? (min as number)]
+  return min === null || max === null ? null : [min, max]
 }
 
 /**
@@ -106,7 +174,9 @@ export function isSame(first: unknown, second: unknown): boolean {
 }
 
 function toSiteChanges(site: SiteSetting, original: SiteSetting | undefined): SiteChanges {
-  const changed = SITE_FIELDS.filter((field) => !isSame(site[field], original?.[field]))
+  const isSent = (field: (typeof SITE_FIELDS)[number]): boolean =>
+    !isSame(site[field], original?.[field]) && !(field === 'limit' && site.limit === null)
+  const changed = SITE_FIELDS.filter(isSent)
   return Object.fromEntries(changed.map((field) => [field, site[field]])) as SiteChanges
 }
 
@@ -123,16 +193,7 @@ function toSitesChanges(values: ConfigValues, original: ConfigValues): Record<st
 
 export function toConfigChanges(values: ConfigValues, original: ConfigValues): ConfigChanges {
   const sites = toSitesChanges(values, original)
-  const isLimitKept = values.limit === null || values.limit === original.limit
-  const isConcurrencyKept =
-    values.concurrency === null || values.concurrency === original.concurrency
-  const isMaxAgeKept = values.maxAgeHours === null || values.maxAgeHours === original.maxAgeHours
   return {
-    ...(isSame(values.keywords, original.keywords) ? {} : { keywords: values.keywords }),
-    ...(isLimitKept ? {} : { limit: values.limit as number }),
-    ...(isConcurrencyKept ? {} : { concurrency: values.concurrency as number }),
-    ...(isMaxAgeKept ? {} : { maxAgeHours: values.maxAgeHours as number }),
-    ...(isSame(values.filter, original.filter) ? {} : { filter: values.filter }),
     ...(isSame(values.defaultFields, original.defaultFields)
       ? {}
       : { defaultFields: values.defaultFields }),

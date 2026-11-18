@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,18 +11,29 @@ from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from .config_loader import (
+    MAX_SITE_LIMIT,
     AppConfig,
     ConfigError,
+    is_valid_max_age,
     parse,
     resolve_proxy_url,
     validate_job_settings,
 )
+from .log import get_logger
 from .types import CANONICAL_FIELDS
+
+_LOG = get_logger()
 
 SETTINGS_COLLECTION = "job_settings"
 SETTINGS_ID = "active"
+BACKUP_ID = "active_pre_migration_backup"
 SOURCE_SEED = "seed"
+SOURCE_MIGRATION = "migration"
 FIRST_VERSION = 1
+LEGACY_GLOBAL_KEYS: tuple[str, ...] = ("limit", "concurrency", "max_age_hours", "filter")
+LEGACY_DROPPED_KEYS: tuple[str, ...] = ("keywords",)
+LEGACY_KEYS: tuple[str, ...] = LEGACY_GLOBAL_KEYS + LEGACY_DROPPED_KEYS
+LEGACY_FALLBACK_LIMIT = 2
 CONFLICT_MESSAGE = "These settings changed somewhere else. Reload and try again"
 
 
@@ -35,6 +46,10 @@ class SettingsConflictError(ConfigError):
 
 
 class SettingsUnavailableError(ConfigError):
+    pass
+
+
+class SettingsMigrationError(ConfigError):
     pass
 
 
@@ -116,6 +131,92 @@ def merge_settings(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
     return {**merged, "sites": {**sites, **changed}}
 
 
+def has_legacy_globals(settings: dict[str, Any]) -> bool:
+    return any(key in settings for key in LEGACY_KEYS)
+
+
+def _is_whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _usable_limit(value: Any) -> int | None:
+    return max(1, min(MAX_SITE_LIMIT, value)) if _is_whole(value) else None
+
+
+def _fallback_limit(legacy: dict[str, Any]) -> int:
+    global_limit = _usable_limit(legacy.get("limit"))
+    return global_limit if global_limit is not None else LEGACY_FALLBACK_LIMIT
+
+
+def _copied_globals(site: dict[str, Any], legacy: dict[str, Any]) -> dict[str, Any]:
+    max_age = legacy.get("max_age_hours")
+    global_filter = legacy.get("filter")
+    copy_max_age = (
+        max_age is not None and site.get("max_age_hours") is None and is_valid_max_age(max_age)
+    )
+    copy_filter = isinstance(global_filter, dict) and bool(global_filter) and "filter" not in site
+    return {
+        **({"max_age_hours": max_age} if copy_max_age else {}),
+        **({"filter": global_filter} if copy_filter else {}),
+    }
+
+
+def _migrate_site(site: Any, legacy: dict[str, Any]) -> Any:
+    if not isinstance(site, dict):
+        return site
+    limit = _usable_limit(site.get("limit"))
+    return {
+        **site,
+        "limit": limit if limit is not None else _fallback_limit(legacy),
+        **_copied_globals(site, legacy),
+    }
+
+
+def migrate_legacy_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if not has_legacy_globals(settings):
+        return settings
+    kept = {key: value for key, value in settings.items() if key not in LEGACY_KEYS}
+    sites = settings.get("sites")
+    if not isinstance(sites, dict):
+        return kept
+    legacy = {key: settings.get(key) for key in LEGACY_GLOBAL_KEYS}
+    return {**kept, "sites": {name: _migrate_site(site, legacy) for name, site in sites.items()}}
+
+
+def legacy_fallback_sites(settings: dict[str, Any]) -> tuple[str, ...]:
+    sites = settings.get("sites")
+    if not has_legacy_globals(settings) or not isinstance(sites, dict):
+        return ()
+    if _usable_limit(settings.get("limit")) is not None:
+        return ()
+    return tuple(
+        name
+        for name, site in sites.items()
+        if isinstance(site, dict) and _usable_limit(site.get("limit")) is None
+    )
+
+
+def _validated_migration(settings: dict[str, Any]) -> dict[str, Any]:
+    migrated = migrate_legacy_settings(settings)
+    try:
+        validate_job_settings(migrated)
+    except ConfigError as exc:
+        raise SettingsMigrationError(
+            f"The stored job settings could not be migrated and were left unchanged: {exc}"
+        ) from exc
+    return migrated
+
+
+def _backup_fields(legacy: StoredSettings) -> dict[str, Any]:
+    return {
+        "version": legacy.version,
+        "settings": legacy.settings,
+        "updated_at": legacy.updated_at,
+        "updated_by": legacy.updated_by,
+        "backed_up_at": datetime.now(UTC).isoformat(),
+    }
+
+
 @contextmanager
 def _mongo_errors() -> Iterator[None]:
     try:
@@ -127,11 +228,35 @@ def _mongo_errors() -> Iterator[None]:
         ) from exc
 
 
+def _log_migration(legacy: StoredSettings) -> None:
+    _LOG.info(
+        "[settings] migrated global %s off the settings (version %d -> %d), backup kept as %s",
+        ", ".join(key for key in LEGACY_KEYS if key in legacy.settings),
+        legacy.version,
+        legacy.version + 1,
+        BACKUP_ID,
+    )
+    fallback = legacy_fallback_sites(legacy.settings)
+    if fallback:
+        _LOG.warning(
+            "[settings] no usable limit on %s, set to the fallback limit %d",
+            ", ".join(fallback),
+            LEGACY_FALLBACK_LIMIT,
+        )
+
+
 class JobSettingsStore:
     def __init__(self, database: Any) -> None:
         self._settings = database[SETTINGS_COLLECTION]
 
     def read(self) -> StoredSettings:
+        stored = self._find()
+        if not has_legacy_globals(stored.settings):
+            return stored
+        migrated = self._store_migration(stored)
+        return migrated if migrated is not None else self._find_migrated()
+
+    def _find(self) -> StoredSettings:
         with _mongo_errors():
             document = self._settings.find_one({"_id": SETTINGS_ID})
         if document is None:
@@ -139,6 +264,41 @@ class JobSettingsStore:
                 "Job settings are missing. Run ./seed.sh job-settings for this environment"
             )
         return _to_stored(document)
+
+    def _find_migrated(self) -> StoredSettings:
+        stored = self._find()
+        if not has_legacy_globals(stored.settings):
+            return stored
+        return replace(stored, settings=_validated_migration(stored.settings))
+
+    def _store_migration(self, legacy: StoredSettings) -> StoredSettings | None:
+        settings = _validated_migration(legacy.settings)
+        self._keep_backup(legacy)
+        fields = _stamp(settings, legacy.version + 1, SOURCE_MIGRATION)
+        if not self._swap(legacy.version, fields):
+            return None
+        _log_migration(legacy)
+        return _to_stored(fields)
+
+    def _keep_backup(self, legacy: StoredSettings) -> None:
+        with _mongo_errors():
+            try:
+                self._settings.update_one(
+                    {"_id": BACKUP_ID},
+                    {"$setOnInsert": _backup_fields(legacy)},
+                    upsert=True,
+                )
+            except DuplicateKeyError:
+                return
+
+    def _swap(self, version: int, fields: dict[str, Any]) -> bool:
+        with _mongo_errors():
+            previous = self._settings.find_one_and_update(
+                {"_id": SETTINGS_ID, "version": version},
+                {"$set": fields},
+                return_document=ReturnDocument.BEFORE,
+            )
+        return previous is not None
 
     def seed(self, settings: dict[str, Any]) -> bool:
         validate_job_settings(settings)
@@ -168,14 +328,8 @@ class JobSettingsStore:
     ) -> StoredSettings:
         validate_job_settings(settings)
         fields = _stamp(settings, current.version + 1, source)
-        with _mongo_errors():
-            previous = self._settings.find_one_and_update(
-                {"_id": SETTINGS_ID, "version": current.version},
-                {"$set": fields},
-                return_document=ReturnDocument.BEFORE,
-            )
-            if previous is None:
-                raise SettingsConflictError(CONFLICT_MESSAGE)
+        if not self._swap(current.version, fields):
+            raise SettingsConflictError(CONFLICT_MESSAGE)
         return _to_stored(fields)
 
 

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 MAX_LIMIT = 200
-MAX_CONCURRENCY = 10
 MAX_AGE_HOURS = 720
 MAX_LIST_ITEMS = 100
 MAX_DELAY_SECONDS = 60
@@ -46,16 +45,18 @@ class SiteUpdate(BaseModel):
     fields: FieldList | None = None
     api: ApiSettings | None = None
 
+    @field_validator("limit", "filter", mode="before")
+    @classmethod
+    def _refuse_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("cannot be null")
+        return value
+
 
 class ConfigUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(ge=1)
-    keywords: list[Keyword] | None = Field(default=None, min_length=1, max_length=MAX_LIST_ITEMS)
-    limit: int | None = Field(default=None, ge=1, le=MAX_LIMIT)
-    concurrency: int | None = Field(default=None, ge=1, le=MAX_CONCURRENCY)
-    max_age_hours: int | None = Field(default=None, ge=1, le=MAX_AGE_HOURS)
-    filter: FilterSettings | None = None
     default_fields: FieldList | None = None
     sites: dict[SiteName, SiteUpdate] = Field(default_factory=dict)
 

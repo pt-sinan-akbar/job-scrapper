@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, status
@@ -9,6 +8,7 @@ from ui_server.dependencies import ServicesDep, require_session
 from ui_server.errors import ConfigInvalidError
 from ui_server.schema.response import ok
 from ui_server.schema.runs import StartRunRequest
+from ui_server.services.run_detail import detail_to_dict, record_to_dict
 
 router = APIRouter(prefix="/api/runs", dependencies=[Depends(require_session)])
 
@@ -24,9 +24,15 @@ async def start_run(body: StartRunRequest, services: ServicesDep) -> dict[str, A
     record = services.run_service.start(
         tuple(body.keywords), tuple(body.sites), body.notify_discord
     )
-    return ok(asdict(record))
+    return ok(record_to_dict(record))
+
+
+@router.get("/latest")
+def read_latest_run(services: ServicesDep) -> dict[str, Any]:
+    detail = services.run_service.latest()
+    return ok(None if detail is None else detail_to_dict(detail))
 
 
 @router.get("/{run_id}")
 def read_run(run_id: str, services: ServicesDep) -> dict[str, Any]:
-    return ok(asdict(services.run_service.get(run_id)))
+    return ok(detail_to_dict(services.run_service.get(run_id)))

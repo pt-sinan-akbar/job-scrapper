@@ -7,7 +7,6 @@ import RunForm from '@/modules/runs/presentation/components/RunForm.vue'
 import { NOTIFY_DISCORD_STORAGE_KEY } from '@/modules/runs/presentation/components/notifyDiscordStorage'
 
 const OPTIONS: RunOptions = {
-  keywords: ['django'],
   sites: [
     { name: 'upwork', isEnabled: true },
     { name: 'indeed', isEnabled: false },
@@ -53,12 +52,34 @@ describe('RunForm', () => {
     document.body.innerHTML = ''
   })
 
-  it('has the Send to Discord when done checkbox, off by default', () => {
+  it('has the Send to Discord checkbox, off by default', () => {
     const wrapper = mountForm()
 
-    expect(wrapper.text()).toContain('Send to Discord when done')
+    expect(wrapper.get('label[for="run-notify-discord"]').text()).toBe('Send to Discord')
+    expect(wrapper.text()).not.toContain('when done')
     expect(notifyBox(wrapper).attributes('data-state')).toBe('unchecked')
     expect(notifyBox(wrapper).attributes('disabled')).toBeUndefined()
+  })
+
+  it('puts Send to Discord on the left and the sites on the right of one row', () => {
+    const row = mountForm().get('[data-slot="run-options"]')
+    const [discord, sites] = row.element.children
+
+    expect(row.classes()).toEqual(expect.arrayContaining(['flex-col', 'sm:flex-row']))
+    expect(row.classes()).toContain('sm:justify-between')
+    expect(discord!.querySelector('#run-notify-discord')).not.toBeNull()
+    expect(sites!.tagName).toBe('FIELDSET')
+    expect(sites!.querySelector('[data-slot="site-options"]')!.className).toContain(
+      'sm:justify-end',
+    )
+  })
+
+  it('keeps the Sites group name for screen readers only', () => {
+    const wrapper = mountForm()
+
+    const legend = wrapper.get('legend')
+    expect(legend.text()).toBe('Sites')
+    expect(legend.classes()).toContain('sr-only')
   })
 
   it('emits start with notify false by default', async () => {

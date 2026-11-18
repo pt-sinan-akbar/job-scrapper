@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
+import { ApiError } from '@/core/errors/ApiError'
+import type { RunDetail, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import { requireRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
 import type { LoadStatus } from '@/shared/utils/loadStatus'
@@ -15,8 +16,14 @@ export interface RunError {
   readonly message: string
 }
 
+const NOT_FOUND_STATUS = 404
+
 function isBusy(record: RunRecord): boolean {
   return record.status === 'running' || record.discordStatus === 'sending'
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === NOT_FOUND_STATUS
 }
 
 export const useRunStore = defineStore('runs', () => {
@@ -27,6 +34,12 @@ export const useRunStore = defineStore('runs', () => {
   const discordOutcome = ref<RunRecord | null>(null)
   const errorMessage = ref<string | null>(null)
   const runError = ref<RunError | null>(null)
+  const latestRun = ref<RunDetail | null>(null)
+  const latestStatus = ref<LoadStatus>('idle')
+  const latestErrorMessage = ref<string | null>(null)
+  const lostRunId = ref<string | null>(null)
+  const goneRunId = ref<string | null>(null)
+  let latestVersion = 0
   let pollFailures = 0
   let discordWaitPolls = 0
   let runEndReportedFor: string | null = null
@@ -35,6 +48,22 @@ export const useRunStore = defineStore('runs', () => {
   const expectedDiscordIds = new Set<string>()
 
   const isRunning = computed(() => activeRunId.value !== null)
+
+  const isResultsLost = computed(() => lostRunId.value !== null)
+
+  const isResultsPending = computed(() => {
+    if (isResultsLost.value) {
+      return false
+    }
+    const shown = latestRun.value
+    if (isRunning.value && shown?.record.id !== activeRunId.value) {
+      return true
+    }
+    if (shown === null) {
+      return latestStatus.value === 'loading'
+    }
+    return shown.record.status === 'running' && shown.record.id !== goneRunId.value
+  })
 
   function clearPollTimer(): void {
     if (pollTimer !== null) {
@@ -53,6 +82,7 @@ export const useRunStore = defineStore('runs', () => {
 
   function followRun(id: string): void {
     activeRunId.value = id
+    lostRunId.value = null
     pollFailures = 0
     discordWaitPolls = 0
     schedulePoll(id)
@@ -74,8 +104,40 @@ export const useRunStore = defineStore('runs', () => {
       schedulePoll(id)
       return
     }
+    markLost(id)
+  }
+
+  function markLost(id: string): void {
     runError.value = { message: LOST_RUN_MESSAGE }
+    lostRunId.value = id
     stopFollowing(id)
+  }
+
+  function handleRunGone(id: string): void {
+    if (latestRun.value?.record.id !== id) {
+      markLost(id)
+      return
+    }
+    goneRunId.value = id
+    stopFollowing(id)
+  }
+
+  function followIfBusy(detail: RunDetail | null): void {
+    if (detail === null || !isBusy(detail.record) || activeRunId.value !== null) {
+      return
+    }
+    if (detail.record.discordStatus === 'sending') {
+      expectedDiscordIds.add(detail.record.id)
+    }
+    followRun(detail.record.id)
+  }
+
+  function applyLatest(next: RunDetail | null): void {
+    latestRun.value = next
+    if (next !== null && next.record.id === lostRunId.value) {
+      lostRunId.value = null
+    }
+    followIfBusy(next)
   }
 
   async function load(): Promise<void> {
@@ -99,6 +161,36 @@ export const useRunStore = defineStore('runs', () => {
     }
   }
 
+  async function loadLatest(): Promise<void> {
+    if (latestStatus.value === 'loading') {
+      return
+    }
+    const startedIn = session
+    const versionAtStart = latestVersion
+    latestStatus.value = 'loading'
+    latestErrorMessage.value = null
+    try {
+      const next = await requireRunUseCases().getLatestRun.execute()
+      if (startedIn !== session) {
+        return
+      }
+      if (versionAtStart === latestVersion) {
+        applyLatest(next)
+      }
+      latestStatus.value = 'ready'
+    } catch (error) {
+      if (startedIn === session) {
+        latestErrorMessage.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
+        latestStatus.value = 'error'
+      }
+    }
+  }
+
+  function showDetail(detail: RunDetail): void {
+    latestVersion += 1
+    latestRun.value = detail
+  }
+
   function shouldWaitForDiscord(record: RunRecord): boolean {
     const isAwaiting =
       expectedDiscordIds.has(record.id) &&
@@ -113,27 +205,34 @@ export const useRunStore = defineStore('runs', () => {
 
   async function poll(id: string): Promise<void> {
     const startedIn = session
-    let record: RunRecord
+    let detail: RunDetail
     try {
-      record = await requireRunUseCases().getRun.execute(id)
-    } catch {
-      if (isFollowing(id, startedIn)) {
+      detail = await requireRunUseCases().getRun.execute(id)
+    } catch (error) {
+      if (!isFollowing(id, startedIn)) {
+        return
+      }
+      if (isNotFound(error)) {
+        handleRunGone(id)
+      } else {
         handlePollFailure(id)
       }
       return
     }
     if (isFollowing(id, startedIn)) {
-      handleRecord(record)
+      handleDetail(detail)
     }
   }
 
-  function handleRecord(record: RunRecord): void {
+  function handleDetail(detail: RunDetail): void {
+    const { record } = detail
     pollFailures = 0
     if (record.discordStatus === 'sending') {
       expectedDiscordIds.add(record.id)
     }
     if (record.status !== 'running') {
       recordRunEnd(record)
+      showDetail(detail)
     }
     if (isBusy(record) || shouldWaitForDiscord(record)) {
       schedulePoll(record.id)
@@ -192,6 +291,11 @@ export const useRunStore = defineStore('runs', () => {
     discordOutcome.value = null
     errorMessage.value = null
     runError.value = null
+    latestRun.value = null
+    latestStatus.value = 'idle'
+    latestErrorMessage.value = null
+    lostRunId.value = null
+    goneRunId.value = null
   }
 
   return {
@@ -201,8 +305,14 @@ export const useRunStore = defineStore('runs', () => {
     runError,
     runOutcome,
     discordOutcome,
+    latestRun,
+    latestStatus,
+    latestErrorMessage,
     isRunning,
+    isResultsPending,
+    isResultsLost,
     load,
+    loadLatest,
     start,
     reset,
   }

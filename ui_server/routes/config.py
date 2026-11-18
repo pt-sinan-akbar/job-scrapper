@@ -11,9 +11,9 @@ from ui_server.schema.response import ok
 router = APIRouter(prefix="/api/config", dependencies=[Depends(require_session)])
 
 
-def _to_filter(raw: dict[str, Any] | None) -> dict[str, list[str]] | None:
+def _to_filter(raw: dict[str, Any] | None) -> dict[str, list[str]]:
     if raw is None:
-        return None
+        return {}
     return {
         key: [value] if isinstance(value, str) else value for key, value in raw.items() if value
     }
@@ -33,11 +33,6 @@ def _to_site(name: str, site: dict[str, Any]) -> dict[str, Any]:
 
 def _to_values(settings: dict[str, Any]) -> dict[str, Any]:
     return {
-        "keywords": settings.get("keywords", []),
-        "limit": settings.get("limit"),
-        "concurrency": settings.get("concurrency"),
-        "max_age_hours": settings.get("max_age_hours"),
-        "filter": _to_filter(settings.get("filter")) or {},
         "default_fields": settings.get("default_fields", []),
         "sites": [_to_site(name, site) for name, site in settings.get("sites", {}).items()],
     }

@@ -1,20 +1,5 @@
 # First version of the job settings. ./seed.sh job-settings inserts this once per
 # environment and never overwrites. After that, change settings at /config
-keywords:
-  - software engineer
-  - ai engineer
-  - mobile engineer
-  - back end engineer
-
-limit: 3
-
-concurrency: 2
-
-# jobs older than this are dropped; pair with URL param windows per site
-max_age_hours: 72
-
-filter:
-  location: [jakarta, tangerang, tangerang selatan, bandung, bekasi, Indonesia]
 
 # anchors (site, matched_keyword, title, company, url) always included
 default_fields:
@@ -38,6 +23,9 @@ sites:
   jobstreet:
     enabled: true
     limit: 3
+    max_age_hours: 72
+    filter:
+      location: [jakarta, tangerang, tangerang selatan, bandung, bekasi, Indonesia]
     url_template: "https://id.jobstreet.com/id/{keyword_slug}-jobs?daterange=1&sortmode=ListedDate"
     api:
       enabled: true
@@ -48,6 +36,9 @@ sites:
   glints:
     enabled: true
     limit: 3
+    max_age_hours: 72
+    filter:
+      location: [jakarta, tangerang, tangerang selatan, bandung, bekasi, Indonesia]
     url_template: "https://glints.com/id/opportunities/jobs/explore?keyword={keyword}&country=ID&sortBy=LATEST"
     api:
       enabled: true
@@ -63,6 +54,9 @@ sites:
   linkedin:
     enabled: true
     limit: 3
+    max_age_hours: 72
+    filter:
+      location: [jakarta, tangerang, tangerang selatan, bandung, bekasi, Indonesia]
     # guest API ignores sortBy=DD (verified); f_TPR is the real recency lever. Kept for convention.
     url_template: "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={keyword}&location=Indonesia&f_TPR=r86400&sortBy=DD&start=0"
     api:
@@ -76,12 +70,15 @@ sites:
   indeed:
     enabled: true
     limit: 3
+    max_age_hours: 72
+    filter:
+      location: [jakarta, tangerang, tangerang selatan, bandung, bekasi, Indonesia]
     url_template: "https://id.indeed.com/jobs?q={keyword_plus}&l=Indonesia&fromage=1"
 
   upwork:
     enabled: true
     limit: 30
-    # all jobs are remote and worldwide, so the global Indonesian location filter is off
+    max_age_hours: 72
     filter: {}
     # never fetched: Upwork is API-only. The runner still requires a url_template.
     url_template: "https://www.upwork.com/nx/search/jobs/?q={keyword}&sort=recency"

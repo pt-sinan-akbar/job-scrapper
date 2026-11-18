@@ -57,6 +57,7 @@ anyone with read access). Use these for non-secret config:
 |---|---|---|
 | `UI_DOMAIN` | deploy-ui | Optional. Public domain for the UI, with DNS pointing to the VPS. When it is not set, deploy-ui is skipped and the UI stays offline |
 | `MCP_BIND_HOST` | all deploy jobs | Optional. Docker gateway IP of the VPS, default `172.17.0.1` |
+| `SCRAPER_CONCURRENCY` | all deploy jobs | Optional. How many `(keyword, site)` pairs a scrape runs at once, 1 to 10, default `2`. An invalid value logs a warning and uses 2 |
 | `PROXY_URL` | `deploy-mcp` | Required. Proxy URL for scrapes, such as `socks5://localhost:1080`. A URL with a password belongs in a secret of the same name, because variables are visible in logs. The deploy fails when it is missing or empty |
 
 ## Networking
@@ -69,7 +70,7 @@ them through `host.docker.internal` and the public cannot. Do not set it to
 
 scraper-ui does not call scraper-mcp. It runs the scrape, config and Discord
 functions in its own process, so deploy-ui passes it `MONGO_URI`,
-`MONGO_DB_NAME`, `MONGO_COLLECTION_NAME` and `PROXY_URL`. Caddy reaches the UI at
+`MONGO_DB_NAME`, `MONGO_COLLECTION_NAME`, `PROXY_URL` and `SCRAPER_CONCURRENCY`. Caddy reaches the UI at
 `host.docker.internal:8090`.
 
 scraper-ui has no published port. Caddy is its only public entry, on ports 80 and
@@ -93,9 +94,10 @@ Job settings and Discord settings live in Mongo. The rest is baked in:
 
 | Want to… | How |
 |---|---|
-| Change keywords, limits, filters, sites | Edit at `/config`. Applies from the next run, no deploy |
+| Change sites, or a site's limit, max age, filter | Edit at `/config`. Applies from the next run, no deploy |
+| Change keywords | Not a setting. Type them in "Start a run", or pass them to `scrape_jobs` / `--keyword` on every run |
 | Change the proxy | Update the `PROXY_URL` GitHub secret or variable → redeploy |
-| Change concurrency | Edit "Sites scraped at once" at `/config`. Applies from the next run, no deploy |
+| Change concurrency | Update the `SCRAPER_CONCURRENCY` GitHub variable (1 to 10, default 2) → redeploy. Locally, set it in `.env` and recreate scraper-mcp and scraper-ui |
 | Change the schedule | Scheduled runs come from a separate service outside this project. This project has no scheduler |
 | Change Discord message format | Edit the template in the Discord section of `/config`. Read fresh each send, no deploy |
 | Change Discord per-message cap | Edit max chars in the Discord section of `/config` |
@@ -120,7 +122,35 @@ $C --profile ui pull && $C --profile ui up -d --no-build
 ```
 
 The MCP step also needs the env vars from the workflow (`MONGO_URI`,
-`PROXY_URL`, ...). Log in to ghcr.io first, see above.
+`PROXY_URL`, ...). Log in to ghcr.io first, see above. Rolling back past the
+job settings migration also needs the settings document restored, see
+[Job settings migration is one-way](#job-settings-migration-is-one-way).
+
+## Job settings migration is one-way
+
+The first read by this image moves old global `limit`, `concurrency`,
+`max_age_hours`, `filter` and `keywords` into the sites and deletes the
+global keys (see
+[`configuration.md`](configuration.md#migration-from-global-values)). Older
+images need those global keys, so after the migration they cannot read the
+settings. Rolling back the image alone is not enough: restore the document too.
+
+The original document is kept once as `_id: "active_pre_migration_backup"` in
+`job_settings`. To restore it, stop the scraper containers, then in `mongosh`:
+
+```js
+use job_scraper
+const backup = db.job_settings.findOne({ _id: "active_pre_migration_backup" })
+db.job_settings.replaceOne(
+  { _id: "active" },
+  { version: backup.version, settings: backup.settings,
+    updated_at: backup.updated_at, updated_by: backup.updated_by }
+)
+```
+
+Then start the old image. Changes saved after the migration are lost. Starting
+this image again migrates the restored document again; the backup is kept as
+it was.
 
 ## Trigger flow
 

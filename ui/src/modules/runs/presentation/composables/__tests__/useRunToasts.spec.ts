@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent } from 'vue'
-import type { RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunDetail, RunRecord } from '@/modules/runs/domain/entities/Run'
 import { useRunToasts } from '@/modules/runs/presentation/composables/useRunToasts'
 import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import {
@@ -41,6 +41,10 @@ const AppHost = defineComponent({
   },
 })
 
+function asDetail(record: RunRecord): RunDetail {
+  return { record, jobs: [], failures: [], payloads: [] }
+}
+
 function mountApp() {
   return mount(AppHost)
 }
@@ -50,7 +54,7 @@ describe('useRunToasts', () => {
     vi.resetAllMocks()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     setActivePinia(createPinia())
-    provideRunUseCases({ getOptions, getRun, startRun })
+    provideRunUseCases({ getOptions, getRun, getLatestRun: { execute: vi.fn() }, startRun })
   })
 
   afterEach(() => {
@@ -63,7 +67,7 @@ describe('useRunToasts', () => {
     [{ status: 'failed', error: 'Scraper crashed' }, 'error', 'Run failed: Scraper crashed'],
   ])('toasts when the run ends as %o', async (end, kind, message) => {
     startRun.execute.mockResolvedValue({ ...RUN, status: 'running' })
-    getRun.execute.mockResolvedValue({ ...RUN, ...end })
+    getRun.execute.mockResolvedValue(asDetail({ ...RUN, ...end }))
     mountApp()
 
     await useRunStore().start(['django'], ['upwork'], false)
@@ -78,13 +82,15 @@ describe('useRunToasts', () => {
     ['failed', 'error', 'Discord failed: Missing access'],
   ])('toasts when sending ends as %s', async (final, kind, message) => {
     startRun.execute.mockResolvedValue({ ...RUN, status: 'running', discordStatus: 'sending' })
-    getRun.execute.mockResolvedValue({
-      ...RUN,
-      discordStatus: final,
-      discordSent: 2,
-      discordFailed: final === 'partial' ? 1 : 0,
-      discordError: final === 'failed' ? 'Missing access' : null,
-    })
+    getRun.execute.mockResolvedValue(
+      asDetail({
+        ...RUN,
+        discordStatus: final,
+        discordSent: 2,
+        discordFailed: final === 'partial' ? 1 : 0,
+        discordError: final === 'failed' ? 'Missing access' : null,
+      }),
+    )
     mountApp()
 
     await useRunStore().start(['django'], ['upwork'], true)
@@ -96,9 +102,9 @@ describe('useRunToasts', () => {
   it('toasts the run end once and the Discord outcome once', async () => {
     startRun.execute.mockResolvedValue({ ...RUN, status: 'running', discordStatus: 'sending' })
     getRun.execute
-      .mockResolvedValueOnce({ ...RUN, discordStatus: 'sending' })
-      .mockResolvedValueOnce({ ...RUN, discordStatus: 'sending' })
-      .mockResolvedValueOnce({ ...RUN, discordStatus: 'sent', discordSent: 4 })
+      .mockResolvedValueOnce(asDetail({ ...RUN, discordStatus: 'sending' }))
+      .mockResolvedValueOnce(asDetail({ ...RUN, discordStatus: 'sending' }))
+      .mockResolvedValueOnce(asDetail({ ...RUN, discordStatus: 'sent', discordSent: 4 }))
     mountApp()
 
     await useRunStore().start(['django'], ['upwork'], true)
@@ -109,7 +115,7 @@ describe('useRunToasts', () => {
 
   it('only toasts the run end for a run without a send', async () => {
     startRun.execute.mockResolvedValue({ ...RUN, status: 'running' })
-    getRun.execute.mockResolvedValue(RUN)
+    getRun.execute.mockResolvedValue(asDetail(RUN))
     mountApp()
 
     await useRunStore().start(['django'], ['upwork'], false)

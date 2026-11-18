@@ -29,6 +29,9 @@ TESTS = ("scrape", "mongo")
 
 _MCP_CONTAINER = CONTAINER_NAMES["scraper-mcp"]
 
+SMOKE_KEYWORD = "software engineer"
+_SCRAPE_ARGV = ("python", "-m", "scraper", "--keyword", SMOKE_KEYWORD)
+
 # Reuses the real Mongo connection/auth (mcp_server.mongo, MONGO_URI from the
 # container env) but writes to an isolated throwaway collection so the real
 # scrape_runs history stays clean.
@@ -140,12 +143,12 @@ def build_test(test: str) -> list[Command]:
     if test == "scrape":
         # python -m scraper is isolated: it scrapes only (no Mongo write, no
         # Discord post) using whatever config is loaded in the container.
-        return [Command(["docker", "exec", _MCP_CONTAINER, "python", "-m", "scraper"])]
+        return [Command(["docker", "exec", _MCP_CONTAINER, *_SCRAPE_ARGV])]
     if test == "mongo":
         return [Command(["docker", "exec", _MCP_CONTAINER, "python", "-c", _MONGO_PING_SCRIPT])]
     raise ValueError(f"unknown test: {test!r}")
 
 
 def build_scrape_site(site: str) -> list[Command]:
-    """Scrape one platform: docker exec job-scraper-mcp python -m scraper <site>."""
-    return [Command(["docker", "exec", _MCP_CONTAINER, "python", "-m", "scraper", site])]
+    """Scrape one platform: docker exec job-scraper-mcp python -m scraper --keyword <kw> <site>."""
+    return [Command(["docker", "exec", _MCP_CONTAINER, *_SCRAPE_ARGV, site])]

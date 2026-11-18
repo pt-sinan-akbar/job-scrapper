@@ -2,7 +2,8 @@
 
 Job settings live in the `job_settings` Mongo collection, one document per
 environment. Edit them at `/config`, or with the `update_config` MCP tool.
-The proxy lives in the `PROXY_URL` env var. Results are never written to disk:
+The proxy lives in the `PROXY_URL` env var and scrape concurrency in the
+`SCRAPER_CONCURRENCY` env var. Results are never written to disk:
 the runner returns them and `scrape_jobs` stores them in Mongo.
 
 `scraper/config_loader.py::parse` validates all of them into an `AppConfig`
@@ -18,76 +19,40 @@ The examples below show the keys as YAML, which is the format of
 `seeds/job_settings.yaml`. All of them are job settings.
 
 ```yaml
-keywords: [software engineer, data analyst]   # required
-limit: 2                                       # optional, default 2
-concurrency: 2                                 # optional, default 2
-max_age_hours: 24                              # optional, no default = no filter
-default_fields: [...]                          # optional, default 4 fields
-filter: {...}                                  # optional, no default = no filter
-sites: {...}                                   # required, non-empty
+default_fields: [...]
+sites: {...}
 ```
 
-### `keywords` (required)
+| Key              | Required | Default        |
+|------------------|----------|----------------|
+| `default_fields` | no       | 4 fields       |
+| `sites`          | yes      | none, non-empty |
 
-List of strings. Each keyword is run against every enabled site, producing
-a `(keyword, site)` cross-product. Each pair gets its own payload in the
-`RunResult` that `scraper.runner.run` returns.
+Nothing else is allowed at the top level. `limit`, `max_age_hours` and
+`filter` are per site only (see `sites` below): there are no global values and
+no fallbacks. Concurrency is not a job setting; it comes from the
+`SCRAPER_CONCURRENCY` env var (see "Concurrency" below). A save that sends
+`limit`, `concurrency`, `max_age_hours` or `filter` at the top level is refused
+with `not a job setting: <key>`.
 
-- Backwards-compatible alias: `keyword: <string>` is accepted and treated as
-  a single-element list.
-- Empty strings are rejected. Duplicates are silently de-duped.
-- Each keyword is templated into the URL via `{keyword}`, `{keyword_slug}`,
-  or `{keyword_plus}` (see "Site URL templating" below).
+### Keywords are not a job setting
 
-```yaml
-# Multi-keyword
-keywords:
-  - software engineer
-  - data analyst
+The job settings hold no keywords. Every run names its own, and there is no
+fallback:
 
-# Single keyword (legacy form)
-keyword: backend developer
-```
+- UI: the keyword box in "Start a run" (`POST /api/runs` needs `keywords`)
+- MCP: the `keywords` argument of `scrape_jobs` (required, passed by name)
+- CLI: `python -m scraper --keyword <kw> [--keyword <kw> ...] [sites...]`
 
-### `limit` (optional, default `2`)
-
-Integer, must be `>= 1`. Maximum number of jobs each site emits per
-`(keyword, site)` pair.
-
-```yaml
-limit: 5
-```
-
-### `concurrency` (optional, default `2`)
-
-Integer, must be `>= 1`. Maximum number of `(keyword, site)` pairs running
-in parallel through a thread pool. The default comes from `DEFAULT_CONCURRENCY`
-in `scraper/config_loader.py`.
-
-- Edit it on `/config` (General section, "Sites scraped at once", 1 to 10) or
-  with `update_config`.
-
-- `concurrency: 1` falls back to a sequential loop (no thread overhead).
-- Each Playwright fallback consumes ~250-300MB RAM. Tune for available memory.
-
-```yaml
-concurrency: 4
-```
-
-### `max_age_hours` (optional, no default)
-
-Integer, must be `>= 1` if set. Drops jobs whose parsed `posted_at` is
-older than this many hours from now (UTC). Jobs with unparseable
-`posted_date` are kept (conservative).
-
-- Per-site override: `sites.<name>.max_age_hours` replaces the global.
-- Pair this with the URL templates' server-side recency params for best results
-  (e.g. jobstreet `?daterange=1`, linkedin `&f_TPR=r86400`, indeed `&fromage=1`).
-  See `sites.md` for the full per-site param table.
-
-```yaml
-max_age_hours: 24
-```
+Each keyword is run against every selected site, producing a
+`(keyword, site)` cross-product. Each pair gets its own payload in the
+`RunResult` that `scraper.runner.run` returns. Every keyword is trimmed and
+blank ones are dropped, by `scraper.runner.normalize_keywords`, which the
+runner, `scrape_jobs` and the CLI all use. A run with no keywords left is
+refused with `keywords are required`: the runner returns exit code 1 without
+fetching, `scrape_jobs` returns `ok: false` without saving, and the CLI prints
+it to stderr and exits `2`. A save that sends `keywords` is refused with
+`not a job setting: keywords`.
 
 ### `default_fields` (optional)
 
@@ -109,7 +74,7 @@ job_id              requirements
 - Unknown field names log a warning and are silently dropped when settings
   load — they don't abort the load. Saving through `update_config` (and the
   UI) refuses them instead, so new unknown names never get stored.
-- Per-site override: `sites.<name>.fields` replaces the global list.
+- Per-site override: `sites.<name>.fields` replaces this list for that site.
 
 ```yaml
 default_fields:
@@ -122,20 +87,6 @@ default_fields:
   - posted_at
 ```
 
-### `filter` (optional)
-
-Content filter applied after recency, before field projection. Each value
-can be a single string or a list. Substring + case-insensitive.
-
-See [`filters.md`](filters.md) for full reference.
-
-```yaml
-filter:
-  location: [jakarta, bandung]
-  employment_type: [full-time, internship]
-  work_type: [remote, hybrid]
-```
-
 ### `sites` (required)
 
 Mapping from site-name → site config. Site name must match a registered
@@ -145,20 +96,31 @@ scraper in `scraper/sites/__init__.py::SCRAPERS`. Currently supported:
 - `glints`
 - `linkedin`
 - `indeed`
+- `upwork`
 
 Each site entry:
 
 ```yaml
 sites:
   <name>:
-    enabled: true                                  # optional, default true
-    url_template: "https://...?{keyword}..."       # required
-    fields: [...]                                  # optional, overrides default_fields
-    max_age_hours: 12                              # optional, overrides global
-    filter: {...}                                  # optional, replaces global
-    limit: 10                                      # optional, overrides global limit
-    api: {...}                                     # optional, API-first source (see below)
+    enabled: true
+    url_template: "https://...?{keyword}..."
+    limit: 10
+    max_age_hours: 72
+    filter: {...}
+    fields: [...]
+    api: {...}
 ```
+
+| Key             | Required | When absent                         |
+|-----------------|----------|-------------------------------------|
+| `enabled`       | no       | `true`                              |
+| `url_template`  | yes      | `ConfigError`                       |
+| `limit`         | yes      | `ConfigError`                       |
+| `max_age_hours` | no       | no age cut                          |
+| `filter`        | no       | no filter                           |
+| `fields`        | no       | `default_fields`                    |
+| `api`           | no       | HTML only, from `url_template`      |
 
 #### `sites.<name>.enabled`
 
@@ -177,7 +139,8 @@ substituted:
 | `{keyword_plus}`  | plus-separated                  | `software+engineer`             |
 
 Pick the one that matches the site's URL convention. The loader validates
-all placeholders against this allowlist; unknown placeholder → `ConfigError`.
+all placeholders against this allowlist by formatting each template with the
+placeholder keyword `data analyst`; unknown placeholder → `ConfigError`.
 
 ```yaml
 sites:
@@ -192,21 +155,39 @@ sites:
 Optional list of canonical field names. Replaces (does not merge into)
 `default_fields` for this site only. Same validation as `default_fields`.
 
+#### `sites.<name>.limit` (required)
+
+Whole number from 1 to 200. Maximum number of jobs this site emits per
+`(keyword, site)` pair, counted after the age cut and the filter. A site
+without `limit` fails validation, and a save that sends `limit: null` is
+refused.
+
 #### `sites.<name>.max_age_hours`
 
-Optional integer. Replaces the global `max_age_hours` for this site only.
+Optional integer `>= 1`. Drops jobs whose parsed `posted_at` is older than
+this many hours from now (UTC). Jobs with an unparseable `posted_date` are
+kept (conservative). Absent or `null` means no age cut for this site.
+
+Pair it with the URL templates' server-side recency params (e.g. jobstreet
+`?daterange=1`, linkedin `&f_TPR=r86400`, indeed `&fromage=1`). See
+[`sites.md`](sites.md) for the per-site param table. API sources also use it
+as their search window.
 
 #### `sites.<name>.filter`
 
-Optional dict. Replaces (does not merge into) the global `filter` block for
-this site only. Same shape as the global filter — see [`filters.md`](filters.md).
+Optional content filter applied after the age cut, before field projection.
+Keys are `location`, `employment_type`, `work_type`. Each value can be a
+single string or a list. Substring + case-insensitive. Absent, `{}` or only
+empty lists means no filter for this site. See [`filters.md`](filters.md).
 
-#### `sites.<name>.limit`
-
-Optional positive integer. Replaces the global `limit` for this site only —
-useful when one source's relevance ranking buries good matches deep in the
-list (e.g. raise `sites.indeed.limit` so Jakarta jobs surface past the top
-two non-Jakarta hits, while keeping other sites at the cheaper global limit).
+```yaml
+sites:
+  jobstreet:
+    filter:
+      location: [jakarta, bandung]
+      employment_type: [full-time, internship]
+      work_type: [remote, hybrid]
+```
 
 ### `sites.<name>.api`
 
@@ -248,16 +229,63 @@ The loader (`parse`) enforces:
 
 | Key                       | Rule                                             | On failure        |
 |---------------------------|--------------------------------------------------|-------------------|
-| `keywords` / `keyword`    | At least one non-empty string                    | `ConfigError`     |
-| `limit`                   | Integer >= 1                                     | `ConfigError`     |
-| `concurrency`             | Whole number from 1 to 10                        | `ConfigError`     |
-| `max_age_hours`           | Integer >= 1 or null                             | `ConfigError`     |
+| top-level keys            | Only `default_fields`, `sites`                   | `ConfigError` (`not a job setting`) |
 | `sites`                   | Non-empty mapping                                | `ConfigError`     |
+| `sites.<name>.limit`      | Required, whole number from 1 to 200             | `ConfigError`     |
+| `sites.<name>.max_age_hours` | Integer >= 1 or null                          | `ConfigError`     |
 | `sites.<name>.url_template` | Non-empty string with valid placeholders only  | `ConfigError`     |
 | `default_fields` entries  | Strings; unknown names → warning, dropped on load, refused on save | `[config] warning` (load continues) |
-| `filter` keys             | One of `location`, `employment_type`, `work_type`; unknown → warning, dropped | `[config] warning` |
-| `filter` values           | String or list-of-strings                        | `ConfigError`     |
+| `sites.<name>.filter` keys | One of `location`, `employment_type`, `work_type`; unknown → warning, dropped | `[config] warning` |
+| `sites.<name>.filter` values | String or list-of-strings                        | `ConfigError`     |
 
+## Concurrency
+
+`SCRAPER_CONCURRENCY` (env var) is how many `(keyword, site)` pairs run at once
+through a thread pool. Default `2`, valid `1` to `10`. A value that is not a
+whole number in that range logs a warning and uses `2`. `1` runs pairs one by
+one without a thread pool. Each Playwright fallback uses ~250-300MB RAM, so
+tune it for the memory you have. It is read at the start of every run, in
+`scraper/config_loader.py::resolve_concurrency`, and passed through to the
+`scraper-mcp` and `scraper-ui` containers by `docker-compose.yml`. Change it in
+`.env` and recreate the containers.
+
+## Migration from global values
+
+Older settings documents had global `limit`, `concurrency`, `max_age_hours`,
+`filter` and `keywords`. The first time `JobSettingsStore.read` sees such a
+document it migrates it, once, in one pass, and stores the result:
+
+- a site without a usable `limit` (missing, `null` or not a whole number) gets
+  the global `limit`, or `2` when there was no usable one. The sites that got
+  `2` are named in one WARNING line
+- every site `limit` is clamped to 1..200
+- a site without `max_age_hours` gets the global one, when it was set and valid
+- a site with no `filter` key gets the global filter, when it was a non-empty
+  mapping; a site that already had a `filter` (even `{}`) keeps it
+- the four global keys are deleted (`concurrency` is dropped; use
+  `SCRAPER_CONCURRENCY`)
+- `keywords` is deleted and not copied anywhere; callers pass keywords on
+  every run. A document that only has `keywords` still gets the `limit` fill
+  and clamp above, so it always ends valid
+
+The result is validated before anything is written. When it is still not
+valid (for example a bad `url_template`), nothing is written, the original
+document stays as it was, and the read fails with `The stored job settings
+could not be migrated and were left unchanged: <problem>`. Fix the document by
+hand and read again.
+
+Before the migrated document is written, the original document is copied once
+to `_id: "active_pre_migration_backup"` in the same `job_settings` collection.
+A later migration never replaces that copy. Reads, saves and seeding only touch
+`_id: "active"`, so the backup never changes them. See
+[`deploy.md`](deploy.md#job-settings-migration-is-one-way) for how to restore it.
+
+The migrated document is saved with the next version and `updated_by:
+"migration"`, and one INFO line is logged. The write only lands if the version
+has not changed, so two processes migrating at once store it once; the loser
+re-reads the stored result. Every read and save goes through it, so the UI
+always gets the migrated version. A page opened before the migration gets a
+conflict on save and must reload.
 
 ## Proxy configuration
 
@@ -310,18 +338,28 @@ from scraper.job_settings import load_app_config, open_store
 
 config = load_app_config(open_store())
 
-config.keywords           # tuple[str, ...]
-config.limit              # int
-config.concurrency        # int
-config.default_fields     # tuple[str, ...]
-config.max_age_hours      # int | None
-config.filter             # dict[str, list[str]]
-config.sites              # tuple[SiteConfig, ...]
+config.default_fields
+config.sites
+config.fields_for("glints")
 
-config.fields_for("glints")    # frozenset[str]
-config.max_age_for("glints")   # int | None
-config.filter_for("glints")    # dict[str, list[str]]
+site = config.site("glints")
+site.limit
+site.max_age_hours
+site.filter
 ```
+
+| Expression                    | Type                       |
+|-------------------------------|----------------------------|
+| `config.default_fields`       | `tuple[str, ...]`          |
+| `config.sites`                | `tuple[SiteConfig, ...]`   |
+| `config.fields_for(name)`     | `frozenset[str]`           |
+| `config.site(name)`           | `SiteConfig \| None`       |
+| `site.limit`                  | `int`                      |
+| `site.max_age_hours`          | `int \| None`              |
+| `site.filter`                 | `dict[str, list[str]]`, `{}` = no filter |
+
+Concurrency is not on the config: `resolve_concurrency()` reads it from the
+env var.
 
 ## Live editing via MCP
 

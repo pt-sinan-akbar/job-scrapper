@@ -12,10 +12,11 @@ from scraper.job_settings import JobSettingsStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEED_PATH = REPO_ROOT / "seeds" / "job_settings.yaml"
+CITIES = ["jakarta", "tangerang", "tangerang selatan", "bandung", "bekasi", "Indonesia"]
 SMALL_SEED = """
-keywords: [devops]
 sites:
   upwork:
+    limit: 3
     url_template: "https://www.upwork.com/nx/search/jobs/?q={keyword}&sort=recency"
 """
 
@@ -32,6 +33,24 @@ def test_committed_seed_file_keeps_upwork_location_filter_off():
     settings = yaml.safe_load(SEED_PATH.read_text())
 
     assert settings["sites"]["upwork"]["filter"] == {}
+
+
+def test_committed_seed_file_has_no_global_job_values():
+    settings = yaml.safe_load(SEED_PATH.read_text())
+
+    assert set(settings) == {"default_fields", "sites"}
+
+
+def test_committed_seed_file_gives_each_site_its_old_values():
+    sites = yaml.safe_load(SEED_PATH.read_text())["sites"]
+    city_sites = ["jobstreet", "glints", "linkedin", "indeed"]
+
+    assert {name: site["limit"] for name, site in sites.items()} == {
+        **dict.fromkeys(city_sites, 3),
+        "upwork": 30,
+    }
+    assert all(site["max_age_hours"] == 72 for site in sites.values())
+    assert all(sites[name]["filter"] == {"location": CITIES} for name in city_sites)
 
 
 def test_seed_file_inserts_once(tmp_path: Path):
@@ -58,8 +77,8 @@ def test_main_reports_invalid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     path = tmp_path / "seed.yaml"
-    path.write_text("keywords: []\n")
+    path.write_text("keywords: [devops]\n")
     monkeypatch.setattr(seed_settings, "open_store", _store)
 
     assert seed_settings.main(["--file", str(path)]) == 2
-    assert "keywords" in capsys.readouterr().err
+    assert "not a job setting: keywords" in capsys.readouterr().err

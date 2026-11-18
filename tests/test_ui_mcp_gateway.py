@@ -9,6 +9,8 @@ from ui_server.errors import ConfigConflictError, ConfigInvalidError, McpUnavail
 from ui_server.services import mcp_gateway
 from ui_server.services.mcp_gateway import LocalGateway, ScraperClient, read_result
 
+SITE_PATCH = {"sites": {"upwork": {"limit": 9}}}
+
 
 class FakeGateway:
     def __init__(self) -> None:
@@ -49,11 +51,11 @@ def test_local_gateway_runs_a_sync_tool_with_its_arguments(monkeypatch: pytest.M
     monkeypatch.setitem(mcp_gateway.LOCAL_TOOLS, "update_config", fake_update_config)
 
     result = asyncio.run(
-        LocalGateway().call("update_config", {"patch": {"limit": 9}, "source": "ui"}, 5.0)
+        LocalGateway().call("update_config", {"patch": SITE_PATCH, "source": "ui"}, 5.0)
     )
 
     assert result == {"ok": True, "version": 2}
-    assert seen == [{"patch": {"limit": 9}, "source": "ui"}]
+    assert seen == [{"patch": SITE_PATCH, "source": "ui"}]
 
 
 def test_local_gateway_awaits_an_async_tool(monkeypatch: pytest.MonkeyPatch):
@@ -145,6 +147,7 @@ def test_scrape_jobs_sends_sites_and_keywords_without_saving_the_run_and_asks_fo
                 "sites": ["upwork"],
                 "keywords": ["django"],
                 "save_run": False,
+                "include_payloads": True,
             },
         )
     ]
@@ -154,10 +157,10 @@ def test_save_config_sends_patch_version_and_source():
     gateway = FakeGateway()
     gateway.responses = [{"ok": True, "version": 2}]
 
-    asyncio.run(ScraperClient(gateway).save_config({"limit": 9}, 1))
+    asyncio.run(ScraperClient(gateway).save_config(SITE_PATCH, 1))
 
     assert gateway.calls == [
-        ("update_config", {"patch": {"limit": 9}, "expected_version": 1, "source": "ui"})
+        ("update_config", {"patch": SITE_PATCH, "expected_version": 1, "source": "ui"})
     ]
 
 
@@ -166,7 +169,7 @@ def test_save_config_raises_on_conflict():
     gateway.responses = [{"ok": False, "reason": "conflict", "message": "changed"}]
 
     with pytest.raises(ConfigConflictError, match="changed"):
-        asyncio.run(ScraperClient(gateway).save_config({"limit": 9}, 1))
+        asyncio.run(ScraperClient(gateway).save_config(SITE_PATCH, 1))
 
 
 def test_save_config_raises_on_invalid_settings():
@@ -174,7 +177,7 @@ def test_save_config_raises_on_invalid_settings():
     gateway.responses = [{"ok": False, "reason": "invalid", "message": "bad limit"}]
 
     with pytest.raises(ConfigInvalidError, match="bad limit"):
-        asyncio.run(ScraperClient(gateway).save_config({"limit": 9}, 1))
+        asyncio.run(ScraperClient(gateway).save_config(SITE_PATCH, 1))
 
 
 def test_save_config_raises_when_store_is_down():
@@ -182,7 +185,7 @@ def test_save_config_raises_when_store_is_down():
     gateway.responses = [{"ok": False, "reason": "unavailable", "message": "down"}]
 
     with pytest.raises(McpUnavailableError, match="down"):
-        asyncio.run(ScraperClient(gateway).save_config({"limit": 9}, 1))
+        asyncio.run(ScraperClient(gateway).save_config(SITE_PATCH, 1))
 
 
 def test_scraper_client_has_no_history_or_restore():

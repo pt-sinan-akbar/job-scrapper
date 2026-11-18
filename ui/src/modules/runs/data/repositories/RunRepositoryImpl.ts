@@ -1,6 +1,6 @@
 import type { RunRemoteDataSource } from '@/modules/runs/data/datasources/RunRemoteDataSource'
-import { toRunOptions, toRunRecord } from '@/modules/runs/data/models/RunModel'
-import type { RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
+import { toRunDetail, toRunOptions, toRunRecord } from '@/modules/runs/data/models/RunModel'
+import type { RunDetail, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import type { RunRepository } from '@/modules/runs/domain/repositories/RunRepository'
 
 export class RunRepositoryImpl implements RunRepository {
@@ -14,8 +14,13 @@ export class RunRepositoryImpl implements RunRepository {
     return toRunOptions(await this.dataSource.getOptions())
   }
 
-  async getRun(id: string): Promise<RunRecord> {
-    return toRunRecord(await this.dataSource.getRun(id))
+  async getRun(id: string): Promise<RunDetail> {
+    return toRunDetail(await this.dataSource.getRun(id))
+  }
+
+  async getLatestRun(): Promise<RunDetail | null> {
+    const model = await this.dataSource.getLatestRun()
+    return model == null ? null : toRunDetail(model)
   }
 
   async startRun(keywords: string[], sites: string[], notifyDiscord: boolean): Promise<RunRecord> {

@@ -4,7 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import type { DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import DiscordSettingsSection from '@/modules/discord/presentation/components/DiscordSettingsSection.vue'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
-import { EMPTY_FILTER, type ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
+import type { ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
 import { provideConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 
@@ -24,11 +24,6 @@ const saveConfig = { execute: vi.fn() }
 
 const CONFIG: ConfigSnapshot = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    concurrency: 2,
-    maxAgeHours: 72,
-    filter: EMPTY_FILTER,
     defaultFields: ['title'],
     sites: [],
   },

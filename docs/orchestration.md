@@ -17,6 +17,3 @@ Two ways to post:
 - **MCP tool** — call `send_discord_message` with a `channel_id` and either
   `text` or `jobs`. `preview_discord_message` shows the same messages without
   sending
-
-The `#config` page shows a bot schedule field. It is display-only and turned
-off.

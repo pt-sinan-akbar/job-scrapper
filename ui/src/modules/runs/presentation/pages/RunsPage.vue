@@ -5,6 +5,7 @@ import RunConfigSection from '@/modules/config/presentation/components/RunConfig
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 import { useDiscordSettingsStore } from '@/modules/discord/presentation/stores/useDiscordSettingsStore'
 import RunForm from '@/modules/runs/presentation/components/RunForm.vue'
+import RunResults from '@/modules/runs/presentation/components/RunResults.vue'
 import { useDeferredScroll } from '@/modules/runs/presentation/composables/useDeferredScroll'
 import { toNotifyDiscordBlock } from '@/modules/runs/presentation/components/notifyDiscordBlock'
 import { useRunStore } from '@/modules/runs/presentation/stores/useRunStore'
@@ -23,6 +24,13 @@ const isFirstLoad = computed(() => isPendingStatus(store.status) && store.option
 const notifyDiscordBlock = computed(() =>
   toNotifyDiscordBlock(discordSettingsStore.status, discordSettingsStore.settings),
 )
+const isResultsVisible = computed(
+  () =>
+    store.isResultsPending ||
+    store.isResultsLost ||
+    store.latestRun !== null ||
+    store.latestErrorMessage !== null,
+)
 const isSettled = computed(() =>
   [store.status, configStore.status, discordSettingsStore.status].every(
     (status) => !isPendingStatus(status),
@@ -33,6 +41,7 @@ const startConfigScroll = useDeferredScroll(CONFIG_ID, () => isSettled.value)
 
 onMounted(() => {
   void store.load()
+  void store.loadLatest()
   if (discordSettingsStore.status === 'idle') {
     void discordSettingsStore.load()
   }
@@ -85,6 +94,15 @@ onMounted(() => {
         @start="(keywords, sites, notifyDiscord) => store.start(keywords, sites, notifyDiscord)"
       />
     </PageSection>
+
+    <RunResults
+      v-if="isResultsVisible"
+      :detail="store.latestRun"
+      :is-pending="store.isResultsPending"
+      :is-lost="store.isResultsLost"
+      :error-message="store.latestErrorMessage"
+      @retry="store.loadLatest"
+    />
 
     <RunConfigSection :id="CONFIG_ID" class="scroll-mt-24" />
   </div>

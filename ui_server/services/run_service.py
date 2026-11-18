@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from typing import Any, Protocol
 
 from ui_server.errors import (
@@ -12,17 +13,21 @@ from ui_server.errors import (
     McpUnavailableError,
     RunInProgressError,
     RunNotFoundError,
+    RunStorageUnavailableError,
 )
 from ui_server.schema.discord import MAX_JOBS, MAX_TEXT_CHARS
+from ui_server.services.run_detail import RunDetail, build_detail
 from ui_server.services.run_record import (
     DiscordStatus,
     RunRecord,
+    RunStatus,
     fail_run,
     finish_run,
     flatten_jobs,
     new_run,
     with_discord,
 )
+from ui_server.services.run_repository import RunRepository, RunStoreUnavailableError
 
 LOG = logging.getLogger("scraper-ui")
 RUN_FAILED_MESSAGE = "The scrape failed."
@@ -92,26 +97,52 @@ def _batches(
     return [(None, jobs[start : start + MAX_JOBS]) for start in range(0, len(jobs), MAX_JOBS)]
 
 
+Outcome = tuple[RunDetail, list[dict[str, Any]]]
+
+
+def _failed(record: RunRecord, message: str) -> Outcome:
+    return RunDetail(fail_run(record, message)), []
+
+
+def _finished(record: RunRecord, result: dict[str, Any]) -> Outcome:
+    try:
+        return build_detail(finish_run(record, result), result), flatten_jobs(result)
+    except Exception:
+        LOG.exception("run %s returned a result that could not be read", record.id)
+        return _failed(record, RUN_FAILED_MESSAGE)
+
+
 class RunService:
-    def __init__(self, scraper: Scraper) -> None:
+    def __init__(self, scraper: Scraper, repository: RunRepository) -> None:
         self._scraper = scraper
+        self._repository = repository
         self._task: asyncio.Task[None] | None = None
-        self._record: RunRecord | None = None
+        self._detail: RunDetail | None = None
 
     def ensure_idle(self) -> None:
         if self._task is not None and not self._task.done():
             raise RunInProgressError()
 
-    def get(self, run_id: str) -> RunRecord:
-        if self._record is None or self._record.id != run_id:
+    def get(self, run_id: str) -> RunDetail:
+        if self._detail is not None and self._detail.record.id == run_id:
+            return self._detail
+        try:
+            stored = self._repository.find(run_id)
+        except RunStoreUnavailableError as exc:
+            raise RunStorageUnavailableError() from exc
+        if stored is None:
             raise RunNotFoundError()
-        return self._record
+        return stored
+
+    def latest(self) -> RunDetail | None:
+        return self._detail if self._detail is not None else self._repository.latest()
 
     def start(
         self, keywords: tuple[str, ...], sites: tuple[str, ...], notify_discord: bool
     ) -> RunRecord:
         self.ensure_idle()
-        record = self._keep(new_run(keywords, sites))
+        record = new_run(keywords, sites)
+        self._detail = RunDetail(record)
         self._task = asyncio.create_task(self._execute(record, notify_discord))
         return record
 
@@ -119,43 +150,63 @@ class RunService:
         if self._task is not None:
             await self._task
 
-    def _keep(self, record: RunRecord) -> RunRecord:
-        self._record = record
+    async def _keep(self, record: RunRecord) -> RunRecord:
+        self._detail = replace(self._detail or RunDetail(record), record=record)
+        if record.status is not RunStatus.RUNNING:
+            await asyncio.to_thread(self._repository.save_record, record)
         return record
 
-    async def _execute(self, record: RunRecord, notify_discord: bool) -> None:
-        jobs: list[dict[str, Any]] = []
+    async def _save(self, detail: RunDetail) -> None:
+        self._detail = detail
+        await asyncio.to_thread(self._repository.save, detail)
+
+    async def _scrape(self, record: RunRecord) -> Outcome:
         try:
             result = await self._scraper.scrape_jobs(record.sites, record.keywords)
-            outcome = self._keep(finish_run(record, result))
-            jobs = flatten_jobs(result)
         except McpUnavailableError as exc:
-            outcome = self._keep(fail_run(record, exc.message))
+            return _failed(record, exc.message)
         except Exception:
             LOG.exception("run %s failed", record.id)
-            outcome = self._keep(fail_run(record, RUN_FAILED_MESSAGE))
-        if notify_discord:
-            await self._notify_discord(outcome, jobs)
+            return _failed(record, RUN_FAILED_MESSAGE)
+        return _finished(record, result)
 
-    def _fail_discord(self, record: RunRecord, message: str) -> None:
-        self._keep(with_discord(record, DiscordStatus.FAILED, error=message))
+    async def _execute(self, record: RunRecord, notify_discord: bool) -> None:
+        try:
+            await self._complete(record, notify_discord)
+        except Exception:
+            LOG.exception("run %s crashed", record.id)
+            self._end_running(record)
+
+    async def _complete(self, record: RunRecord, notify_discord: bool) -> None:
+        detail, jobs = await self._scrape(record)
+        await self._save(detail)
+        if notify_discord:
+            await self._notify_discord(detail.record, jobs)
+
+    def _end_running(self, record: RunRecord) -> None:
+        current = self._detail or RunDetail(record)
+        if current.record.status is RunStatus.RUNNING:
+            self._detail = RunDetail(fail_run(current.record, RUN_FAILED_MESSAGE))
+
+    async def _fail_discord(self, record: RunRecord, message: str) -> None:
+        await self._keep(with_discord(record, DiscordStatus.FAILED, error=message))
 
     async def _notify_discord(self, record: RunRecord, jobs: list[dict[str, Any]]) -> None:
-        sending = self._keep(with_discord(record, DiscordStatus.SENDING))
+        sending = await self._keep(with_discord(record, DiscordStatus.SENDING))
         try:
             settings = await self._scraper.read_discord_settings()
             if not settings.get("configured"):
-                self._fail_discord(sending, DISCORD_NO_TOKEN_MESSAGE)
+                await self._fail_discord(sending, DISCORD_NO_TOKEN_MESSAGE)
                 return
             channel_id = settings.get("default_channel_id")
             if not channel_id:
-                self._fail_discord(sending, DISCORD_NO_CHANNEL_MESSAGE)
+                await self._fail_discord(sending, DISCORD_NO_CHANNEL_MESSAGE)
                 return
             mention = bool(settings.get("mention_user_id"))
             await self._send(sending, channel_id, mention, jobs)
         except Exception:
             LOG.exception("run %s discord notify failed", record.id)
-            self._fail_discord(sending, DISCORD_SEND_FAILED_MESSAGE)
+            await self._fail_discord(sending, DISCORD_SEND_FAILED_MESSAGE)
 
     async def _send(
         self, record: RunRecord, channel_id: str, mention: bool, jobs: list[dict[str, Any]]
@@ -172,9 +223,9 @@ class RunService:
             except Exception as exc:
                 message = _send_error_message(record.id, exc)
                 status = DiscordStatus.PARTIAL if sent > 0 else DiscordStatus.FAILED
-                self._keep(with_discord(record, status, sent, failed, message))
+                await self._keep(with_discord(record, status, sent, failed, message))
                 return
             chunk_sent, chunk_failed = _count_kind(result, kind)
             sent += chunk_sent
             failed += chunk_failed
-        self._keep(with_discord(record, _discord_status(sent, failed), sent, failed))
+        await self._keep(with_discord(record, _discord_status(sent, failed), sent, failed))

@@ -7,7 +7,7 @@ from typing import Any
 
 from .config_loader import ConfigError
 from .job_settings import load_app_config, open_store
-from .runner import RunResult, run
+from .runner import KEYWORDS_REQUIRED, RunResult, normalize_keywords, run
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -21,7 +21,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="append",
         dest="keywords",
         default=None,
-        help="override keyword(s) from the job settings; pass --keyword multiple times for several",
+        help="keyword to scrape (required); pass --keyword multiple times for several",
     )
     parser.add_argument(
         "sites",
@@ -40,12 +40,16 @@ def _filtered_results(result: RunResult) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(list(argv if argv is not None else sys.argv[1:]))
+    keywords = normalize_keywords(args.keywords)
+    if not keywords:
+        print(f"[cli] {KEYWORDS_REQUIRED}", file=sys.stderr)
+        return 2
     try:
         config = load_app_config(open_store())
     except ConfigError as exc:
         print(f"[config] {exc}", file=sys.stderr)
         return 2
-    result = run(config, targets=args.sites, keywords=args.keywords)
+    result = run(config, targets=args.sites, keywords=keywords)
     json.dump(_filtered_results(result), sys.stdout, indent=2)
     sys.stdout.write("\n")
     return result.exit_code

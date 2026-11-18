@@ -104,38 +104,45 @@ function setSite(name: string, isPicked: boolean | 'indeterminate'): void {
         </RouterLink>
       </p>
     </div>
-    <div class="flex flex-col gap-1">
-      <div class="flex items-center gap-3">
-        <Checkbox
-          id="run-notify-discord"
-          :model-value="notifyDiscord"
-          :disabled="!canNotifyDiscord"
-          @update:model-value="setNotifyDiscord"
-        />
-        <Label for="run-notify-discord" class="cursor-pointer">Send to Discord when done</Label>
-      </div>
-      <p v-if="discordHint" data-slot="discord-hint" class="text-body-sm text-ink-muted">
-        {{ discordHint.text }}
-        <RouterLink
-          v-if="discordHint.linksToDiscord"
-          :to="DISCORD_ROUTE"
-          class="text-link hover:underline"
-          >Discord page</RouterLink
-        >
-      </p>
-    </div>
-    <fieldset class="flex flex-col gap-2">
-      <legend class="mb-2 text-body-sm font-semibold text-ink">Sites</legend>
-      <div class="flex flex-wrap gap-x-6 gap-y-3">
-        <div v-for="site in options.sites" :key="site.name" class="flex items-center gap-3">
+    <div
+      data-slot="run-options"
+      class="flex flex-col gap-8 sm:flex-row sm:items-start sm:justify-between sm:gap-6"
+    >
+      <div class="flex flex-col gap-1">
+        <div class="flex items-center gap-3">
           <Checkbox
-            :id="`site-${site.name}`"
-            :model-value="pickedSites.includes(site.name)"
-            @update:model-value="setSite(site.name, $event)"
+            id="run-notify-discord"
+            :model-value="notifyDiscord"
+            :disabled="!canNotifyDiscord"
+            @update:model-value="setNotifyDiscord"
           />
-          <Label :for="`site-${site.name}`" class="cursor-pointer">{{ site.name }}</Label>
+          <Label for="run-notify-discord" class="cursor-pointer">Send to Discord</Label>
         </div>
+        <p v-if="discordHint" data-slot="discord-hint" class="text-body-sm text-ink-muted">
+          {{ discordHint.text }}
+          <RouterLink
+            v-if="discordHint.linksToDiscord"
+            :to="DISCORD_ROUTE"
+            class="text-link hover:underline"
+            >Discord page</RouterLink
+          >
+        </p>
       </div>
-    </fieldset>
+      <fieldset
+        class="flex min-w-0 flex-col gap-2 border-0 p-0 sm:flex-row sm:items-center sm:gap-6"
+      >
+        <legend class="sr-only">Sites</legend>
+        <div data-slot="site-options" class="flex flex-wrap gap-x-6 gap-y-3 sm:justify-end">
+          <div v-for="site in options.sites" :key="site.name" class="flex items-center gap-3">
+            <Checkbox
+              :id="`site-${site.name}`"
+              :model-value="pickedSites.includes(site.name)"
+              @update:model-value="setSite(site.name, $event)"
+            />
+            <Label :for="`site-${site.name}`" class="cursor-pointer">{{ site.name }}</Label>
+          </div>
+        </div>
+      </fieldset>
+    </div>
   </form>
 </template>

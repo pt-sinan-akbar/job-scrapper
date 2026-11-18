@@ -1,3 +1,4 @@
+import type { GetLatestRunUseCase } from '@/modules/runs/domain/usecases/GetLatestRunUseCase'
 import type { GetRunOptionsUseCase } from '@/modules/runs/domain/usecases/GetRunOptionsUseCase'
 import type { GetRunUseCase } from '@/modules/runs/domain/usecases/GetRunUseCase'
 import type { StartRunUseCase } from '@/modules/runs/domain/usecases/StartRunUseCase'
@@ -5,6 +6,7 @@ import type { StartRunUseCase } from '@/modules/runs/domain/usecases/StartRunUse
 export interface RunUseCases {
   getOptions: Pick<GetRunOptionsUseCase, 'execute'>
   getRun: Pick<GetRunUseCase, 'execute'>
+  getLatestRun: Pick<GetLatestRunUseCase, 'execute'>
   startRun: Pick<StartRunUseCase, 'execute'>
 }
 

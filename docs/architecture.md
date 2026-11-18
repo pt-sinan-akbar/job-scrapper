@@ -7,7 +7,7 @@ config edits that touch unfamiliar areas, or when adding a new site.
 
 ```
 scraper/                    # CLI + library
-├── __main__.py             # `python -m scraper [--keyword KW] [sites...]`
+├── __main__.py             # `python -m scraper --keyword KW [--keyword KW ...] [sites...]`
 ├── runner.py               # orchestrates (keyword, site) pairs through a thread pool
 ├── config_loader.py        # settings dict → AppConfig dataclass + validation
 ├── job_settings.py         # JobSettingsStore: Mongo job settings and versions
@@ -45,10 +45,48 @@ thread with `asyncio.to_thread`, async ones are awaited.
 - `GET /api/config`: the job settings plus `location_options`, the same
   `{site: [{label, value}]}` map `get_config` returns.
 - `POST /api/runs`: starts one run at a time (409 while one is running) and
-  returns its record. UI runs call `scrape_jobs` with `save_run: false`, so
-  nothing is stored.
-- `GET /api/runs/{id}`: the record of the latest run, held in memory only. It
-  is replaced by the next run and lost on restart, and any other id returns 404.
+  returns its record. UI runs call `scrape_jobs` with `save_run: false` and
+  `include_payloads: true`, so they never reach `scrape_runs`.
+- `GET /api/runs/latest`: the newest run as `{record, jobs, failures, payloads}`.
+  That is the current run when the UI server has one, else the stored run in
+  `ui_runs`. `data` is `null` when there is none.
+- `GET /api/runs/{id}`: the same detail for the current run or the stored run.
+  Any other id returns 404, or 503 `Run storage is unavailable.` when Mongo
+  cannot be read. While a run is running, `jobs`, `failures` and
+  `payloads` are `[]`.
+
+Detail fields:
+
+- `record`: `id`, `status`, `keywords`, `sites`, `started_at`, `finished_at`,
+  `job_count`, `error_count`, `error`, `discord_status`, `discord_sent`,
+  `discord_failed`, `discord_error`
+- `jobs`: `[{site, matched_keyword, title, company, location, url, posted_at}]`,
+  each value a string or `null`
+- `failures`: `[{keyword, site, reason}]`
+- `payloads`: `[{keyword, site, raw, filtered}]`, `raw` and `filtered` are the
+  site payload before and after max age, filter and limit, or `null`
+
+### `ui_runs` collection
+
+When a UI run ends (succeeded, partial or failed), the UI server keeps its
+detail in memory and saves it to the `ui_runs` collection in the same Mongo
+database (`MONGO_URI`, `MONGO_DB_NAME`). The document `_id` is the run id. Only
+the latest run is kept: each save deletes every other document. Discord status
+changes after the run update the stored `record` too. The main app backend reads
+`scrape_runs`, never `ui_runs`.
+
+The run store uses its own Mongo client with a 1000 ms server selection
+timeout. If Mongo is down, the run still works. The first failure logs one
+warning and pauses run storage for 30 s: reads and writes skip Mongo in that
+time, so they never hold up a request thread or the Discord status. The result
+is served from memory only, so it is lost on restart. `GET /api/runs/latest`
+returns the in-memory run or `null`.
+
+When a save fails for another reason (for example a detail over Mongo's 16 MB
+document limit), it is tried once more without `payloads`, and the size is
+logged. If that fails too, every stored run is deleted, so the older run is
+never shown as the latest. A Discord status update for a run with no stored
+document creates one with the record and empty lists.
 
 ## Request flow (per scrape run)
 
@@ -63,9 +101,9 @@ runner.run(config, targets, keywords)
    │
    ├─ build (keyword, site) cross-product list
    │
-   ├─ for each pair (in ThreadPoolExecutor with concurrency cap):
+   ├─ for each pair (in ThreadPoolExecutor, SCRAPER_CONCURRENCY cap):
    │   │
-   │   ├─ scrape_cls(url=site.url_for(keyword), limit=config.limit)
+   │   ├─ scrape_cls(url=site.url_for(keyword), limit=site.limit)
    │   │
    │   ├─ FetchChain.fetch(url)
    │   │     ├─ CloudscraperFetcher (cheap, first attempt)
@@ -74,8 +112,8 @@ runner.run(config, targets, keywords)
    │   │
    │   ├─ Scraper.parse(html)         → list[Job] (per-site selectors)
    │   ├─ runner._enrich_jobs()        → stamp matched_keyword + parse posted_at
-   │   ├─ runner._within_max_age()     → drop stale jobs
-   │   ├─ apply_filter()               → drop content-mismatch jobs
+   │   ├─ runner._within_max_age()     → drop jobs older than site.max_age_hours
+   │   ├─ apply_filter()               → drop jobs not matching site.filter
    │   └─ project_jobs(fields)         → strip to configured fields
    │
    └─ return RunResult(exit_code, results)   results keyed by (keyword, site)
@@ -84,8 +122,9 @@ runner.run(config, targets, keywords)
 `run` writes nothing to disk. Each pair gives a `SitePayloads(filtered, raw)`.
 A pair that was skipped or crashed still gets an entry, with an `error` such as
 `skipped: site has no entry in the job settings` or `crashed: RuntimeError`.
-When the selection is invalid (no sites, unknown site, no keywords) `run` returns
-`exit_code=1` and no results.
+When the selection is invalid `run` returns `exit_code=1` and no results. With
+no keywords the error is `keywords are required`: keywords only come from the
+caller, never from the job settings.
 
 ## Lifecycle of a Job dict
 
@@ -102,7 +141,7 @@ fields you didn't configure still drive the filter.
 
 ## Concurrency model
 
-- One `ThreadPoolExecutor` per `runner.run()` call, sized to `min(config.concurrency, len(pairs))`. `concurrency` is a job setting (default 2).
+- One `ThreadPoolExecutor` per `runner.run()` call, sized to `min(resolve_concurrency(), len(pairs))`. Concurrency comes from the `SCRAPER_CONCURRENCY` env var (default 2, valid 1 to 10, an invalid value logs a warning and uses 2). It is not a job setting.
 - Each worker thread builds its own Playwright `sync_playwright()` context
   when needed — never share the instance across threads.
 - cloudscraper sessions are created per call (not reused), so they're
@@ -122,7 +161,7 @@ fetching:
 | `{keyword_plus}`  | plus-separated                  |
 
 Resolution happens in `SiteConfig.url_for(keyword)`. Validation runs at
-config load time (`parse()` formats with a sample keyword and rejects
+config load time (`parse()` formats with the placeholder keyword `data analyst` and rejects
 unknown placeholders) so a bad template fails loudly on startup, not
 mid-scrape.
 

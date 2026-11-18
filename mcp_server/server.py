@@ -20,7 +20,7 @@ from mcp_server import mongo
 from mcp_server.discord_tools import DISCORD_TOOLS
 from scraper.api.locations import location_options_payload
 from scraper.config import ACCEPT_LANGUAGE, USER_AGENT
-from scraper.config_loader import AppConfig, ConfigError
+from scraper.config_loader import SAMPLE_KEYWORD, AppConfig, ConfigError
 from scraper.job_settings import (
     JobSettingsStore,
     SettingsConflictError,
@@ -31,7 +31,7 @@ from scraper.job_settings import (
 )
 from scraper.log import get_logger as _get_logger
 from scraper.log import redact_proxy_url as _redact_proxy_url
-from scraper.runner import RunResult, SitePayloads
+from scraper.runner import KEYWORDS_REQUIRED, RunResult, SitePayloads, normalize_keywords
 from scraper.runner import run as run_scraper
 from scraper.types import JOB_FIELD_ORDER, MANDATORY_FIELDS
 
@@ -308,22 +308,20 @@ def list_sites() -> dict[str, Any]:
     """List sites from the job settings with their enabled status.
 
     Each site shows its raw url_template plus a sample resolved URL formatted
-    against the first configured keyword. The full keyword list is also returned.
+    against the placeholder keyword "data analyst". The job settings hold no
+    keywords: every scrape_jobs call names its own.
     """
     try:
         config = _load_config()
     except ConfigError as exc:
         return {"error": str(exc)}
-    sample_keyword = config.keywords[0] if config.keywords else ""
     return {
-        "keywords": list(config.keywords),
-        "limit": config.limit,
         "sites": [
             {
                 "name": site.name,
                 "enabled": site.enabled,
                 "url_template": site.url_template,
-                "sample_url": (site.url_for(sample_keyword) if sample_keyword else None),
+                "sample_url": site.url_for(SAMPLE_KEYWORD),
             }
             for site in config.sites
         ],
@@ -421,16 +419,21 @@ def update_config(
 ) -> dict[str, Any]:
     """Apply a patch to the job settings after validating the result.
 
-    Top-level keys are replaced whole. `sites` merges by site name, and each
-    field of a site is replaced whole. A null value removes that key, so a site
-    field goes back to the global value.
+    Top-level keys are default_fields and sites, each replaced whole.
+    Keywords are not a job setting: pass them to scrape_jobs on every call.
+    `sites` merges by site name, and each field of a site is replaced whole.
+    limit, max_age_hours and filter live only on a site: there are no global
+    values. Every site needs a limit (1 to 200). A null value removes that
+    key: max_age_hours null means no age cut, and filter {} means no filter.
+    Scrape concurrency comes from the SCRAPER_CONCURRENCY env var.
 
     Args:
         patch: changes to apply. Examples:
-            {"keywords": ["data analyst"]}
-            {"max_age_hours": 24}
+            {"default_fields": ["title", "company", "url", "salary"]}
+            {"sites": {"glints": {"limit": 10, "max_age_hours": 24}}}
             {"sites": {"linkedin": {"enabled": false}}}
             {"sites": {"glints": {"max_age_hours": null}}}
+            {"sites": {"upwork": {"filter": {}}}}
         expected_version: version you read with get_config. When it is not the
             current version, nothing is saved and reason is "conflict".
         source: who made the change, kept with the version.
@@ -680,10 +683,23 @@ def _payload_extras(
     return {"raw_results": raw_results, "filtered_results": filtered_results}
 
 
+def _keywords_required(sites: list[str] | None) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "keywords": [],
+        "requested_sites": list(sites) if sites else [],
+        "exit_code": 1,
+        "results": [],
+        "errors": [{"keyword": None, "site": None, "reason": KEYWORDS_REQUIRED}],
+        "mongo_id": None,
+    }
+
+
 @mcp.tool()
 def scrape_jobs(
     sites: list[str] | None = None,
-    keywords: list[str] | None = None,
+    *,
+    keywords: list[str] | None,
     save_run: bool = True,
     include_payloads: bool = False,
 ) -> dict[str, Any]:
@@ -692,9 +708,12 @@ def scrape_jobs(
     Args:
         sites: optional list of site names to scrape. When omitted, runs every
             site marked enabled in the job settings.
-        keywords: optional list of keywords to scrape. When omitted, runs every
-            keyword in the job settings. Useful to ad-hoc query a single term without
-            changing the job settings.
+        keywords: required list of keywords to scrape, passed by name. The job
+            settings hold no keywords, so there is no fallback. Each keyword is
+            trimmed and blank ones are dropped. When none are left, nothing
+            runs and nothing is saved: the response has ok=false,
+            exit_code=1, keywords=[], results=[], mongo_id=null and
+            errors=[{keyword: null, site: null, reason: "keywords are required"}].
         save_run: when false, return the results without storing the run in
             Mongo, so it never reaches the scrape history. mongo_id is then null.
         include_payloads: when true, the response also carries raw_results (each
@@ -734,6 +753,10 @@ def scrape_jobs(
     """
     log = _get_logger()
     log.info("scrape_jobs called sites=%s keywords=%s", sites, keywords)
+    target_keywords = normalize_keywords(keywords)
+    if not target_keywords:
+        log.error("scrape_jobs refused: %s", KEYWORDS_REQUIRED)
+        return _keywords_required(sites)
     t_start = time.monotonic()
 
     try:
@@ -743,7 +766,6 @@ def scrape_jobs(
         return {"ok": False, "error": str(exc)}
 
     target_sites = list(sites) if sites else list(config.enabled_site_names())
-    target_keywords = list(keywords) if keywords else list(config.keywords)
 
     run_result = run_scraper(config, targets=target_sites, keywords=target_keywords)
     exit_code = run_result.exit_code

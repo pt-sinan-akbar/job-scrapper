@@ -13,6 +13,7 @@ from ui_server.errors import install_error_handlers
 from ui_server.routes import auth, config, discord, runs, sites
 from ui_server.services.auth_service import AuthService
 from ui_server.services.mcp_gateway import LocalGateway, McpGateway, ScraperClient
+from ui_server.services.run_repository import RunRepository, open_run_repository
 from ui_server.services.run_service import RunService
 from ui_server.settings import Settings
 
@@ -31,19 +32,24 @@ class SpaStaticFiles(StaticFiles):
             return await super().get_response(INDEX_FILE, scope)
 
 
-def _build_services(settings: Settings, gateway: McpGateway) -> Services:
+def _build_services(settings: Settings, gateway: McpGateway, repository: RunRepository) -> Services:
     scraper = ScraperClient(gateway)
     return Services(
         settings=settings,
         scraper=scraper,
-        run_service=RunService(scraper),
+        run_service=RunService(scraper, repository),
         auth=AuthService(settings),
     )
 
 
-def create_app(settings: Settings | None = None, gateway: McpGateway | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    gateway: McpGateway | None = None,
+    run_repository: RunRepository | None = None,
+) -> FastAPI:
     resolved = settings or Settings()
-    services = _build_services(resolved, gateway or LocalGateway())
+    repository = run_repository or open_run_repository()
+    services = _build_services(resolved, gateway or LocalGateway(), repository)
 
     app = FastAPI(
         title="Scraper UI",

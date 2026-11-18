@@ -12,13 +12,27 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    concurrency: 2,
-    maxAgeHours: 72,
-    filter: EMPTY_FILTER,
     defaultFields: ['title'],
-    sites: [],
+    sites: [
+      {
+        name: 'upwork',
+        isEnabled: true,
+        limit: 3,
+        maxAgeHours: 72,
+        filter: EMPTY_FILTER,
+        fields: null,
+        api: null,
+      },
+      {
+        name: 'indeed',
+        isEnabled: false,
+        limit: 10,
+        maxAgeHours: null,
+        filter: EMPTY_FILTER,
+        fields: null,
+        api: null,
+      },
+    ],
   },
   version: 4,
   updatedAt: '2026-11-02T01:00:00+00:00',
@@ -57,14 +71,102 @@ describe('ConfigForm', () => {
     const { wrapper } = await mountForm()
 
     for (const id of [
-      '#keywords',
-      '#limit',
-      '#max-age',
-      '#global-location',
       '#default-field-title',
+      '#upwork-limit',
+      '#upwork-max-age',
+      '#upwork-location',
     ]) {
       expect(wrapper.find(id).exists(), id).toBe(true)
     }
+  })
+
+  it('has no keywords field and no General section', async () => {
+    const { wrapper } = await mountForm()
+
+    expect(wrapper.find('#keywords').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('General')
+    expect(wrapper.text()).not.toContain('Keywords')
+  })
+
+  it('has no global job settings', async () => {
+    const { wrapper } = await mountForm()
+
+    for (const id of ['#limit', '#max-age', '#concurrency', '#bot-schedule', '#global-location']) {
+      expect(wrapper.find(id).exists(), id).toBe(false)
+    }
+    expect(wrapper.text()).not.toContain('Global filter')
+    expect(wrapper.text()).not.toContain('Bot schedule')
+    expect(wrapper.text()).not.toContain('Sites scraped at once')
+  })
+
+  it('shows no turned on count under Sites', async () => {
+    const { wrapper } = await mountForm()
+
+    expect(wrapper.text()).not.toContain('turned on')
+  })
+
+  it('saves a change to the site picked in the list', async () => {
+    saveConfig.execute.mockResolvedValue(undefined)
+    const { wrapper } = await mountForm()
+    const indeed = wrapper
+      .findAll('[data-slot="site-select"]')
+      .find((button) => button.text().includes('indeed'))!
+
+    await indeed.trigger('click')
+    await wrapper.get('#indeed-limit').setValue('25')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfig.execute).toHaveBeenCalledWith({ sites: { indeed: { limit: 25 } } }, 4)
+  })
+
+  it('sends null for an emptied max age, for no age cut', async () => {
+    saveConfig.execute.mockResolvedValue(undefined)
+    const { wrapper } = await mountForm()
+
+    await wrapper.get('#upwork-max-age').setValue('')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfig.execute).toHaveBeenCalledWith({ sites: { upwork: { maxAgeHours: null } } }, 4)
+  })
+
+  it('blocks the save and says why when a site has no limit', async () => {
+    const { wrapper } = await mountForm()
+
+    await wrapper.get('#upwork-limit').setValue('')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfig.execute).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-slot="save-bar"] [role="alert"]').text()).toBe(
+      'Set a limit from 1 to 200 for upwork',
+    )
+  })
+
+  it('selects a hidden site with a bad max age and blocks the save', async () => {
+    const { wrapper, store } = await mountForm()
+    store.values!.sites[1]!.maxAgeHours = 0
+    await flushPromises()
+
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(saveConfig.execute).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-slot="save-bar"] [role="alert"]').text()).toBe(
+      'Set a max job age from 1 to 720 hours for indeed, or leave it empty',
+    )
+    expect(
+      wrapper.get('[data-slot="site-select"][aria-current="true"] [data-slot="site-name"]').text(),
+    ).toBe('indeed')
+    expect(wrapper.get('#indeed-max-age').attributes('aria-invalid')).toBe('true')
+    expect(wrapper.get('#indeed-limit').attributes('aria-invalid')).toBeUndefined()
+
+    await wrapper.get('#indeed-max-age').setValue('24')
+    await flushPromises()
+
+    expect(wrapper.find('[data-slot="save-bar"] [role="alert"]').exists()).toBe(false)
+    expect(wrapper.get('#indeed-max-age').attributes('aria-invalid')).toBeUndefined()
   })
 
   it('has no older versions section', async () => {
@@ -86,25 +188,25 @@ describe('ConfigForm', () => {
 
     expect(discard.attributes('disabled')).toBeDefined()
 
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#upwork-limit').setValue('9')
 
     expect(discard.attributes('disabled')).toBeUndefined()
   })
 
   it('puts the values back when Discard is pressed', async () => {
     const { wrapper, store } = await mountForm()
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#upwork-limit').setValue('9')
 
     await findButton(wrapper, 'Discard')!.trigger('click')
 
-    expect(store.values?.limit).toBe(3)
-    expect((wrapper.get('#limit').element as HTMLInputElement).value).toBe('3')
+    expect(store.values?.sites[0]?.limit).toBe(3)
+    expect((wrapper.get('#upwork-limit').element as HTMLInputElement).value).toBe('3')
     expect(findButton(wrapper, 'Discard')!.attributes('disabled')).toBeDefined()
   })
 
   it('does not submit the form when Discard is pressed', async () => {
     const { wrapper } = await mountForm()
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#upwork-limit').setValue('9')
 
     await findButton(wrapper, 'Discard')!.trigger('click')
 
@@ -113,7 +215,7 @@ describe('ConfigForm', () => {
 
   it('disables Discard while a save is running', async () => {
     const { wrapper, store } = await mountForm()
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#upwork-limit').setValue('9')
 
     store.isSaving = true
     await flushPromises()
@@ -152,11 +254,11 @@ describe('ConfigForm', () => {
   it('saves the changed values on submit', async () => {
     saveConfig.execute.mockResolvedValue(undefined)
     const { wrapper } = await mountForm()
-    await wrapper.get('#limit').setValue('9')
+    await wrapper.get('#upwork-limit').setValue('9')
 
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(saveConfig.execute).toHaveBeenCalledWith({ limit: 9 }, 4)
+    expect(saveConfig.execute).toHaveBeenCalledWith({ sites: { upwork: { limit: 9 } } }, 4)
   })
 })

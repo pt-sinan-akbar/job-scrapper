@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick } from 'vue'
 import { EMPTY_FILTER, type ConfigSnapshot } from '@/modules/config/domain/entities/ScraperConfig'
 import { provideConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
@@ -9,13 +10,18 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    keywords: ['django'],
-    limit: 3,
-    concurrency: 2,
-    maxAgeHours: 72,
-    filter: EMPTY_FILTER,
     defaultFields: ['title'],
-    sites: [],
+    sites: [
+      {
+        name: 'upwork',
+        isEnabled: true,
+        limit: 3,
+        maxAgeHours: 72,
+        filter: EMPTY_FILTER,
+        fields: null,
+        api: null,
+      },
+    ],
   },
   version: 4,
   updatedAt: '2026-11-02T01:00:00+00:00',
@@ -42,7 +48,7 @@ describe('useConfigStore', () => {
     expect(store.status).toBe('ready')
     expect(store.values).toEqual(SNAPSHOT.values)
     expect(store.values).not.toBe(SNAPSHOT.values)
-    expect(store.values?.filter).not.toBe(SNAPSHOT.values.filter)
+    expect(store.values?.sites[0]).not.toBe(SNAPSHOT.values.sites[0])
   })
 
   it('shows an error when load fails', async () => {
@@ -60,11 +66,11 @@ describe('useConfigStore', () => {
     saveConfig.execute.mockResolvedValue(undefined)
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
 
     await expect(store.save()).resolves.toBe(true)
 
-    expect(saveConfig.execute).toHaveBeenCalledWith({ limit: 9 }, 4)
+    expect(saveConfig.execute).toHaveBeenCalledWith({ sites: { upwork: { limit: 9 } } }, 4)
     expect(getConfig.execute).toHaveBeenCalledTimes(2)
   })
 
@@ -83,7 +89,7 @@ describe('useConfigStore', () => {
     saveConfig.execute.mockRejectedValue(new Error('Bad config'))
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
 
     await expect(store.save()).resolves.toBe(false)
 
@@ -94,11 +100,152 @@ describe('useConfigStore', () => {
     getConfig.execute.mockResolvedValue({ ...SNAPSHOT, isStale: true })
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
 
     await expect(store.save()).resolves.toBe(false)
 
     expect(saveConfig.execute).not.toHaveBeenCalled()
+  })
+
+  it.each([null, 0, 201])(
+    'blocks the save and names the site when its limit is %s',
+    async (limit) => {
+      getConfig.execute.mockResolvedValue(SNAPSHOT)
+      const store = useConfigStore()
+      await store.load()
+      store.values!.sites[0]!.limit = limit
+
+      await expect(store.save()).resolves.toBe(false)
+
+      expect(saveConfig.execute).not.toHaveBeenCalled()
+      expect(store.saveError).toBe('Set a limit from 1 to 200 for upwork')
+    },
+  )
+
+  describe('site checks on save', () => {
+    const TWO_SITES: ConfigSnapshot = {
+      ...SNAPSHOT,
+      values: {
+        ...SNAPSHOT.values,
+        sites: [
+          SNAPSHOT.values.sites[0]!,
+          {
+            ...SNAPSHOT.values.sites[0]!,
+            name: 'glints',
+            api: {
+              isEnabled: true,
+              locations: [],
+              isCountryWide: true,
+              delayMin: 2,
+              delayMax: 5,
+            },
+          },
+        ],
+      },
+    }
+
+    async function loadTwoSites() {
+      getConfig.execute.mockResolvedValue(TWO_SITES)
+      const store = useConfigStore()
+      await store.load()
+      return store
+    }
+
+    it.each([0, 721, 2.5])(
+      'blocks the save and names any site whose max age is %s',
+      async (maxAgeHours) => {
+        const store = await loadTwoSites()
+        store.values!.sites[1]!.maxAgeHours = maxAgeHours
+
+        await expect(store.save()).resolves.toBe(false)
+
+        expect(saveConfig.execute).not.toHaveBeenCalled()
+        expect(store.saveError).toBe(
+          'Set a max job age from 1 to 720 hours for glints, or leave it empty',
+        )
+        expect(store.siteIssue).toEqual({
+          siteName: 'glints',
+          field: 'maxAgeHours',
+          message: 'Set a max job age from 1 to 720 hours for glints, or leave it empty',
+        })
+      },
+    )
+
+    it.each<[number | null, number | null, string]>([
+      [null, 5, 'Set both delay values for glints'],
+      [-1, 5, 'Set delays from 0 to 60 seconds for glints'],
+      [2, 61, 'Set delays from 0 to 60 seconds for glints'],
+      [6, 5, 'Set a min delay no higher than the max delay for glints'],
+    ])('blocks the save for delay %s to %s', async (delayMin, delayMax, message) => {
+      const store = await loadTwoSites()
+      store.values!.sites[1]!.api = { ...store.values!.sites[1]!.api!, delayMin, delayMax }
+
+      await expect(store.save()).resolves.toBe(false)
+
+      expect(saveConfig.execute).not.toHaveBeenCalled()
+      expect(store.saveError).toBe(message)
+    })
+
+    it('sends the delay as a pair when both values are valid', async () => {
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = await loadTwoSites()
+      store.values!.sites[1]!.api = { ...store.values!.sites[1]!.api!, delayMin: 1, delayMax: 9 }
+
+      await expect(store.save()).resolves.toBe(true)
+
+      expect(saveConfig.execute).toHaveBeenCalledWith(
+        {
+          sites: {
+            glints: {
+              api: {
+                isEnabled: true,
+                locations: [],
+                isCountryWide: true,
+                delayMin: 1,
+                delayMax: 9,
+              },
+            },
+          },
+        },
+        4,
+      )
+    })
+
+    it('clears the save error once the bad value is fixed', async () => {
+      const store = await loadTwoSites()
+      store.values!.sites[1]!.maxAgeHours = 0
+      await store.save()
+
+      store.values!.sites[1]!.maxAgeHours = 24
+      await nextTick()
+
+      expect(store.saveError).toBeNull()
+      expect(store.siteIssue).toBeNull()
+    })
+
+    it('keeps the save error while the bad value stays bad', async () => {
+      const store = await loadTwoSites()
+      store.values!.sites[1]!.maxAgeHours = 0
+      await store.save()
+
+      store.values!.sites[0]!.limit = 9
+      await nextTick()
+
+      expect(store.saveError).toBe(
+        'Set a max job age from 1 to 720 hours for glints, or leave it empty',
+      )
+    })
+
+    it('clears the site issue on discard', async () => {
+      const store = await loadTwoSites()
+      store.values!.sites[1]!.maxAgeHours = 0
+      await store.save()
+
+      store.discard()
+
+      expect(store.siteIssue).toBeNull()
+      expect(store.saveError).toBeNull()
+    })
   })
 
   it('has no history or restore', () => {
@@ -129,7 +276,7 @@ describe('useConfigStore', () => {
     const store = useConfigStore()
     await store.load()
 
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
 
     expect(store.isDirty).toBe(true)
   })
@@ -139,7 +286,7 @@ describe('useConfigStore', () => {
     const store = useConfigStore()
     await store.load()
 
-    store.values!.filter.location.push('Jakarta')
+    store.values!.sites[0]!.filter.location.push('Jakarta')
 
     expect(store.isDirty).toBe(true)
   })
@@ -148,9 +295,9 @@ describe('useConfigStore', () => {
     getConfig.execute.mockResolvedValue(SNAPSHOT)
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
 
-    store.values!.limit = 3
+    store.values!.sites[0]!.limit = 3
 
     expect(store.isDirty).toBe(false)
   })
@@ -159,8 +306,8 @@ describe('useConfigStore', () => {
     getConfig.execute.mockResolvedValue(SNAPSHOT)
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
-    store.values!.keywords.push('vue')
+    store.values!.sites[0]!.limit = 9
+    store.values!.defaultFields.push('company')
 
     store.discard()
 
@@ -174,9 +321,9 @@ describe('useConfigStore', () => {
     await store.load()
     store.discard()
 
-    store.values!.keywords.push('vue')
+    store.values!.defaultFields.push('company')
 
-    expect(store.snapshot?.values.keywords).toEqual(['django'])
+    expect(store.snapshot?.values.defaultFields).toEqual(['title'])
     expect(store.isDirty).toBe(true)
   })
 
@@ -193,7 +340,7 @@ describe('useConfigStore', () => {
     saveConfig.execute.mockRejectedValue(new Error('Conflict'))
     const store = useConfigStore()
     await store.load()
-    store.values!.limit = 9
+    store.values!.sites[0]!.limit = 9
     await store.save()
 
     store.discard()

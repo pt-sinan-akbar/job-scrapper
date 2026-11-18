@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -29,13 +29,17 @@ ALLOWED_URL_HOSTS: frozenset[str] = frozenset(
 
 PROXY_ENV_VAR = "PROXY_URL"
 
+CONCURRENCY_ENV_VAR = "SCRAPER_CONCURRENCY"
+
 DEFAULT_CONCURRENCY = 2
 
 MAX_CONCURRENCY = 10
 
-JOB_SETTINGS_KEYS: frozenset[str] = frozenset(
-    {"keywords", "limit", "concurrency", "max_age_hours", "filter", "default_fields", "sites"}
-)
+MAX_SITE_LIMIT = 200
+
+JOB_SETTINGS_KEYS: frozenset[str] = frozenset({"default_fields", "sites"})
+
+SAMPLE_KEYWORD = "data analyst"
 
 
 class ConfigError(ValueError):
@@ -61,10 +65,10 @@ class SiteConfig:
     name: str
     enabled: bool
     url_template: str
+    limit: int
     fields: tuple[str, ...] | None = None
     max_age_hours: int | None = None
-    filter: dict[str, list[str]] | None = None
-    limit: int | None = None
+    filter: dict[str, list[str]] = field(default_factory=dict)
     api: ApiConfig | None = None
 
     def effective_fields(self, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -76,18 +80,9 @@ class SiteConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    keywords: tuple[str, ...]
-    limit: int
-    concurrency: int
     default_fields: tuple[str, ...]
-    max_age_hours: int | None
-    filter: dict[str, list[str]]
     sites: tuple[SiteConfig, ...]
     proxy: ProxyConfig | None = None
-
-    @property
-    def keyword(self) -> str:
-        return self.keywords[0] if self.keywords else ""
 
     def site(self, name: str) -> SiteConfig | None:
         for site in self.sites:
@@ -104,24 +99,6 @@ class AppConfig:
             cfg.effective_fields(self.default_fields) if cfg is not None else self.default_fields
         )
         return MANDATORY_FIELDS | frozenset(configured)
-
-    def max_age_for(self, site_name: str) -> int | None:
-        cfg = self.site(site_name)
-        if cfg is not None and cfg.max_age_hours is not None:
-            return cfg.max_age_hours
-        return self.max_age_hours
-
-    def filter_for(self, site_name: str) -> dict[str, list[str]]:
-        cfg = self.site(site_name)
-        if cfg is not None and cfg.filter is not None:
-            return cfg.filter
-        return self.filter
-
-    def limit_for(self, site_name: str) -> int:
-        cfg = self.site(site_name)
-        if cfg is not None and cfg.limit is not None:
-            return cfg.limit
-        return self.limit
 
 
 def _slugify(keyword: str) -> str:
@@ -179,6 +156,27 @@ def _parse_max_age(raw: object, source: str) -> int | None:
         raise ConfigError(f"{source} must be a positive integer or null, got {raw!r}") from exc
     if value < 1:
         raise ConfigError(f"{source} must be >= 1, got {value}")
+    return value
+
+
+def is_valid_max_age(raw: object) -> bool:
+    try:
+        _parse_max_age(raw, "max_age_hours")
+    except ConfigError:
+        return False
+    return True
+
+
+def _parse_site_limit(cfg: dict[str, Any], name: str) -> int:
+    source = f"sites.{name}.limit"
+    if "limit" not in cfg:
+        raise ConfigError(f"{source} is required")
+    value = cfg["limit"]
+    is_whole = isinstance(value, int) and not isinstance(value, bool)
+    if not is_whole or not 1 <= value <= MAX_SITE_LIMIT:
+        raise ConfigError(
+            f"{source} must be a whole number from 1 to {MAX_SITE_LIMIT}, got {value!r}"
+        )
     return value
 
 
@@ -247,30 +245,6 @@ def _validate_filter(raw: object, source: str) -> dict[str, list[str]]:
     return cleaned
 
 
-def _resolve_keywords(raw: dict) -> tuple[str, ...]:
-    if "keywords" in raw:
-        value = raw["keywords"]
-        if not isinstance(value, list) or not value:
-            raise ConfigError("'keywords' must be a non-empty list of strings")
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for entry in value:
-            if not isinstance(entry, str) or not entry.strip():
-                raise ConfigError(f"'keywords' entries must be non-empty strings, got {entry!r}")
-            normalized = entry.strip()
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            cleaned.append(normalized)
-        return tuple(cleaned)
-
-    keyword = raw.get("keyword")
-    if isinstance(keyword, str) and keyword.strip():
-        return (keyword.strip(),)
-
-    raise ConfigError("config must define non-empty 'keywords' (list) or 'keyword' (string)")
-
-
 def _parse_api(raw: object, source: str) -> ApiConfig | None:
     if raw is None:
         return None
@@ -314,6 +288,36 @@ def resolve_proxy_url() -> str | None:
     return value.strip() or None
 
 
+def _parse_concurrency(raw: str) -> int | None:
+    value = raw.strip()
+    if not value.isascii() or not value.isdigit():
+        return None
+    try:
+        number = int(value)
+    except ValueError:
+        return None
+    return number if 1 <= number <= MAX_CONCURRENCY else None
+
+
+def resolve_concurrency() -> int:
+    raw = os.environ.get(CONCURRENCY_ENV_VAR, "")
+    if not raw.strip():
+        return DEFAULT_CONCURRENCY
+    value = _parse_concurrency(raw)
+    if value is not None:
+        return value
+    from .log import get_logger as _get_logger
+
+    _get_logger().warning(
+        "[config] %s must be a whole number from 1 to %d, got %r; using %d",
+        CONCURRENCY_ENV_VAR,
+        MAX_CONCURRENCY,
+        raw,
+        DEFAULT_CONCURRENCY,
+    )
+    return DEFAULT_CONCURRENCY
+
+
 def validate_job_settings(settings: dict[str, Any]) -> None:
     unknown = sorted(set(settings) - JOB_SETTINGS_KEYS)
     if unknown:
@@ -321,9 +325,28 @@ def validate_job_settings(settings: dict[str, Any]) -> None:
     parse(settings, None)
 
 
-def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
-    keywords = _resolve_keywords(raw)
+def _parse_site(name: str, cfg: object, sample_vars: dict[str, str]) -> SiteConfig:
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"site '{name}' must be a mapping")
+    template = cfg.get("url_template")
+    if not isinstance(template, str) or not template:
+        raise ConfigError(f"site '{name}' must define non-empty 'url_template'")
+    _validate_url_host(name, template)
+    _resolve_url(name, template, sample_vars)
+    fields = _validate_fields(cfg["fields"], f"sites.{name}.fields") if "fields" in cfg else None
+    return SiteConfig(
+        name=name,
+        enabled=bool(cfg.get("enabled", True)),
+        url_template=template,
+        limit=_parse_site_limit(cfg, name),
+        fields=fields,
+        max_age_hours=_parse_max_age(cfg.get("max_age_hours"), f"sites.{name}.max_age_hours"),
+        filter=_validate_filter(cfg.get("filter"), f"sites.{name}.filter"),
+        api=_parse_api(cfg.get("api"), f"sites.{name}.api"),
+    )
 
+
+def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
     sites_raw = raw.get("sites")
     if not isinstance(sites_raw, dict) or not sites_raw:
         raise ConfigError("config must define a non-empty 'sites' mapping")
@@ -337,85 +360,16 @@ def parse(raw: dict[str, Any], proxy_url: str | None) -> AppConfig:
     else:
         default_fields = DEFAULT_FIELDS
 
-    sites: list[SiteConfig] = []
-    sample_vars = _build_template_vars(keywords[0])
-    for name, cfg in sites_raw.items():
-        if not isinstance(cfg, dict):
-            raise ConfigError(f"site '{name}' must be a mapping")
-        template = cfg.get("url_template")
-        if not isinstance(template, str) or not template:
-            raise ConfigError(f"site '{name}' must define non-empty 'url_template'")
-        _validate_url_host(name, template)
-        _resolve_url(name, template, sample_vars)
-        enabled = bool(cfg.get("enabled", True))
-
-        site_fields: tuple[str, ...] | None = None
-        if "fields" in cfg:
-            site_fields = _validate_fields(cfg["fields"], f"sites.{name}.fields")
-
-        site_max_age = _parse_max_age(cfg.get("max_age_hours"), f"sites.{name}.max_age_hours")
-
-        site_filter: dict[str, list[str]] | None = None
-        if "filter" in cfg:
-            site_filter = _validate_filter(cfg["filter"], f"sites.{name}.filter")
-
-        site_limit: int | None = None
-        if "limit" in cfg and cfg["limit"] is not None:
-            try:
-                site_limit = int(cfg["limit"])
-            except (TypeError, ValueError) as exc:
-                raise ConfigError(
-                    f"sites.{name}.limit must be an integer, got {cfg['limit']!r}"
-                ) from exc
-            if site_limit < 1:
-                raise ConfigError(f"sites.{name}.limit must be >= 1, got {site_limit}")
-
-        sites.append(
-            SiteConfig(
-                name=name,
-                enabled=enabled,
-                url_template=template,
-                fields=site_fields,
-                max_age_hours=site_max_age,
-                filter=site_filter,
-                limit=site_limit,
-                api=_parse_api(cfg.get("api"), f"sites.{name}.api"),
-            )
-        )
-
-    limit_raw = raw.get("limit", 2)
-    try:
-        limit = int(limit_raw)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"'limit' must be an integer, got {limit_raw!r}") from exc
-    if limit < 1:
-        raise ConfigError(f"'limit' must be >= 1, got {limit}")
-
-    concurrency = raw.get("concurrency")
-    if concurrency is None:
-        concurrency = DEFAULT_CONCURRENCY
-    is_whole = isinstance(concurrency, int) and not isinstance(concurrency, bool)
-    if not is_whole or not 1 <= concurrency <= MAX_CONCURRENCY:
-        raise ConfigError(
-            f"'concurrency' must be a whole number from 1 to {MAX_CONCURRENCY}, got {concurrency!r}"
-        )
-
-    max_age_hours = _parse_max_age(raw.get("max_age_hours"), "max_age_hours")
-
-    global_filter = _validate_filter(raw.get("filter"), "filter")
+    sample_vars = _build_template_vars(SAMPLE_KEYWORD)
+    sites = tuple(_parse_site(name, cfg, sample_vars) for name, cfg in sites_raw.items())
 
     proxy: ProxyConfig | None = None
     if proxy_url and proxy_url.strip():
         proxy = ProxyConfig(url=proxy_url.strip())
 
     return AppConfig(
-        keywords=keywords,
-        limit=limit,
-        concurrency=concurrency,
         default_fields=default_fields,
-        filter=global_filter,
-        max_age_hours=max_age_hours,
-        sites=tuple(sites),
+        sites=sites,
         proxy=proxy,
     )
 

@@ -1,28 +1,34 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
+from scraper import log
 from scraper.config_loader import (
+    CONCURRENCY_ENV_VAR,
     DEFAULT_CONCURRENCY,
     PROXY_ENV_VAR,
     ConfigError,
     parse,
+    resolve_concurrency,
     resolve_proxy_url,
     validate_job_settings,
 )
 
+JOBSTREET_URL = "https://id.jobstreet.com/id/{keyword_slug}-jobs"
 SETTINGS = {
-    "keywords": ["devops"],
-    "limit": 3,
-    "sites": {"jobstreet": {"url_template": "https://id.jobstreet.com/id/{keyword_slug}-jobs"}},
+    "sites": {"jobstreet": {"limit": 3, "url_template": JOBSTREET_URL}},
 }
 
 
-def test_parse_builds_config_with_proxy():
-    config = parse({**SETTINGS, "concurrency": 4}, "socks5://localhost:1080")
+def _with_site(**site: object) -> dict:
+    return {**SETTINGS, "sites": {"jobstreet": {"url_template": JOBSTREET_URL, **site}}}
 
-    assert config.keywords == ("devops",)
-    assert config.concurrency == 4
+
+def test_parse_builds_config_with_proxy():
+    config = parse(SETTINGS, "socks5://localhost:1080")
+
     assert config.proxy is not None
     assert config.proxy.url == "socks5://localhost:1080"
 
@@ -31,30 +37,129 @@ def test_parse_without_proxy():
     assert parse(SETTINGS, None).proxy is None
 
 
-def test_parse_uses_default_concurrency_and_has_no_output_dir():
+def test_config_has_no_global_job_values():
     config = parse(SETTINGS, None)
 
-    assert config.concurrency == DEFAULT_CONCURRENCY
-    assert not hasattr(config, "output_dir")
+    for name in ("limit", "concurrency", "max_age_hours", "filter", "output_dir", "keywords"):
+        assert not hasattr(config, name)
 
 
-def test_validate_job_settings_accepts_concurrency():
-    validate_job_settings({**SETTINGS, "concurrency": 3})
+def test_site_keeps_its_own_values():
+    site = parse(
+        _with_site(limit=7, max_age_hours=24, filter={"location": ["Jakarta"]}), None
+    ).site("jobstreet")
+
+    assert site is not None
+    assert site.limit == 7
+    assert site.max_age_hours == 24
+    assert site.filter == {"location": ["jakarta"]}
 
 
-@pytest.mark.parametrize("value", [0, 11, 2.7, "3", True])
-def test_parse_refuses_bad_concurrency(value: object):
-    with pytest.raises(ConfigError, match="'concurrency' must be a whole number from 1 to 10"):
-        parse({**SETTINGS, "concurrency": value}, None)
+def test_site_without_age_or_filter_has_no_cut():
+    site = parse(SETTINGS, None).site("jobstreet")
+
+    assert site is not None
+    assert site.max_age_hours is None
+    assert site.filter == {}
 
 
-def test_parse_uses_default_concurrency_for_a_stored_null():
-    assert parse({**SETTINGS, "concurrency": None}, None).concurrency == DEFAULT_CONCURRENCY
+def test_global_values_never_reach_a_site():
+    raw = {**SETTINGS, "limit": 9, "max_age_hours": 72, "filter": {"location": ["jakarta"]}}
+
+    site = parse(raw, None).site("jobstreet")
+
+    assert site is not None
+    assert site.limit == 3
+    assert site.max_age_hours is None
+    assert site.filter == {}
+
+
+def test_site_limit_is_required():
+    with pytest.raises(ConfigError, match="sites.jobstreet.limit is required"):
+        parse(_with_site(), None)
+
+
+@pytest.mark.parametrize("value", [None, 0, 201, "3", True, 2.5])
+def test_site_limit_must_be_a_whole_number_in_range(value: object):
+    with pytest.raises(ConfigError, match="sites.jobstreet.limit"):
+        parse(_with_site(limit=value), None)
+
+
+@pytest.mark.parametrize("value", [1, 200])
+def test_site_limit_accepts_the_range_ends(value: int):
+    site = parse(_with_site(limit=value), None).site("jobstreet")
+
+    assert site is not None
+    assert site.limit == value
+
+
+@pytest.mark.parametrize("key", ["limit", "concurrency", "max_age_hours", "filter"])
+def test_validate_job_settings_refuses_global_job_values(key: str):
+    with pytest.raises(ConfigError, match=f"not a job setting: {key}"):
+        validate_job_settings({**SETTINGS, key: 3})
+
+
+def test_validate_job_settings_refuses_keywords():
+    with pytest.raises(ConfigError, match="not a job setting: keywords"):
+        validate_job_settings({**SETTINGS, "keywords": ["devops"]})
+
+
+def test_parse_ignores_stored_keywords():
+    config = parse({**SETTINGS, "keywords": ["devops"]}, None)
+
+    assert not hasattr(config, "keywords")
+    assert not hasattr(config, "keyword")
+
+
+def test_parse_checks_url_templates_without_keywords():
+    with pytest.raises(ConfigError, match="unknown placeholder"):
+        parse(_with_site(limit=3, url_template="https://id.jobstreet.com/{nope}"), None)
 
 
 def test_validate_job_settings_refuses_unknown_keys():
     with pytest.raises(ConfigError, match="not a job setting: output_dir"):
         validate_job_settings({**SETTINGS, "output_dir": "elsewhere"})
+
+
+@pytest.fixture
+def warnings(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    logger = MagicMock()
+    monkeypatch.setattr(log, "get_logger", lambda: logger)
+    return logger.warning
+
+
+@pytest.mark.parametrize("raw", [None, "", "  "])
+def test_concurrency_defaults_when_unset(
+    raw: str | None, monkeypatch: pytest.MonkeyPatch, warnings: MagicMock
+):
+    if raw is None:
+        monkeypatch.delenv(CONCURRENCY_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(CONCURRENCY_ENV_VAR, raw)
+
+    assert resolve_concurrency() == DEFAULT_CONCURRENCY == 2
+    warnings.assert_not_called()
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("4", 4), (" 10 ", 10)])
+def test_concurrency_reads_the_env_var(
+    raw: str, expected: int, monkeypatch: pytest.MonkeyPatch, warnings: MagicMock
+):
+    monkeypatch.setenv(CONCURRENCY_ENV_VAR, raw)
+
+    assert resolve_concurrency() == expected
+    warnings.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", ["0", "11", "-1", "2.5", "abc", "²", "٣", "1e1"])
+def test_bad_concurrency_warns_and_uses_the_default(
+    raw: str, monkeypatch: pytest.MonkeyPatch, warnings: MagicMock
+):
+    monkeypatch.setenv(CONCURRENCY_ENV_VAR, raw)
+
+    assert resolve_concurrency() == DEFAULT_CONCURRENCY
+    warnings.assert_called_once()
+    assert CONCURRENCY_ENV_VAR in warnings.call_args.args[0] % warnings.call_args.args[1:]
 
 
 def test_resolve_proxy_url_rejects_unset(monkeypatch: pytest.MonkeyPatch):
@@ -86,8 +191,8 @@ def test_validate_job_settings_rejects_machine_keys():
 
 
 def test_validate_job_settings_rejects_bad_values():
-    with pytest.raises(ConfigError, match="'limit' must be >= 1"):
-        validate_job_settings({**SETTINGS, "limit": 0})
+    with pytest.raises(ConfigError, match="sites.jobstreet.limit"):
+        validate_job_settings(_with_site(limit=0))
 
 
 def test_missing_default_fields_use_the_built_in_defaults():

@@ -2,6 +2,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import { httpClient } from '@/core/http/httpClient'
 import { RunRemoteDataSource } from '@/modules/runs/data/datasources/RunRemoteDataSource'
 import { RunRepositoryImpl } from '@/modules/runs/data/repositories/RunRepositoryImpl'
+import { GetLatestRunUseCase } from '@/modules/runs/domain/usecases/GetLatestRunUseCase'
 import { GetRunOptionsUseCase } from '@/modules/runs/domain/usecases/GetRunOptionsUseCase'
 import { GetRunUseCase } from '@/modules/runs/domain/usecases/GetRunUseCase'
 import { StartRunUseCase } from '@/modules/runs/domain/usecases/StartRunUseCase'
@@ -12,6 +13,7 @@ const repository = new RunRepositoryImpl(new RunRemoteDataSource(httpClient))
 provideRunUseCases({
   getOptions: new GetRunOptionsUseCase(repository),
   getRun: new GetRunUseCase(repository),
+  getLatestRun: new GetLatestRunUseCase(repository),
   startRun: new StartRunUseCase(repository),
 })
 

@@ -4,6 +4,8 @@ from types import MappingProxyType
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scraper.job_settings import SettingsMissingError
 from scraper.runner import RunResult, SitePayloads, pair_error
 from scraper.types import JOB_FIELD_ORDER
@@ -13,9 +15,8 @@ SITE = "jobstreet"
 EMPTY_RAW: dict[str, Any] = {"keyword": KEYWORD, "count": 0, "jobs": []}
 
 
-def _make_config(keyword: str = KEYWORD, site: str = SITE):
+def _make_config(site: str = SITE):
     cfg = MagicMock()
-    cfg.keywords = (keyword,)
     cfg.enabled_site_names.return_value = (site,)
     return cfg
 
@@ -103,12 +104,10 @@ def test_ok_false_when_pair_missing_from_run_result(mock_mongo):
 
 @patch("mcp_server.server.mongo")
 def test_selection_error_reason_is_reported_for_every_pair(mock_mongo):
-    result = _scrape_with(RunResult(exit_code=1, error="no keywords to scrape"))
+    result = _scrape_with(RunResult(exit_code=1, error="unknown sites: nope"))
 
     assert result["ok"] is False
-    assert result["errors"] == [
-        {"keyword": KEYWORD, "site": SITE, "reason": "no keywords to scrape"}
-    ]
+    assert result["errors"] == [{"keyword": KEYWORD, "site": SITE, "reason": "unknown sites: nope"}]
 
 
 @patch("mcp_server.server.mongo")
@@ -263,3 +262,86 @@ def test_scrape_jobs_includes_payloads_when_run_is_not_saved(mock_mongo):
     assert result["mongo_id"] is None
     assert len(result["raw_results"]) == 1
     assert len(result["filtered_results"]) == 1
+
+
+@pytest.mark.parametrize("keywords", [None, [], ["", "   "]])
+@patch("mcp_server.server._write_status")
+@patch("mcp_server.server.run_scraper")
+@patch("mcp_server.server._load_config")
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_without_keywords_is_refused_without_running_or_saving(
+    mock_mongo, mock_load, mock_run, mock_write_status, keywords
+):
+    from mcp_server.server import scrape_jobs
+
+    result = scrape_jobs(keywords=keywords, sites=[SITE])
+
+    assert result == {
+        "ok": False,
+        "keywords": [],
+        "requested_sites": [SITE],
+        "exit_code": 1,
+        "results": [],
+        "errors": [{"keyword": None, "site": None, "reason": "keywords are required"}],
+        "mongo_id": None,
+    }
+    mock_run.assert_not_called()
+    mock_load.assert_not_called()
+    mock_mongo.insert_run.assert_not_called()
+    mock_write_status.assert_not_called()
+
+
+def test_scrape_jobs_requires_keywords_in_its_signature():
+    import inspect
+
+    from mcp_server.server import scrape_jobs
+
+    parameter = inspect.signature(scrape_jobs).parameters["keywords"]
+
+    assert parameter.default is inspect.Parameter.empty
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_scrape_jobs_keeps_sites_as_the_first_positional_parameter():
+    import inspect
+
+    from mcp_server.server import scrape_jobs
+
+    parameters = list(inspect.signature(scrape_jobs).parameters.values())
+
+    assert parameters[0].name == "sites"
+    assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters[1:])
+
+
+def test_scrape_jobs_positional_keywords_fail_loudly():
+    from mcp_server.server import scrape_jobs
+
+    with pytest.raises(TypeError):
+        scrape_jobs([SITE], [KEYWORD])
+
+
+def test_scrape_jobs_tool_schema_lists_keywords_as_required():
+    import asyncio
+
+    from mcp_server.server import mcp
+
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+
+    assert tools["scrape_jobs"].inputSchema["required"] == ["keywords"]
+
+
+@patch("mcp_server.server._write_status")
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_strips_keywords_and_drops_blank_ones(mock_mongo, mock_write_status):
+    from mcp_server.server import scrape_jobs
+
+    run_result = _run_result(_filtered([]))
+    with (
+        patch("mcp_server.server._load_config", return_value=_make_config()),
+        patch("mcp_server.server.run_scraper", return_value=run_result) as mock_run,
+    ):
+        result = scrape_jobs([SITE], keywords=[f"  {KEYWORD} ", " "])
+
+    assert mock_run.call_args.kwargs["keywords"] == [KEYWORD]
+    assert result["keywords"] == [KEYWORD]
