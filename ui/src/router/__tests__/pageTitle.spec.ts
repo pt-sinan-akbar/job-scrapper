@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { authRoutes } from '@/modules/auth/routes'
-import { homeRoutes } from '@/modules/home/routes'
+import { discordRoutes } from '@/modules/discord/routes'
+import { runRoutes } from '@/modules/runs/routes'
 import { installPageTitle } from '@/router/pageTitle'
 
 const blank = { render: () => null }
@@ -75,12 +76,16 @@ describe('route titles', () => {
     expect(login?.meta?.title).toBe('Sign in')
   })
 
-  it('titles the home route Runs until a section takes over', () => {
-    expect(homeRoutes[0]?.meta?.title).toBe('Runs')
+  it('titles the Runs tab Runs', () => {
+    expect(runRoutes.find((route) => route.path === '/runs')?.meta?.title).toBe('Runs')
+  })
+
+  it('titles the Discord tab Discord', () => {
+    expect(discordRoutes.find((route) => route.path === '/discord')?.meta?.title).toBe('Discord')
   })
 
   it.each(
-    [...homeRoutes, ...authRoutes]
+    [...runRoutes, ...discordRoutes, ...authRoutes]
       .filter((route) => route.component)
       .map((route) => [route.path, route.meta?.title]),
   )('gives %s a title', (_path, title) => {

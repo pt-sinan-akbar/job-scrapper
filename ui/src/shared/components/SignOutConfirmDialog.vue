@@ -37,7 +37,9 @@ function handleConfirm(): void {
     <DialogContent>
       <DialogHeader>
         <DialogTitle>Sign out?</DialogTitle>
-        <DialogDescription>You'll need to sign in again to use Job Agent Scraper.</DialogDescription>
+        <DialogDescription
+          >You'll need to sign in again to use Job Agent Scraper.</DialogDescription
+        >
       </DialogHeader>
       <DialogFooter>
         <Button @click="close">Cancel</Button>

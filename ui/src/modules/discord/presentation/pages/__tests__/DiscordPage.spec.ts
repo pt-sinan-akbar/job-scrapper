@@ -1,14 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import type { DiscordChannel, DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import DiscordPage from '@/modules/discord/presentation/pages/DiscordPage.vue'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
-import { useDiscordComposeStore } from '@/modules/discord/presentation/stores/useDiscordComposeStore'
-import type { RunDetail, RunRecord } from '@/modules/runs/domain/entities/Run'
-import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
-import { useRunStore } from '@/modules/runs/presentation/stores/useRunStore'
-import { Select } from '@/shared/components/ui/select'
+import { useDiscordSettingsStore } from '@/modules/discord/presentation/stores/useDiscordSettingsStore'
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
 
@@ -20,10 +16,6 @@ const testConnection = { execute: vi.fn() }
 const listChannels = { execute: vi.fn() }
 const previewMessage = { execute: vi.fn() }
 const sendMessage = { execute: vi.fn() }
-const getOptions = { execute: vi.fn() }
-const getRun = { execute: vi.fn() }
-const listRuns = { execute: vi.fn() }
-const startRun = { execute: vi.fn() }
 
 const CHANNEL_ID = '12345678901234567'
 const USER_ID = '76543210987654321'
@@ -43,48 +35,6 @@ const CHANNELS: DiscordChannel[] = [
   { id: CHANNEL_ID, name: 'jobs', guildId: '1', guildName: 'Home' },
 ]
 
-const RUN: RunRecord = {
-  id: 'r1',
-  status: 'succeeded',
-  keywords: ['django'],
-  sites: ['upwork'],
-  startedAt: '2026-11-01T10:00:00+00:00',
-  finishedAt: null,
-  jobCount: 2,
-  errorCount: 0,
-  error: null,
-  discordStatus: null,
-  discordSent: 0,
-  discordFailed: 0,
-  discordError: null,
-}
-
-const DETAIL: RunDetail = {
-  record: RUN,
-  jobs: [
-    {
-      site: 'upwork',
-      matchedKeyword: 'django',
-      title: 'Dev',
-      company: 'Acme',
-      location: null,
-      url: null,
-      postedAt: null,
-    },
-    {
-      site: 'upwork',
-      matchedKeyword: 'django',
-      title: 'Lead',
-      company: 'Beta',
-      location: null,
-      url: null,
-      postedAt: null,
-    },
-  ],
-  failures: [],
-  payloads: [],
-}
-
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve: (value: T) => void = () => undefined
   const promise = new Promise<T>((done) => {
@@ -93,9 +43,9 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve }
 }
 
-async function mountPage() {
+async function mountPage(pinia: Pinia = createPinia()) {
   const wrapper = mount(DiscordPage, {
-    global: { plugins: [createPinia()] },
+    global: { plugins: [pinia] },
     attachTo: document.body,
   })
   await flushPromises()
@@ -108,24 +58,11 @@ function button(wrapper: Wrapper, label: string) {
   return wrapper.findAll('button').find((node) => node.text() === label)!
 }
 
-async function openScraperTab(wrapper: Wrapper): Promise<void> {
-  const tab = wrapper.findAll('[role="tab"]').find((node) => node.text() === 'Scraper result')!
-  await tab.trigger('mousedown', { button: 0, ctrlKey: false })
-  await flushPromises()
-}
-
-async function pickRun(wrapper: Wrapper): Promise<void> {
-  wrapper.findAllComponents(Select)[1]!.vm.$emit('update:modelValue', 'r1')
-  await flushPromises()
-}
-
 describe('DiscordPage', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     getSettings.execute.mockResolvedValue(SETTINGS)
     listChannels.execute.mockResolvedValue(CHANNELS)
-    listRuns.execute.mockResolvedValue([RUN])
-    getRun.execute.mockResolvedValue(DETAIL)
     provideDiscordUseCases({
       getSettings,
       saveSettings,
@@ -134,7 +71,6 @@ describe('DiscordPage', () => {
       previewMessage,
       sendMessage,
     })
-    provideRunUseCases({ getOptions, getRun, listRuns, startRun })
   })
 
   afterEach(() => {
@@ -212,20 +148,34 @@ describe('DiscordPage', () => {
     expect(wrapper.find('#discord-mention').exists()).toBe(false)
   })
 
-  it('picks up new runs from the Runs section without a reload', async () => {
-    await mountPage()
-    const newRun: RunRecord = { ...RUN, id: 'r2', jobCount: 5 }
-
-    useRunStore().runs = [newRun, RUN]
-    await flushPromises()
-
-    expect(useDiscordComposeStore().sendableRuns.map((run) => run.id)).toEqual(['r2', 'r1'])
-  })
-
   it('loads the settings once on mount', async () => {
     await mountPage()
 
     expect(getSettings.execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not load the settings or channels twice when the settings are already loaded', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    await useDiscordSettingsStore().load()
+
+    await mountPage(pinia)
+
+    expect(getSettings.execute).toHaveBeenCalledTimes(1)
+    expect(listChannels.execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the compose choices when the page mounts again', async () => {
+    const pinia = createPinia()
+    const wrapper = await mountPage(pinia)
+    await wrapper.get('#discord-mention').trigger('click')
+    wrapper.unmount()
+
+    const again = await mountPage(pinia)
+
+    expect(getSettings.execute).toHaveBeenCalledTimes(1)
+    expect(listChannels.execute).toHaveBeenCalledTimes(1)
+    expect(again.get('#discord-mention').attributes('data-state')).toBe('unchecked')
   })
 
   it('shows an error with a retry when the channels fail', async () => {
@@ -246,15 +196,36 @@ describe('DiscordPage', () => {
     expect(wrapper.get('#discord-channel').text()).toContain('jobs')
   })
 
-  it('starts on free text with Send off', async () => {
+  it('renders the free text compose only', async () => {
     const wrapper = await mountPage()
 
-    expect(wrapper.findAll('[role="tab"]').map((node) => node.text())).toEqual([
-      'Free text',
-      'Scraper result',
-    ])
-    expect(wrapper.get('[role="tab"][data-state="active"]').text()).toBe('Free text')
+    expect(wrapper.find('#discord-text').exists()).toBe(true)
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(0)
+    expect(wrapper.find('#discord-run').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Scraper result')
     expect(button(wrapper, 'Send').attributes('disabled')).toBeDefined()
+  })
+
+  it('puts the whole compose in one card with Message and Preview side by side', async () => {
+    const wrapper = await mountPage()
+
+    const card = wrapper.get('[data-slot="compose-card"]')
+    expect(card.find('#discord-channel').exists()).toBe(true)
+    expect(card.find('#discord-text').exists()).toBe(true)
+    expect(card.findAll('button').some((node) => node.text() === 'Send')).toBe(true)
+    expect(card.findAll('h3').map((heading) => heading.text())).toEqual(['Send a message'])
+    const grid = card.get('[data-slot="compose-grid"]')
+    expect(grid.classes()).toContain('md:grid-cols-2')
+    expect(grid.text()).toContain('Message')
+    expect(grid.text()).toContain('Preview')
+  })
+
+  it('says it is loading the channels while they load', async () => {
+    listChannels.execute.mockReturnValue(deferred<DiscordChannel[]>().promise)
+    const wrapper = await mountPage()
+
+    expect(wrapper.text()).toContain('Loading channels')
+    expect(wrapper.text()).not.toContain('runs')
   })
 
   it('shows the Mention user box ticked only when a user id is saved', async () => {
@@ -303,7 +274,7 @@ describe('DiscordPage', () => {
     await button(wrapper, 'Preview').trigger('click')
     await flushPromises()
 
-    expect(previewMessage.execute).toHaveBeenCalledWith(true, { kind: 'text', text: 'hello' })
+    expect(previewMessage.execute).toHaveBeenCalledWith(true, { text: 'hello' })
     const messages = wrapper.findAll('[data-slot="discord-preview-message"]')
     expect(messages.map((node) => node.text())).toEqual(['first message', 'second message'])
   })
@@ -333,10 +304,7 @@ describe('DiscordPage', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, true, {
-      kind: 'text',
-      text: 'hello',
-    })
+    expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, true, { text: 'hello' })
     expect(toast.success).toHaveBeenCalledWith('Sent 1 message')
     expect(wrapper.findAll('[data-slot="discord-send-results"] li')).toHaveLength(1)
   })
@@ -387,55 +355,5 @@ describe('DiscordPage', () => {
 
     pending.resolve({ sent: 1, failed: 0, results: [] })
     await flushPromises()
-  })
-
-  it('lists the runs that found jobs in the Scraper result tab', async () => {
-    const wrapper = await mountPage()
-
-    await openScraperTab(wrapper)
-
-    expect(wrapper.find('#discord-run').exists()).toBe(true)
-    expect(wrapper.find('#discord-text').exists()).toBe(false)
-  })
-
-  it('loads the picked run and ticks all its jobs', async () => {
-    const wrapper = await mountPage()
-    await openScraperTab(wrapper)
-
-    await pickRun(wrapper)
-
-    expect(getRun.execute).toHaveBeenCalledWith('r1')
-    expect(wrapper.findAll('[data-slot="discord-job"]')).toHaveLength(2)
-    expect(wrapper.get('#discord-job-0').attributes('data-state')).toBe('checked')
-    expect(wrapper.get('#discord-job-1').attributes('data-state')).toBe('checked')
-  })
-
-  it('sends the run id and the ticked job indexes', async () => {
-    sendMessage.execute.mockResolvedValue({ sent: 2, failed: 0, results: [] })
-    const wrapper = await mountPage()
-    await openScraperTab(wrapper)
-    await pickRun(wrapper)
-    await wrapper.get('#discord-job-0').trigger('click')
-
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(sendMessage.execute).toHaveBeenCalledWith(CHANNEL_ID, true, {
-      kind: 'jobs',
-      runId: 'r1',
-      jobIndexes: [1],
-    })
-  })
-
-  it('keeps Send off until a job is ticked', async () => {
-    const wrapper = await mountPage()
-    await openScraperTab(wrapper)
-    expect(button(wrapper, 'Send').attributes('disabled')).toBeDefined()
-
-    await pickRun(wrapper)
-    expect(button(wrapper, 'Send').attributes('disabled')).toBeUndefined()
-
-    await wrapper.get('[data-slot="toggle-all"]').trigger('click')
-    expect(button(wrapper, 'Send').attributes('disabled')).toBeDefined()
   })
 })

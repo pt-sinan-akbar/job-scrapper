@@ -19,5 +19,3 @@ export const badgeVariants = cva(
   },
 )
 export type BadgeVariants = VariantProps<typeof badgeVariants>
-
-export const BADGE_ON_ACCENT_SOFT_CLASS = '[&_[data-slot=badge]:not([data-tone=danger])]:bg-surface'

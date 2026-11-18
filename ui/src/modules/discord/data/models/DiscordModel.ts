@@ -41,7 +41,9 @@ export interface DiscordChannelsModel {
   }[]
 }
 
-export type DiscordContentModel = { text: string } | { run_id: string; job_indexes: number[] }
+export interface DiscordContentModel {
+  text: string
+}
 
 export interface DiscordMessagesModel {
   messages: string[]
@@ -101,9 +103,7 @@ export function toDiscordChannels(model: DiscordChannelsModel): DiscordChannel[]
 }
 
 export function toDiscordContentModel(content: DiscordContent): DiscordContentModel {
-  return content.kind === 'text'
-    ? { text: content.text }
-    : { run_id: content.runId, job_indexes: content.jobIndexes }
+  return { text: content.text }
 }
 
 export function toDiscordMessages(model: DiscordMessagesModel): string[] {

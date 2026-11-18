@@ -6,7 +6,6 @@ import {
   toConfigChanges,
   type ConfigSnapshot,
   type ConfigValues,
-  type ConfigVersion,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import { requireConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
@@ -18,12 +17,9 @@ export const useConfigStore = defineStore('config', () => {
   const status = ref<LoadStatus>('idle')
   const values = ref<ConfigValues | null>(null)
   const snapshot = ref<ConfigSnapshot | null>(null)
-  const history = ref<ConfigVersion[]>([])
   const errorMessage = ref<string | null>(null)
   const saveError = ref<string | null>(null)
-  const historyError = ref<string | null>(null)
   const isSaving = ref(false)
-  const isRestoring = ref(false)
 
   const isDirty = computed(
     () =>
@@ -54,15 +50,6 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  async function loadHistory(): Promise<void> {
-    historyError.value = null
-    try {
-      history.value = await requireConfigUseCases().getConfigHistory.execute()
-    } catch (error) {
-      historyError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-    }
-  }
-
   async function save(): Promise<boolean> {
     const current = values.value
     const loaded = snapshot.value
@@ -77,7 +64,7 @@ export const useConfigStore = defineStore('config', () => {
     saveError.value = null
     try {
       await requireConfigUseCases().saveConfig.execute(changes, loaded.version)
-      await Promise.all([load(), loadHistory()])
+      await load()
       return true
     } catch (error) {
       saveError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
@@ -87,40 +74,16 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  async function restore(version: number): Promise<boolean> {
-    const loaded = snapshot.value
-    if (loaded === null || loaded.isStale) {
-      return false
-    }
-    isRestoring.value = true
-    saveError.value = null
-    try {
-      await requireConfigUseCases().restoreConfig.execute(version, loaded.version)
-      await Promise.all([load(), loadHistory()])
-      return true
-    } catch (error) {
-      saveError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
-      return false
-    } finally {
-      isRestoring.value = false
-    }
-  }
-
   return {
     status,
     values,
     snapshot,
-    history,
     errorMessage,
     saveError,
-    historyError,
     isSaving,
-    isRestoring,
     isDirty,
     discard,
     load,
-    loadHistory,
     save,
-    restore,
   }
 })

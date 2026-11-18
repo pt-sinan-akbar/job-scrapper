@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterView, useRoute, useRouter } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import { useAuthStore } from '@/modules/auth/presentation/stores/useAuthStore'
+import { useRunToasts } from '@/modules/runs/presentation/composables/useRunToasts'
 import { navItems } from '@/router/navigation'
+import { useSignOut } from '@/session/useSignOut'
 import AppHeader from '@/shared/components/AppHeader.vue'
 import AppShell from '@/shared/components/AppShell.vue'
 import SelectionTransition from '@/shared/components/SelectionTransition.vue'
@@ -10,13 +12,11 @@ import { Toaster } from '@/shared/components/ui/sonner'
 
 const auth = useAuthStore()
 const route = useRoute()
-const router = useRouter()
 const isPublicPage = computed(() => route.meta.isPublic === true)
 
-async function signOut(): Promise<void> {
-  await auth.logout()
-  await router.push('/login')
-}
+useRunToasts()
+
+const signOut = useSignOut()
 </script>
 
 <template>

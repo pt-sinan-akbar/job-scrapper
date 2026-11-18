@@ -48,7 +48,7 @@ describe('Discord use cases', () => {
 
   it('previews the content', async () => {
     const repository = makeRepository()
-    const content = { kind: 'text' as const, text: 'hi' }
+    const content = { text: 'hi' }
 
     await expect(new PreviewDiscordMessageUseCase(repository).execute(true, content)).resolves.toBe(
       'messages',
@@ -58,7 +58,7 @@ describe('Discord use cases', () => {
 
   it('sends the content', async () => {
     const repository = makeRepository()
-    const content = { kind: 'text' as const, text: 'hi' }
+    const content = { text: 'hi' }
 
     await expect(
       new SendDiscordMessageUseCase(repository).execute('123', false, content),

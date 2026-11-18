@@ -9,8 +9,6 @@ import { useConfigStore } from '@/modules/config/presentation/stores/useConfigSt
 
 const getConfig = { execute: vi.fn() }
 const saveConfig = { execute: vi.fn() }
-const getConfigHistory = { execute: vi.fn() }
-const restoreConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
@@ -48,8 +46,7 @@ describe('ConfigForm', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     setActivePinia(createPinia())
-    getConfigHistory.execute.mockResolvedValue([])
-    provideConfigUseCases({ getConfig, saveConfig, getConfigHistory, restoreConfig })
+    provideConfigUseCases({ getConfig, saveConfig })
   })
 
   afterEach(() => {
@@ -68,6 +65,13 @@ describe('ConfigForm', () => {
     ]) {
       expect(wrapper.find(id).exists(), id).toBe(true)
     }
+  })
+
+  it('has no older versions section', async () => {
+    const { wrapper } = await mountForm()
+
+    expect(wrapper.text()).not.toContain('Older versions')
+    expect(findButton(wrapper, 'Restore')).toBeUndefined()
   })
 
   it('renders nothing before the config is loaded', () => {

@@ -32,12 +32,23 @@ function readStyleTokens(): string {
 
 describe('minimum readable text size', () => {
   it('keeps every --text-* font-size token at 16px or larger', () => {
-    const tokens = [...readStyleTokens().matchAll(/--text-([a-z-]+):\s*(\d+(?:\.\d+)?)(px|rem)\s*;/g)]
+    const tokens = [
+      ...readStyleTokens().matchAll(/--text-([a-z-]+):\s*(\d+(?:\.\d+)?)(px|rem)\s*;/g),
+    ]
       .filter(([, name]) => !name!.includes('--'))
       .map(([, name, value, unit]) => ({ name: name!, px: toPx(Number(value), unit!) }))
 
     expect(tokens.map((t) => t.name)).toEqual(
-      expect.arrayContaining(['display', 'title', 'heading', 'subheading', 'body', 'body-sm', 'caption', 'code']),
+      expect.arrayContaining([
+        'display',
+        'title',
+        'heading',
+        'subheading',
+        'body',
+        'body-sm',
+        'caption',
+        'code',
+      ]),
     )
     expect(tokens.filter((t) => t.px < MIN_TEXT_PX)).toEqual([])
   })
@@ -59,10 +70,12 @@ describe('minimum readable text size', () => {
   it('has no hardcoded font size below 16px anywhere in src', () => {
     const offenders = listSourceFiles(SRC_DIR).flatMap((file) => {
       const text = readFileSync(file, 'utf8')
-      const hardcoded = [...text.matchAll(/font-size:\s*(\d*\.?\d+)(px|rem|em)/g)]
-        .filter(([, value, unit]) => toPx(Number(value), unit!) < MIN_TEXT_PX)
-      const arbitrary = [...text.matchAll(/\btext-\[(\d*\.?\d+)(px|rem|em)\]/g)]
-        .filter(([, value, unit]) => toPx(Number(value), unit!) < MIN_TEXT_PX)
+      const hardcoded = [...text.matchAll(/font-size:\s*(\d*\.?\d+)(px|rem|em)/g)].filter(
+        ([, value, unit]) => toPx(Number(value), unit!) < MIN_TEXT_PX,
+      )
+      const arbitrary = [...text.matchAll(/\btext-\[(\d*\.?\d+)(px|rem|em)\]/g)].filter(
+        ([, value, unit]) => toPx(Number(value), unit!) < MIN_TEXT_PX,
+      )
       const keywords = [...text.matchAll(/font-size:\s*(x{1,2}-small|small|smaller)\b/g)]
       const defaults = [...text.matchAll(/(?<![\w-])text-(xs|sm)\b/g)]
       return [...hardcoded, ...arbitrary, ...keywords, ...defaults].map(

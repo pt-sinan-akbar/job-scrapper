@@ -6,8 +6,6 @@ import { useConfigStore } from '@/modules/config/presentation/stores/useConfigSt
 
 const getConfig = { execute: vi.fn() }
 const saveConfig = { execute: vi.fn() }
-const getConfigHistory = { execute: vi.fn() }
-const restoreConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
@@ -28,20 +26,11 @@ const SNAPSHOT: ConfigSnapshot = {
   locationOptions: {},
 }
 
-const VERSION = {
-  version: 3,
-  updatedAt: '2026-11-01T01:00:00+00:00',
-  updatedBy: 'seed',
-  keywords: ['django'],
-  enabledSites: ['upwork'],
-}
-
 describe('useConfigStore', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     setActivePinia(createPinia())
-    getConfigHistory.execute.mockResolvedValue([])
-    provideConfigUseCases({ getConfig, saveConfig, getConfigHistory, restoreConfig })
+    provideConfigUseCases({ getConfig, saveConfig })
   })
 
   it('loads a copy of the values', async () => {
@@ -77,7 +66,6 @@ describe('useConfigStore', () => {
 
     expect(saveConfig.execute).toHaveBeenCalledWith({ limit: 9 }, 4)
     expect(getConfig.execute).toHaveBeenCalledTimes(2)
-    expect(getConfigHistory.execute).toHaveBeenCalledTimes(1)
   })
 
   it('skips the save when nothing changed', async () => {
@@ -113,56 +101,12 @@ describe('useConfigStore', () => {
     expect(saveConfig.execute).not.toHaveBeenCalled()
   })
 
-  it('loads history', async () => {
-    getConfigHistory.execute.mockResolvedValue([VERSION])
+  it('has no history or restore', () => {
     const store = useConfigStore()
 
-    await store.loadHistory()
-
-    expect(store.history).toEqual([VERSION])
-  })
-
-  it('shows an error when history fails', async () => {
-    getConfigHistory.execute.mockRejectedValue(new Error('History down'))
-    const store = useConfigStore()
-
-    await store.loadHistory()
-
-    expect(store.historyError).toBe('History down')
-  })
-
-  it('restores with the loaded version then reloads', async () => {
-    getConfig.execute.mockResolvedValue(SNAPSHOT)
-    restoreConfig.execute.mockResolvedValue(undefined)
-    const store = useConfigStore()
-    await store.load()
-
-    await expect(store.restore(3)).resolves.toBe(true)
-
-    expect(restoreConfig.execute).toHaveBeenCalledWith(3, 4)
-    expect(getConfig.execute).toHaveBeenCalledTimes(2)
-    expect(getConfigHistory.execute).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps the message when restore fails', async () => {
-    getConfig.execute.mockResolvedValue(SNAPSHOT)
-    restoreConfig.execute.mockRejectedValue(new Error('Conflict'))
-    const store = useConfigStore()
-    await store.load()
-
-    await expect(store.restore(3)).resolves.toBe(false)
-
-    expect(store.saveError).toBe('Conflict')
-  })
-
-  it('does not restore over stale values', async () => {
-    getConfig.execute.mockResolvedValue({ ...SNAPSHOT, isStale: true })
-    const store = useConfigStore()
-    await store.load()
-
-    await expect(store.restore(3)).resolves.toBe(false)
-
-    expect(restoreConfig.execute).not.toHaveBeenCalled()
+    expect('history' in store).toBe(false)
+    expect('loadHistory' in store).toBe(false)
+    expect('restore' in store).toBe(false)
   })
 
   it('is not dirty before a load', () => {

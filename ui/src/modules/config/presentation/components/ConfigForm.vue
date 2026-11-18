@@ -6,7 +6,6 @@ import {
   toOptionalNumber,
   type SiteSetting,
 } from '@/modules/config/domain/entities/ScraperConfig'
-import ConfigHistory from '@/modules/config/presentation/components/ConfigHistory.vue'
 import FilterFields from '@/modules/config/presentation/components/FilterFields.vue'
 import JobFieldsInput from '@/modules/config/presentation/components/JobFieldsInput.vue'
 import ListInput from '@/modules/config/presentation/components/ListInput.vue'
@@ -66,12 +65,12 @@ async function save(): Promise<void> {
     <form class="flex flex-col gap-6 md:gap-4" @submit.prevent="save">
       <fieldset :disabled="isStale" class="flex min-w-0 flex-col gap-6 border-0 p-0 md:gap-4">
         <PageSection title="General">
-          <div class="flex flex-col gap-4">
+          <div class="flex flex-col gap-8">
             <div class="flex flex-col gap-2">
               <Label for="keywords">Keywords, separated by commas</Label>
               <ListInput id="keywords" v-model="store.values.keywords" placeholder="Keywords" />
             </div>
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div class="grid gap-8 sm:grid-cols-2 sm:gap-6">
               <div class="flex flex-col gap-2">
                 <Label for="limit">Limit per site</Label>
                 <Input
@@ -149,8 +148,6 @@ async function save(): Promise<void> {
           </div>
         </PageSection>
       </fieldset>
-
-      <ConfigHistory />
 
       <div
         data-slot="save-bar"

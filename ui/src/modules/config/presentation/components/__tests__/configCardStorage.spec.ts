@@ -27,8 +27,8 @@ const throwingStorage: ConfigCardStorage = {
 }
 
 describe('config card storage', () => {
-  it('starts closed when nothing is stored', () => {
-    expect(readConfigCardOpen(() => memoryStorage().storage)).toBe(false)
+  it('starts open when nothing is stored', () => {
+    expect(readConfigCardOpen(() => memoryStorage().storage)).toBe(true)
   })
 
   it('reads back open', () => {
@@ -43,22 +43,22 @@ describe('config card storage', () => {
     expect(readConfigCardOpen(() => storage)).toBe(false)
   })
 
-  it('falls back to closed for an unknown stored value', () => {
+  it('falls back to open for an unknown stored value', () => {
     const { storage } = memoryStorage({ [CONFIG_CARD_STORAGE_KEY]: 'yes' })
 
-    expect(readConfigCardOpen(() => storage)).toBe(false)
+    expect(readConfigCardOpen(() => storage)).toBe(true)
   })
 
-  it('falls back to closed when reading throws', () => {
-    expect(readConfigCardOpen(() => throwingStorage)).toBe(false)
+  it('falls back to open when reading throws', () => {
+    expect(readConfigCardOpen(() => throwingStorage)).toBe(true)
   })
 
-  it('falls back to closed when the storage itself cannot be reached', () => {
+  it('falls back to open when the storage itself cannot be reached', () => {
     expect(
       readConfigCardOpen(() => {
         throw new Error('no storage')
       }),
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('writes the open state', () => {

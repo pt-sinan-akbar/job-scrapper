@@ -1,64 +1,54 @@
-import type { RunRecord, RunStatus } from '@/modules/runs/domain/entities/Run'
-import type { BadgeVariants } from '@/shared/components/ui/badge'
+import type { RunRecord } from '@/modules/runs/domain/entities/Run'
 
-interface RunStatusView {
+export type RunToastKind = 'success' | 'warning' | 'error'
+
+export interface RunToastView {
   label: string
-  tone: NonNullable<BadgeVariants['tone']>
-}
-
-export const RUN_STATUS_VIEWS: Record<RunStatus, RunStatusView> = {
-  running: { label: 'Running', tone: 'neutral' },
-  succeeded: { label: 'Succeeded', tone: 'accent' },
-  partial: { label: 'Partial', tone: 'neutral' },
-  failed: { label: 'Failed', tone: 'danger' },
-  interrupted: { label: 'Interrupted', tone: 'danger' },
+  toastKind: RunToastKind
 }
 
 export function formatJobCount(count: number): string {
   return count === 1 ? '1 job' : `${count} jobs`
 }
 
-export type RunTone = RunStatusView['tone']
-
-export const DISCORD_TONE_CLASSES: Record<RunTone, string> = {
-  neutral: 'text-ink-muted',
-  accent: 'text-accent',
-  danger: 'text-danger',
+function formatErrorCount(count: number): string {
+  return count === 1 ? '1 error' : `${count} errors`
 }
 
-export type DiscordToastKind = 'success' | 'warning' | 'error'
-
-export interface DiscordStatusView {
-  label: string
-  tone: RunTone
-  toastKind: DiscordToastKind
+function withReason(label: string, reason: string | null): string {
+  return reason === null ? label : `${label}: ${reason}`
 }
 
-export function toDiscordStatusView(record: RunRecord): DiscordStatusView | null {
-  switch (record.discordStatus) {
-    case 'sending':
-      return { label: 'Sending to Discord', tone: 'neutral', toastKind: 'success' }
-    case 'sent':
+export function toRunEndView(record: RunRecord): RunToastView | null {
+  switch (record.status) {
+    case 'succeeded':
       return {
-        label: `Sent ${record.discordSent} to Discord`,
-        tone: 'accent',
+        label: `Run finished with ${formatJobCount(record.jobCount)}`,
         toastKind: 'success',
       }
     case 'partial':
       return {
-        label: `Sent ${record.discordSent}, failed ${record.discordFailed} on Discord`,
-        tone: 'neutral',
+        label: `Run finished with ${formatJobCount(record.jobCount)} and ${formatErrorCount(record.errorCount)}`,
         toastKind: 'warning',
       }
     case 'failed':
+      return { label: withReason('Run failed', record.error), toastKind: 'error' }
+    default:
+      return null
+  }
+}
+
+export function toDiscordStatusView(record: RunRecord): RunToastView | null {
+  switch (record.discordStatus) {
+    case 'sent':
+      return { label: `Sent ${record.discordSent} to Discord`, toastKind: 'success' }
+    case 'partial':
       return {
-        label:
-          record.discordError === null
-            ? 'Discord failed'
-            : `Discord failed: ${record.discordError}`,
-        tone: 'danger',
-        toastKind: 'error',
+        label: `Sent ${record.discordSent}, failed ${record.discordFailed} on Discord`,
+        toastKind: 'warning',
       }
+    case 'failed':
+      return { label: withReason('Discord failed', record.discordError), toastKind: 'error' }
     default:
       return null
   }

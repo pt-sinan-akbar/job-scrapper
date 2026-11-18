@@ -18,7 +18,7 @@ function change(changes: Partial<FilterSetting>): void {
 </script>
 
 <template>
-  <div class="flex flex-col gap-3">
+  <div class="flex flex-col gap-8">
     <div class="flex flex-col gap-2">
       <Label :for="`${idPrefix}-location`">Locations, separated by commas</Label>
       <ListInput

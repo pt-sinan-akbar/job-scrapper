@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   toConfigChangesModel,
   toConfigSnapshot,
-  toConfigVersions,
   type ConfigModel,
 } from '@/modules/config/data/models/ConfigModel'
 
@@ -215,31 +214,5 @@ describe('toConfigChangesModel', () => {
 
   it('leaves out fields that did not change', () => {
     expect(toConfigChangesModel({ limit: 9 })).toEqual({ limit: 9 })
-  })
-})
-
-describe('toConfigVersions', () => {
-  it('maps history entries', () => {
-    const versions = toConfigVersions({
-      entries: [
-        {
-          version: 3,
-          updated_at: '2026-11-01T01:00:00+00:00',
-          updated_by: 'seed',
-          keywords: ['django'],
-          enabled_sites: ['upwork'],
-        },
-      ],
-    })
-
-    expect(versions).toEqual([
-      {
-        version: 3,
-        updatedAt: '2026-11-01T01:00:00+00:00',
-        updatedBy: 'seed',
-        keywords: ['django'],
-        enabledSites: ['upwork'],
-      },
-    ])
   })
 })

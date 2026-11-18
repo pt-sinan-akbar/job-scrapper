@@ -106,10 +106,7 @@ describe('RunForm', () => {
       (discordBlock) => {
         const wrapper = mountForm({ discordBlock })
 
-        expect(wrapper.getComponent(RouterLinkStub).props('to')).toEqual({
-          path: '/',
-          hash: '#discord',
-        })
+        expect(wrapper.getComponent(RouterLinkStub).props('to')).toBe('/discord')
       },
     )
 
@@ -175,7 +172,7 @@ describe('RunForm', () => {
       const wrapper = mountForm({ hasUnsavedConfig: true })
 
       expect(wrapper.getComponent(RouterLinkStub).props('to')).toEqual({
-        path: '/',
+        path: '/runs',
         hash: '#config',
       })
     })

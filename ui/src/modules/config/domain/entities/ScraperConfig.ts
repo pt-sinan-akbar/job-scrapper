@@ -47,14 +47,6 @@ export interface ConfigSnapshot {
   locationOptions: Record<string, LocationOption[]>
 }
 
-export interface ConfigVersion {
-  version: number
-  updatedAt: string
-  updatedBy: string
-  keywords: string[]
-  enabledSites: string[]
-}
-
 export type SiteChanges = Partial<Omit<SiteSetting, 'name'>>
 
 export interface ConfigChanges {

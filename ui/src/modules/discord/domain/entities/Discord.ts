@@ -1,5 +1,4 @@
 export const MAX_MESSAGE_CHARS = 2000
-export const MAX_JOBS_PER_SEND = 50
 
 export interface DiscordSettings {
   isConfigured: boolean
@@ -39,8 +38,9 @@ export interface DiscordChannel {
   guildName: string
 }
 
-export type DiscordContent =
-  { kind: 'text'; text: string } | { kind: 'jobs'; runId: string; jobIndexes: number[] }
+export interface DiscordContent {
+  text: string
+}
 
 export type DiscordMessageKind = 'text' | 'job' | 'summary'
 

@@ -1,7 +1,7 @@
 export type KeyValueStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 const ON_VALUE = 'true'
-const OFF_VALUE = 'false'
+export const OFF_VALUE = 'false'
 
 export function browserStorage(): KeyValueStorage {
   return window.localStorage

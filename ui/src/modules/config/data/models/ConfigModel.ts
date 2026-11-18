@@ -2,7 +2,6 @@ import type {
   ApiSetting,
   ConfigChanges,
   ConfigSnapshot,
-  ConfigVersion,
   FilterSetting,
   LocationOption,
   SiteChanges,
@@ -74,16 +73,6 @@ export interface ConfigChangesModel {
   filter?: FilterModel
   default_fields?: string[]
   sites?: Record<string, SiteChangesModel>
-}
-
-export interface ConfigHistoryModel {
-  entries: {
-    version: number
-    updated_at: string
-    updated_by: string
-    keywords: string[]
-    enabled_sites: string[]
-  }[]
 }
 
 function toFilterSetting(model: FilterModel): FilterSetting {
@@ -158,16 +147,6 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     mandatoryFields: model.mandatory_fields,
     locationOptions: toLocationOptions(model.location_options),
   }
-}
-
-export function toConfigVersions(model: ConfigHistoryModel): ConfigVersion[] {
-  return model.entries.map((entry) => ({
-    version: entry.version,
-    updatedAt: entry.updated_at,
-    updatedBy: entry.updated_by,
-    keywords: entry.keywords,
-    enabledSites: entry.enabled_sites,
-  }))
 }
 
 function toFilterModel(filter: FilterSetting): FilterModel {
