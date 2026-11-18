@@ -70,6 +70,7 @@ services:
       - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
       - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
       - PROXY_URL # no default on purpose: unset stops scrapes, empty means direct connection
+      - SCRAPER_CONCURRENCY
     networks:
       - default
       - job-net # lets the job-agent backend reach MCP as http://job-scraper-mcp:8080/mcp
@@ -105,6 +106,7 @@ services:
       - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
       - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
       - PROXY_URL
+      - SCRAPER_CONCURRENCY
 
 networks:
   # shared with the job-agent backend; create once with: docker network create job-net

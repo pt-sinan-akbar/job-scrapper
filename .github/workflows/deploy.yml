@@ -80,7 +80,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: SCRAPER_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,MCP_BIND_HOST,PROXY_URL,GHCR_USERNAME,GHCR_PULL_TOKEN
+          envs: SCRAPER_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,MCP_BIND_HOST,PROXY_URL,SCRAPER_CONCURRENCY,GHCR_USERNAME,GHCR_PULL_TOKEN
           script: |
             set -euo pipefail
             : "${PROXY_URL:?Set the PROXY_URL GitHub secret or variable}"
@@ -121,6 +121,7 @@ jobs:
           MONGO_COLLECTION_NAME: ${{ vars.MONGO_COLLECTION_NAME || 'scrape_runs' }}
           MCP_BIND_HOST: ${{ vars.MCP_BIND_HOST || '172.17.0.1' }}
           PROXY_URL: ${{ secrets.PROXY_URL || vars.PROXY_URL }}
+          SCRAPER_CONCURRENCY: ${{ vars.SCRAPER_CONCURRENCY || '2' }}
 
   deploy-ui:
     needs: [build, deploy-mcp]
@@ -152,7 +153,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: SCRAPER_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,PROXY_URL,UI_PASSWORD_HASH,UI_SESSION_SECRET,UI_DOMAIN,MCP_BIND_HOST,GHCR_USERNAME,GHCR_PULL_TOKEN
+          envs: SCRAPER_IMAGE,MONGO_URI,MONGO_ROOT_USER,MONGO_ROOT_PASSWORD,MONGO_DB_NAME,MONGO_COLLECTION_NAME,PROXY_URL,SCRAPER_CONCURRENCY,UI_PASSWORD_HASH,UI_SESSION_SECRET,UI_DOMAIN,MCP_BIND_HOST,GHCR_USERNAME,GHCR_PULL_TOKEN
           script: |
             set -euo pipefail
             : "${GHCR_PULL_TOKEN:?Set the GHCR_PULL_TOKEN GitHub secret}"
@@ -175,6 +176,7 @@ jobs:
           MONGO_DB_NAME: ${{ vars.MONGO_DB_NAME || 'job_scraper' }}
           MONGO_COLLECTION_NAME: ${{ vars.MONGO_COLLECTION_NAME || 'scrape_runs' }}
           PROXY_URL: ${{ secrets.PROXY_URL || vars.PROXY_URL }}
+          SCRAPER_CONCURRENCY: ${{ vars.SCRAPER_CONCURRENCY || '2' }}
           UI_PASSWORD_HASH: ${{ secrets.UI_PASSWORD_HASH }}
           UI_SESSION_SECRET: ${{ secrets.UI_SESSION_SECRET }}
           UI_DOMAIN: ${{ vars.UI_DOMAIN }}
