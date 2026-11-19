@@ -752,6 +752,33 @@ def test_spa_paths_fall_back_to_index(tmp_path: Path, gateway: FakeGateway):
         assert test_client.get("/api/missing").status_code == 404
 
 
+def test_ui_files_carry_security_headers(tmp_path: Path, gateway: FakeGateway):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>app</html>")
+    (dist / "favicon.svg").write_text("<svg></svg>")
+    app = create_app(_settings(tmp_path), gateway)
+    with TestClient(app, base_url=LOCAL_URL) as test_client:
+        responses = [
+            test_client.get("/"),
+            test_client.get("/config"),
+            test_client.get("/favicon.svg"),
+        ]
+
+    for response in responses:
+        policy = response.headers["content-security-policy"]
+        assert "default-src 'self'" in policy
+        assert "script-src 'self'" in policy
+        assert "object-src 'none'" in policy
+        assert "base-uri 'self'" in policy
+        assert "frame-ancestors 'none'" in policy
+        assert "'unsafe-eval'" not in policy
+        assert "script-src 'self' 'unsafe-inline'" not in policy
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+
 def test_favicon_files_are_served_instead_of_index(tmp_path: Path, gateway: FakeGateway):
     dist = tmp_path / "dist"
     dist.mkdir()
