@@ -9,7 +9,7 @@ import type { ConfigSnapshot } from '@/modules/config/domain/entities/ScraperCon
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 import type { DiscordSettings } from '@/modules/discord/domain/entities/Discord'
 import { provideDiscordUseCases } from '@/modules/discord/presentation/stores/discordUseCases'
-import type { RunDetail, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
+import type { RunDetail, RunJob, RunOptions, RunRecord } from '@/modules/runs/domain/entities/Run'
 import RunsPage from '@/modules/runs/presentation/pages/RunsPage.vue'
 import { provideRunUseCases } from '@/modules/runs/presentation/stores/runUseCases'
 import {
@@ -46,37 +46,55 @@ const RUN: RunRecord = {
 }
 
 function detailOf(record: RunRecord, overrides: Partial<RunDetail> = {}): RunDetail {
-  return { record, jobs: [], failures: [], payloads: [], ...overrides }
+  return { record, jobs: [], failures: [], ...overrides }
+}
+
+function jobOf(overrides: Partial<RunJob>): RunJob {
+  return {
+    site: null,
+    matchedKeyword: null,
+    title: null,
+    company: null,
+    location: null,
+    url: null,
+    postedAt: null,
+    salary: null,
+    workType: null,
+    employmentType: null,
+    experienceLevel: null,
+    description: null,
+    json: {},
+    ...overrides,
+  }
 }
 
 const LATEST: RunDetail = detailOf(
   { ...RUN, id: 'run-0', keywords: ['vue'], sites: ['indeed'] },
   {
     jobs: [
-      {
+      jobOf({
         site: 'indeed',
         matchedKeyword: 'vue',
         title: 'Vue dev',
         company: 'Acme',
         location: 'Remote',
         url: 'https://example.com/vue',
-        postedAt: null,
-      },
+        json: { site: 'indeed', matched_keyword: 'vue', title: 'Vue dev' },
+      }),
     ],
   },
 )
 
 const FINISHED: RunDetail = detailOf(RUN, {
   jobs: [
-    {
+    jobOf({
       site: 'upwork',
       matchedKeyword: 'django',
       title: 'Django dev',
       company: 'Beta',
-      location: null,
       url: 'https://example.com/django',
-      postedAt: null,
-    },
+      json: { site: 'upwork', matched_keyword: 'django', title: 'Django dev' },
+    }),
   ],
 })
 
@@ -475,7 +493,12 @@ describe('RunsPage', () => {
     function stubReducedMotion(isReduced: boolean): void {
       vi.stubGlobal(
         'matchMedia',
-        vi.fn().mockImplementation((query: string) => ({ matches: isReduced, media: query })),
+        vi.fn().mockImplementation((query: string) => ({
+          matches: isReduced,
+          media: query,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })),
       )
     }
 

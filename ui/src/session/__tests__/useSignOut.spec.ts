@@ -65,7 +65,7 @@ describe('useSignOut', () => {
     provideRunUseCases({ getOptions, getRun, getLatestRun, startRun })
     logout.execute.mockResolvedValue(undefined)
     startRun.execute.mockResolvedValue(RUNNING)
-    getRun.execute.mockResolvedValue({ record: RUNNING, jobs: [], failures: [], payloads: [] })
+    getRun.execute.mockResolvedValue({ record: RUNNING, jobs: [], failures: [] })
   })
 
   afterEach(() => {
@@ -93,7 +93,6 @@ describe('useSignOut', () => {
       record: { ...RUNNING, status: 'succeeded' },
       jobs: [],
       failures: [],
-      payloads: [],
     })
     const router = createTestRouter()
     const signOut = await mountSignOut(router)

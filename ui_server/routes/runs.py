@@ -8,7 +8,7 @@ from ui_server.dependencies import ServicesDep, require_session
 from ui_server.errors import ConfigInvalidError
 from ui_server.schema.response import ok
 from ui_server.schema.runs import StartRunRequest
-from ui_server.services.run_detail import detail_to_dict, record_to_dict
+from ui_server.services.run_detail import detail_to_response, record_to_dict
 
 router = APIRouter(prefix="/api/runs", dependencies=[Depends(require_session)])
 
@@ -30,9 +30,9 @@ async def start_run(body: StartRunRequest, services: ServicesDep) -> dict[str, A
 @router.get("/latest")
 def read_latest_run(services: ServicesDep) -> dict[str, Any]:
     detail = services.run_service.latest()
-    return ok(None if detail is None else detail_to_dict(detail))
+    return ok(None if detail is None else detail_to_response(detail))
 
 
 @router.get("/{run_id}")
 def read_run(run_id: str, services: ServicesDep) -> dict[str, Any]:
-    return ok(detail_to_dict(services.run_service.get(run_id)))
+    return ok(detail_to_response(services.run_service.get(run_id)))

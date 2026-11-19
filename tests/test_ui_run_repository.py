@@ -43,6 +43,10 @@ def _detail(run_id: str) -> RunDetail:
         "location": None,
         "url": None,
         "posted_at": None,
+        "salary_min": 1000,
+        "salary_max": 2000.5,
+        "work_type": "remote",
+        "experience_level": None,
     }
     payload = {"keyword": "django", "site": "upwork", "raw": {"a": 1}, "filtered": None}
     return RunDetail(record, (job,), (), (payload,))

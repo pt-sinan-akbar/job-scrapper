@@ -20,10 +20,35 @@ from ui_server.settings import Settings
 NOT_FOUND_STATUS = 404
 API_PREFIX = "api"
 INDEX_FILE = "index.html"
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    )
+)
+SECURITY_HEADERS = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
 
 
 class SpaStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope: Scope) -> Any:
+        response = await self._find_response(path, scope)
+        response.headers.update(SECURITY_HEADERS)
+        return response
+
+    async def _find_response(self, path: str, scope: Scope) -> Any:
         try:
             return await super().get_response(path, scope)
         except HTTPException as exc:

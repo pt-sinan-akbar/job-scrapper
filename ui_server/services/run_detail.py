@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from ui_server.services.run_record import DiscordStatus, RunRecord, RunStatus
 
 JOB_FIELDS = ("title", "company", "location", "url", "posted_at")
+JOB_LEAD_FIELDS = ("site", "matched_keyword", *JOB_FIELDS)
 FAILURE_FIELDS = ("keyword", "site", "reason")
 RECORD_FIELDS = tuple(field.name for field in fields(RunRecord))
 
@@ -25,15 +27,27 @@ def _text(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-def _job_view(job: dict[str, Any], keyword: Any, site: Any) -> dict[str, str | None]:
-    return {
-        "site": _text(job.get("site") or site),
-        "matched_keyword": _text(job.get("matched_keyword") or keyword),
-        **{name: _text(job.get(name)) for name in JOB_FIELDS},
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _job_view(job: dict[str, Any], keyword: Any, site: Any) -> dict[str, Any]:
+    view = {
+        "site": job.get("site") or site,
+        "matched_keyword": job.get("matched_keyword") or keyword,
+        **{name: job.get(name) for name in JOB_FIELDS},
+        **{name: value for name, value in job.items() if name not in JOB_LEAD_FIELDS},
     }
+    return _json_safe(view)
 
 
-def build_jobs(result: dict[str, Any]) -> tuple[dict[str, str | None], ...]:
+def build_jobs(result: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     return tuple(
         _job_view(job, group.get("keyword"), site.get("site"))
         for group in result.get("results", [])
@@ -104,13 +118,16 @@ def record_to_dict(record: RunRecord) -> dict[str, Any]:
     return {name: _plain(value) for name, value in asdict(record).items()}
 
 
-def detail_to_dict(detail: RunDetail) -> dict[str, Any]:
+def detail_to_response(detail: RunDetail) -> dict[str, Any]:
     return {
         "record": record_to_dict(detail.record),
         "jobs": list(detail.jobs),
         "failures": list(detail.failures),
-        "payloads": list(detail.payloads),
     }
+
+
+def detail_to_dict(detail: RunDetail) -> dict[str, Any]:
+    return {**detail_to_response(detail), "payloads": list(detail.payloads)}
 
 
 def record_from_dict(data: dict[str, Any]) -> RunRecord:

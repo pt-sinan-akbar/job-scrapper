@@ -49,6 +49,12 @@ const JOB: RunJob = {
   location: 'Remote',
   url: 'https://example.com/1',
   postedAt: null,
+  salary: null,
+  workType: null,
+  employmentType: null,
+  experienceLevel: null,
+  description: null,
+  json: { site: 'upwork', matched_keyword: 'django', title: 'Django dev' },
 }
 
 function detail(
@@ -61,7 +67,6 @@ function detail(
     record: { ...record(status, discordStatus), id },
     jobs: isDone ? [JOB] : [],
     failures: [],
-    payloads: [],
   }
 }
 

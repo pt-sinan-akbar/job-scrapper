@@ -3,8 +3,8 @@ import { mount } from '@vue/test-utils'
 import type { RunFailure, RunJob } from '@/modules/runs/domain/entities/Run'
 import RunJobList from '@/modules/runs/presentation/components/RunJobList.vue'
 
-const JOBS: RunJob[] = [
-  {
+function makeJob(overrides: Partial<RunJob> = {}): RunJob {
+  return {
     site: 'jobstreet',
     matchedKeyword: 'AI Engineering',
     title: 'ML Engineer',
@@ -12,8 +12,19 @@ const JOBS: RunJob[] = [
     location: 'Remote',
     url: 'https://example.com/1',
     postedAt: '2 days ago',
-  },
-  {
+    salary: null,
+    workType: null,
+    employmentType: null,
+    experienceLevel: null,
+    description: null,
+    json: { title: 'ML Engineer' },
+    ...overrides,
+  }
+}
+
+const JOBS: RunJob[] = [
+  makeJob(),
+  makeJob({
     site: 'indeed',
     matchedKeyword: 'Vue',
     title: null,
@@ -21,19 +32,28 @@ const JOBS: RunJob[] = [
     location: 'Jakarta',
     url: null,
     postedAt: null,
-  },
+    json: { location: 'Jakarta' },
+  }),
 ]
+
+const ASIDE = '<p data-slot="aside-probe">panel</p>'
 
 const FAILURES: RunFailure[] = [
   { keyword: 'Vue', site: 'glints', reason: 'Blocked by the site' },
   { keyword: 'AI Engineering', site: 'linkedin', reason: null },
 ]
 
-function mountList(
-  props: { jobs?: RunJob[]; failures?: RunFailure[]; error?: string | null } = {},
-) {
+interface Props {
+  jobs: RunJob[]
+  failures: RunFailure[]
+  error: string | null
+  selectedIndex: number
+}
+
+function mountList(props: Partial<Props> = {}, aside = '') {
   return mount(RunJobList, {
-    props: { jobs: JOBS, failures: [], error: null, ...props },
+    props: { jobs: JOBS, failures: [], error: null, selectedIndex: 0, ...props },
+    slots: aside ? { aside } : {},
     attachTo: document.body,
   })
 }
@@ -64,10 +84,61 @@ describe('RunJobList', () => {
     expect(link.attributes('rel')).toContain('noopener')
   })
 
-  it('tells screen readers the link opens in a new tab', () => {
-    const link = mountList().get('[data-slot="job-row"] a')
+  it('marks only the selected job when its JSON shows in the aside', () => {
+    const wrapper = mountList({ selectedIndex: 1 }, ASIDE)
+    const cards = wrapper.findAll('[data-slot="job-card"]')
+    const buttons = wrapper.findAll('[data-slot="job-json"]')
 
-    expect(link.get('.sr-only').text()).toBe('(opens in new tab)')
+    expect(cards[0]!.attributes('data-selected')).toBeUndefined()
+    expect(cards[1]!.attributes('data-selected')).toBe('true')
+    expect(buttons[1]!.attributes('aria-pressed')).toBe('true')
+    expect(buttons[1]!.attributes('aria-haspopup')).toBeUndefined()
+  })
+
+  it('marks no job and offers the JSON in a dialog when there is no aside', () => {
+    const wrapper = mountList({ selectedIndex: 1 })
+    const buttons = wrapper.findAll('[data-slot="job-json"]')
+
+    expect(wrapper.find('[data-slot="job-card"][data-selected]').exists()).toBe(false)
+    expect(buttons[1]!.attributes('aria-pressed')).toBeUndefined()
+    expect(buttons[1]!.attributes('aria-haspopup')).toBe('dialog')
+  })
+
+  it('asks to select the job whose card is clicked', async () => {
+    const wrapper = mountList()
+
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
+
+    expect(wrapper.emitted('select')).toEqual([[1]])
+  })
+
+  it('asks for the JSON of the job whose JSON button is clicked', async () => {
+    const wrapper = mountList()
+
+    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+
+    expect(wrapper.emitted('json')).toEqual([[1]])
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
+
+  it('shows the aside next to the jobs', () => {
+    const wrapper = mountList({}, ASIDE)
+    const aside = wrapper.get('[data-slot="job-aside"]')
+
+    expect(aside.element.tagName).toBe('ASIDE')
+    expect(aside.attributes('aria-label')).toBe('Selected job JSON')
+    expect(aside.find('[data-slot="aside-probe"]').exists()).toBe(true)
+  })
+
+  it('shows no aside when the run found no jobs', () => {
+    const wrapper = mountList({ jobs: [] }, ASIDE)
+
+    expect(wrapper.find('[data-slot="job-aside"]').exists()).toBe(false)
+    expect(wrapper.find('[data-slot="aside-probe"]').exists()).toBe(false)
+  })
+
+  it('shows no aside when none is given', () => {
+    expect(mountList().find('[data-slot="job-aside"]').exists()).toBe(false)
   })
 
   it('keys same site and keyword failures apart', async () => {

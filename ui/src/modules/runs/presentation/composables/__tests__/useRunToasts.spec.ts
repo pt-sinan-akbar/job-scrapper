@@ -42,7 +42,7 @@ const AppHost = defineComponent({
 })
 
 function asDetail(record: RunRecord): RunDetail {
-  return { record, jobs: [], failures: [], payloads: [] }
+  return { record, jobs: [], failures: [] }
 }
 
 function mountApp() {
