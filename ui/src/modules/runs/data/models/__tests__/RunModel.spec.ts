@@ -59,24 +59,50 @@ describe('toRunRecord', () => {
 })
 
 describe('toRunDetail', () => {
+  const OLD_JOB = {
+    site: 'upwork',
+    matched_keyword: 'django',
+    title: 'Django dev',
+    company: 'Acme',
+    location: 'Remote',
+    url: 'https://example.com/1',
+    posted_at: '2026-11-01',
+  }
+  const FULL_JOB = {
+    ...OLD_JOB,
+    salary: 'IDR 10m to 15m',
+    salary_min: 10000000,
+    salary_max: 15000000,
+    posted_date: '2026-11-01T00:00:00+00:00',
+    work_type: 'Remote',
+    employment_type: 'Full time',
+    experience_level: 'Senior',
+    job_id: 123,
+    company_id: 'acme-1',
+    requirements: 'Five years of Django',
+    tags: ['python', { name: 'django' }],
+  }
+  const EMPTY_JOB = {
+    site: null,
+    matchedKeyword: null,
+    title: null,
+    company: null,
+    location: null,
+    url: null,
+    postedAt: null,
+    salary: null,
+    workType: null,
+    employmentType: null,
+    experienceLevel: null,
+    description: null,
+  }
   const DETAIL_MODEL: RunDetailModel = {
     record: MODEL,
-    jobs: [
-      {
-        site: 'upwork',
-        matched_keyword: 'django',
-        title: 'Django dev',
-        company: 'Acme',
-        location: 'Remote',
-        url: 'https://example.com/1',
-        posted_at: '2026-11-01',
-      },
-    ],
+    jobs: [FULL_JOB],
     failures: [{ keyword: 'django', site: 'indeed', reason: 'Blocked' }],
-    payloads: [{ keyword: 'django', site: 'upwork', raw: { items: [1] }, filtered: { count: 1 } }],
   }
 
-  it('maps the record, jobs, failures and payloads', () => {
+  it('maps the record, jobs and failures', () => {
     const detail = toRunDetail(DETAIL_MODEL)
 
     expect(detail.record.id).toBe('run-1')
@@ -89,12 +115,63 @@ describe('toRunDetail', () => {
         location: 'Remote',
         url: 'https://example.com/1',
         postedAt: '2026-11-01',
+        salary: 'IDR 10m to 15m',
+        workType: 'Remote',
+        employmentType: 'Full time',
+        experienceLevel: 'Senior',
+        description: 'Five years of Django',
+        json: FULL_JOB,
       },
     ])
     expect(detail.failures).toEqual([{ keyword: 'django', site: 'indeed', reason: 'Blocked' }])
-    expect(detail.payloads).toEqual([
-      { keyword: 'django', site: 'upwork', raw: { items: [1] }, filtered: { count: 1 } },
-    ])
+  })
+
+  it('carries no payloads, even from an older API response', () => {
+    const model = { ...DETAIL_MODEL, payloads: [{ keyword: 'django' }] } as RunDetailModel
+
+    expect(toRunDetail(model)).not.toHaveProperty('payloads')
+  })
+
+  it('keeps the job object as the API sent it, with every key and value untouched', () => {
+    const detail = toRunDetail(DETAIL_MODEL)
+
+    expect(detail.jobs[0]!.json).toBe(FULL_JOB)
+    expect(detail.jobs[0]!.json).toEqual({
+      site: 'upwork',
+      matched_keyword: 'django',
+      title: 'Django dev',
+      company: 'Acme',
+      location: 'Remote',
+      url: 'https://example.com/1',
+      posted_at: '2026-11-01',
+      salary: 'IDR 10m to 15m',
+      salary_min: 10000000,
+      salary_max: 15000000,
+      posted_date: '2026-11-01T00:00:00+00:00',
+      work_type: 'Remote',
+      employment_type: 'Full time',
+      experience_level: 'Senior',
+      job_id: 123,
+      company_id: 'acme-1',
+      requirements: 'Five years of Django',
+      tags: ['python', { name: 'django' }],
+    })
+  })
+
+  it('maps a job stored before the full job object was sent', () => {
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [OLD_JOB] })
+
+    expect(detail.jobs[0]).toEqual({
+      ...EMPTY_JOB,
+      site: 'upwork',
+      matchedKeyword: 'django',
+      title: 'Django dev',
+      company: 'Acme',
+      location: 'Remote',
+      url: 'https://example.com/1',
+      postedAt: '2026-11-01',
+      json: OLD_JOB,
+    })
   })
 
   it('turns missing job fields and failure reasons into null', () => {
@@ -104,93 +181,166 @@ describe('toRunDetail', () => {
       failures: [{ keyword: 'django', site: 'indeed' }],
     })
 
-    expect(detail.jobs[0]).toEqual({
+    expect(detail.jobs[0]).toEqual({ ...EMPTY_JOB, json: {} })
+    expect(detail.failures[0]!.reason).toBeNull()
+  })
+
+  it('turns null job fields into null', () => {
+    const job = {
       site: null,
-      matchedKeyword: null,
+      matched_keyword: null,
       title: null,
       company: null,
       location: null,
       url: null,
-      postedAt: null,
-    })
-    expect(detail.failures[0]!.reason).toBeNull()
+      posted_at: null,
+      salary: null,
+      work_type: null,
+      employment_type: null,
+      experience_level: null,
+      requirements: null,
+    }
+
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [job] })
+
+    expect(detail.jobs[0]).toEqual({ ...EMPTY_JOB, json: job })
   })
 
-  it.each([['javascript:alert(1)'], ['ftp://example.com'], ['/relative']])(
+  it('shows numbers as text and drops booleans in the display fields', () => {
+    const job = {
+      site: 7,
+      matched_keyword: 0,
+      title: 2026,
+      company: true,
+      location: false,
+      posted_at: 1762000000,
+      salary: 1500.5,
+      work_type: 1,
+      employment_type: 2,
+      experience_level: 3,
+      requirements: 4,
+    }
+
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [job] })
+
+    expect(detail.jobs[0]).toEqual({
+      site: '7',
+      matchedKeyword: '0',
+      title: '2026',
+      company: null,
+      location: null,
+      url: null,
+      postedAt: '1762000000',
+      salary: '1500.5',
+      workType: '1',
+      employmentType: '2',
+      experienceLevel: '3',
+      description: '4',
+      json: job,
+    })
+  })
+
+  it('drops objects and arrays from the display fields but keeps them in the json', () => {
+    const job = {
+      site: ['upwork'],
+      matched_keyword: { value: 'django' },
+      title: { text: 'Django dev' },
+      company: [],
+      location: {},
+      url: { href: 'https://example.com/1' },
+      posted_at: ['2026-11-01'],
+      salary: { min: 1, max: 2 },
+      work_type: ['Remote'],
+      employment_type: {},
+      experience_level: [],
+      requirements: ['Django'],
+    }
+
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [job] })
+
+    expect(detail.jobs[0]).toEqual({ ...EMPTY_JOB, json: job })
+  })
+
+  it.each([[''], ['   '], ['\n\t']])('turns a blank display string into null: %j', (blank) => {
+    const job = {
+      site: blank,
+      matched_keyword: blank,
+      title: blank,
+      company: blank,
+      location: blank,
+      url: blank,
+      posted_at: blank,
+      salary: blank,
+      work_type: blank,
+      employment_type: blank,
+      experience_level: blank,
+      requirements: blank,
+    }
+
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [job] })
+
+    expect(detail.jobs[0]).toEqual({ ...EMPTY_JOB, json: job })
+  })
+
+  it('keeps a display string as it was sent', () => {
+    const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [{ title: ' Django dev ' }] })
+
+    expect(detail.jobs[0]!.title).toBe(' Django dev ')
+  })
+
+  it.each([['javascript:alert(1)'], ['ftp://example.com'], ['/relative'], [42], [true]])(
     'drops a job url that is not a web link: %s',
     (url) => {
       const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [{ title: 'x', url }] })
 
       expect(detail.jobs[0]!.url).toBeNull()
+      expect(detail.jobs[0]!.json).toEqual({ title: 'x', url })
     },
   )
+
+  it.each([['http://example.com/1'], ['https://example.com/1'], ['HTTPS://example.com/1']])(
+    'keeps a job url that is a web link: %s',
+    (url) => {
+      const detail = toRunDetail({ ...DETAIL_MODEL, jobs: [{ url }] })
+
+      expect(detail.jobs[0]!.url).toBe(url)
+    },
+  )
+
+  it('skips job entries that are not plain objects without crashing', () => {
+    const detail = toRunDetail({
+      ...DETAIL_MODEL,
+      jobs: [null, 'text', 3, true, ['nested'], undefined, OLD_JOB],
+    })
+
+    expect(detail.jobs).toHaveLength(1)
+    expect(detail.jobs[0]!.json).toBe(OLD_JOB)
+  })
+
+  it('treats a missing or malformed job list as empty', () => {
+    const { jobs, ...rest } = DETAIL_MODEL
+    void jobs
+
+    expect(toRunDetail(rest as RunDetailModel).jobs).toEqual([])
+    expect(toRunDetail({ ...rest, jobs: 'text' } as unknown as RunDetailModel).jobs).toEqual([])
+  })
+
+  it('does not change the job object it was given', () => {
+    const job = Object.freeze({ ...FULL_JOB })
+
+    expect(() => toRunDetail({ ...DETAIL_MODEL, jobs: [job] })).not.toThrow()
+  })
 
   it('keeps an empty detail for a run that is still going', () => {
     const detail = toRunDetail({
       record: { ...MODEL, status: 'running' },
       jobs: [],
       failures: [],
-      payloads: [],
     })
 
     expect(detail.record.status).toBe('running')
     expect(detail.jobs).toEqual([])
     expect(detail.failures).toEqual([])
-    expect(detail.payloads).toEqual([])
-  })
-
-  it('skips payloads that are not shaped like a payload', () => {
-    const detail = toRunDetail({
-      ...DETAIL_MODEL,
-      payloads: [
-        null,
-        'text',
-        { keyword: 1, site: 'upwork', raw: null, filtered: null },
-        { keyword: 'django', site: 2, raw: null, filtered: null },
-        { keyword: 'django', site: 'indeed', raw: null, filtered: null },
-      ],
-    })
-
-    expect(detail.payloads).toEqual([
-      { keyword: 'django', site: 'indeed', raw: null, filtered: null },
-    ])
-  })
-
-  it('keeps a payload whose raw or filtered data is left out', () => {
-    const detail = toRunDetail({
-      ...DETAIL_MODEL,
-      payloads: [
-        { keyword: 'django', site: 'upwork', filtered: { count: 1 } },
-        { keyword: 'vue', site: 'indeed' },
-      ],
-    })
-
-    expect(detail.payloads).toEqual([
-      { keyword: 'django', site: 'upwork', raw: null, filtered: { count: 1 } },
-      { keyword: 'vue', site: 'indeed', raw: null, filtered: null },
-    ])
-  })
-
-  it('keeps any JSON value as raw or filtered data', () => {
-    const detail = toRunDetail({
-      ...DETAIL_MODEL,
-      payloads: [
-        { keyword: 'django', site: 'upwork', raw: [{ id: 1 }], filtered: 'text' },
-        { keyword: 'vue', site: 'indeed', raw: 3, filtered: false },
-      ],
-    })
-
-    expect(detail.payloads).toEqual([
-      { keyword: 'django', site: 'upwork', raw: [{ id: 1 }], filtered: 'text' },
-      { keyword: 'vue', site: 'indeed', raw: 3, filtered: false },
-    ])
-  })
-
-  it('treats a missing payload list as empty', () => {
-    const { payloads, ...rest } = DETAIL_MODEL
-    void payloads
-
-    expect(toRunDetail(rest as RunDetailModel).payloads).toEqual([])
   })
 })
 

@@ -1,11 +1,10 @@
 import type {
-  JsonValue,
+  JsonObject,
   RunDetail,
   RunDiscordStatus,
   RunFailure,
   RunJob,
   RunOptions,
-  RunPayload,
   RunRecord,
   RunStatus,
 } from '@/modules/runs/domain/entities/Run'
@@ -26,16 +25,6 @@ export interface RunRecordModel {
   discord_error?: string | null
 }
 
-export interface RunJobModel {
-  site?: string | null
-  matched_keyword?: string | null
-  title?: string | null
-  company?: string | null
-  location?: string | null
-  url?: string | null
-  posted_at?: string | null
-}
-
 export interface RunFailureModel {
   keyword: string
   site: string
@@ -44,9 +33,8 @@ export interface RunFailureModel {
 
 export interface RunDetailModel {
   record: RunRecordModel
-  jobs: RunJobModel[]
+  jobs: unknown[]
   failures: RunFailureModel[]
-  payloads?: unknown[]
 }
 
 export interface RunOptionsModel {
@@ -74,61 +62,59 @@ export function toRunRecord(model: RunRecordModel): RunRecord {
 
 const WEB_URL = /^https?:\/\//i
 
-function toWebUrl(url: string | null | undefined): string | null {
-  return url != null && WEB_URL.test(url) ? url : null
+function isPlainObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function toRunJob(model: RunJobModel): RunJob {
-  return {
-    site: model.site ?? null,
-    matchedKeyword: model.matched_keyword ?? null,
-    title: model.title ?? null,
-    company: model.company ?? null,
-    location: model.location ?? null,
-    url: toWebUrl(model.url),
-    postedAt: model.posted_at ?? null,
+function toText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value.trim() === '' ? null : value
   }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return null
+}
+
+function toWebUrl(value: unknown): string | null {
+  const url = toText(value)
+  return url !== null && WEB_URL.test(url) ? url : null
+}
+
+function toRunJob(model: JsonObject): RunJob {
+  return {
+    site: toText(model.site),
+    matchedKeyword: toText(model.matched_keyword),
+    title: toText(model.title),
+    company: toText(model.company),
+    location: toText(model.location),
+    url: toWebUrl(model.url),
+    postedAt: toText(model.posted_at),
+    salary: toText(model.salary),
+    workType: toText(model.work_type),
+    employmentType: toText(model.employment_type),
+    experienceLevel: toText(model.experience_level),
+    description: toText(model.requirements),
+    json: model,
+  }
+}
+
+function toRunJobs(entries: unknown): RunJob[] {
+  if (!Array.isArray(entries)) {
+    return []
+  }
+  return entries.filter(isPlainObject).map(toRunJob)
 }
 
 function toRunFailure(model: RunFailureModel): RunFailure {
   return { keyword: model.keyword, site: model.site, reason: model.reason ?? null }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function toJsonValue(value: unknown): JsonValue {
-  return value === undefined ? null : (value as JsonValue)
-}
-
-function toRunPayload(entry: unknown): RunPayload | null {
-  if (!isPlainObject(entry)) {
-    return null
-  }
-  const { keyword, site, raw, filtered } = entry
-  if (typeof keyword !== 'string' || typeof site !== 'string') {
-    return null
-  }
-  return { keyword, site, raw: toJsonValue(raw), filtered: toJsonValue(filtered) }
-}
-
-function toRunPayloads(entries: unknown): RunPayload[] {
-  if (!Array.isArray(entries)) {
-    return []
-  }
-  return entries.flatMap((entry) => {
-    const payload = toRunPayload(entry)
-    return payload === null ? [] : [payload]
-  })
-}
-
 export function toRunDetail(model: RunDetailModel): RunDetail {
   return {
     record: toRunRecord(model.record),
-    jobs: model.jobs.map(toRunJob),
+    jobs: toRunJobs(model.jobs),
     failures: model.failures.map(toRunFailure),
-    payloads: toRunPayloads(model.payloads),
   }
 }
 

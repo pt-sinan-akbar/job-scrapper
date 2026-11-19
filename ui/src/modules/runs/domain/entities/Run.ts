@@ -26,6 +26,12 @@ export interface RunJob {
   location: string | null
   url: string | null
   postedAt: string | null
+  salary: string | null
+  workType: string | null
+  employmentType: string | null
+  experienceLevel: string | null
+  description: string | null
+  json: JsonObject
 }
 
 export interface RunFailure {
@@ -40,18 +46,10 @@ export interface JsonObject {
   [key: string]: JsonValue
 }
 
-export interface RunPayload {
-  keyword: string
-  site: string
-  raw: JsonValue
-  filtered: JsonValue
-}
-
 export interface RunDetail {
   record: RunRecord
   jobs: RunJob[]
   failures: RunFailure[]
-  payloads: RunPayload[]
 }
 
 export interface SiteOption {

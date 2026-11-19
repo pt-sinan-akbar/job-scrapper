@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { CheckIcon, CopyIcon } from '@lucide/vue'
+import { CheckIcon, CopyIcon, Maximize2Icon } from '@lucide/vue'
 import type { JsonValue } from '@/modules/runs/domain/entities/Run'
 import {
   MAX_HIGHLIGHT_CHARS,
@@ -8,12 +8,12 @@ import {
   tokenizeJson,
   type JsonTokenKind,
 } from '@/modules/runs/presentation/components/jsonTokens'
-import { formatJobCount } from '@/modules/runs/presentation/components/runStatus'
 import { Button } from '@/shared/components/ui/button'
 
 type CopyState = 'idle' | 'copied' | 'failed'
 
 const FEEDBACK_MS = 2000
+const FULLSCREEN_LABEL = 'Open full screen'
 const TOKEN_CLASSES: Record<JsonTokenKind, string> = {
   key: 'text-syntax-key',
   string: 'text-syntax-string',
@@ -23,14 +23,23 @@ const TOKEN_CLASSES: Record<JsonTokenKind, string> = {
   plain: '',
 }
 const COPY_LABELS: Record<CopyState, string> = {
-  idle: 'Copy',
+  idle: 'Copy JSON',
   copied: 'Copied',
-  failed: 'Copy failed',
+  failed: 'Copy JSON',
 }
+const COPY_STATUSES: Record<CopyState, string> = {
+  idle: '',
+  copied: 'JSON copied',
+  failed: 'Could not copy. Select the text and copy it by hand',
+}
+const ACTION_CLASS =
+  'text-ink-muted hover:bg-accent-soft hover:text-accent active:bg-accent-soft active:text-accent'
 
-const props = defineProps<{ value: JsonValue; jobCount?: number | null; title?: string }>()
-
-const regionLabel = computed(() => (props.title ? `${props.title} JSON` : 'JSON output'))
+const props = withDefaults(
+  defineProps<{ value: JsonValue; label?: string; isFullscreenHidden?: boolean }>(),
+  { label: 'JSON output' },
+)
+const emit = defineEmits<{ fullscreen: [] }>()
 
 const text = computed(() => prettyJson(props.value))
 const isHighlighted = computed(() => text.value.length <= MAX_HIGHLIGHT_CHARS)
@@ -67,44 +76,62 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex min-w-0 flex-col gap-2">
-    <div class="flex min-h-8 items-center gap-3">
-      <h4 v-if="title" data-slot="json-title" class="text-body font-semibold text-ink">
-        {{ title }}
-      </h4>
-      <p
-        v-if="jobCount !== null && jobCount !== undefined"
-        data-slot="json-count"
-        class="text-body-sm text-ink-muted"
+  <div data-slot="json-viewer" class="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-2">
+    <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        data-slot="json-scroll"
+        tabindex="0"
+        role="region"
+        :aria-label="label"
+        class="min-h-0 flex-1 overflow-auto rounded-md border border-line bg-surface-subtle p-4 outline-none focus-visible:focus-ring"
       >
-        {{ formatJobCount(jobCount) }}
-      </p>
-      <Button data-slot="json-copy" size="sm" class="ml-auto" @click="copy">
-        <CheckIcon v-if="copyState === 'copied'" aria-hidden="true" />
-        <CopyIcon v-else aria-hidden="true" />
-        {{ COPY_LABELS[copyState] }}
-      </Button>
+        <pre
+          class="font-mono text-code whitespace-pre text-ink"
+        ><code v-if="!isHighlighted">{{ text }}</code><code v-else><template
+          v-for="(token, index) in tokens"
+          :key="index"
+        ><span v-if="token.kind === 'plain'">{{ token.text }}</span><span
+          v-else
+          :data-token="token.kind"
+          :class="TOKEN_CLASSES[token.kind]"
+        >{{ token.text }}</span></template></code></pre>
+      </div>
+      <div
+        data-slot="json-actions"
+        class="absolute top-2 right-4 flex items-center gap-1 rounded-full border border-line bg-surface p-1 shadow-sm"
+      >
+        <Button
+          v-if="!isFullscreenHidden"
+          data-slot="json-fullscreen"
+          variant="ghost"
+          size="icon"
+          :aria-label="FULLSCREEN_LABEL"
+          :title="FULLSCREEN_LABEL"
+          :class="ACTION_CLASS"
+          @click="emit('fullscreen')"
+        >
+          <Maximize2Icon data-icon="fullscreen" aria-hidden="true" />
+        </Button>
+        <Button
+          data-slot="json-copy"
+          variant="ghost"
+          size="icon"
+          :aria-label="COPY_LABELS[copyState]"
+          :title="COPY_LABELS[copyState]"
+          :class="[ACTION_CLASS, copyState === 'copied' && 'bg-accent-soft text-accent']"
+          @click="copy"
+        >
+          <CheckIcon v-if="copyState === 'copied'" data-icon="check" aria-hidden="true" />
+          <CopyIcon v-else data-icon="copy" aria-hidden="true" />
+        </Button>
+      </div>
     </div>
-    <p v-if="copyState === 'failed'" role="status" class="text-body-sm text-danger">
-      Could not copy. Select the text and copy it by hand.
-    </p>
-    <div
-      data-slot="json-scroll"
-      tabindex="0"
-      role="region"
-      :aria-label="regionLabel"
-      class="max-h-96 overflow-auto rounded-md border border-line bg-surface-subtle p-4 outline-none focus-visible:focus-ring"
+    <p
+      data-slot="json-copy-status"
+      role="status"
+      :class="copyState === 'failed' ? 'text-body-sm text-danger' : 'sr-only'"
     >
-      <pre
-        class="font-mono text-code whitespace-pre text-ink"
-      ><code v-if="!isHighlighted">{{ text }}</code><code v-else><template
-        v-for="(token, index) in tokens"
-        :key="index"
-      ><span v-if="token.kind === 'plain'">{{ token.text }}</span><span
-        v-else
-        :data-token="token.kind"
-        :class="TOKEN_CLASSES[token.kind]"
-      >{{ token.text }}</span></template></code></pre>
-    </div>
+      {{ COPY_STATUSES[copyState] }}
+    </p>
   </div>
 </template>

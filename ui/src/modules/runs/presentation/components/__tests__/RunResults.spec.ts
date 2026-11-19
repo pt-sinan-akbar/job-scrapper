@@ -1,10 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
-import { createMemoryStorage } from '@/__tests__/memoryStorage'
-import type { RunDetail } from '@/modules/runs/domain/entities/Run'
+import type { RunDetail, RunJob } from '@/modules/runs/domain/entities/Run'
 import RunResults from '@/modules/runs/presentation/components/RunResults.vue'
-import { RESULTS_TAB_STORAGE_KEY } from '@/modules/runs/presentation/components/resultsTabStorage'
+
+function makeJob(overrides: Partial<RunJob> = {}): RunJob {
+  return {
+    site: 'jobstreet',
+    matchedKeyword: 'AI Engineering',
+    title: 'ML Engineer',
+    company: 'Acme',
+    location: 'Remote',
+    url: 'https://example.com/1',
+    postedAt: null,
+    salary: null,
+    workType: null,
+    employmentType: null,
+    experienceLevel: null,
+    description: null,
+    json: { title: 'ML Engineer', job_id: 'job-ml' },
+    ...overrides,
+  }
+}
+
+const SECOND_JOB = makeJob({
+  title: 'Vue Developer',
+  url: 'https://example.com/2',
+  json: { title: 'Vue Developer', job_id: 'job-vue' },
+})
 
 function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
   return {
@@ -15,7 +37,7 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
       sites: ['jobstreet', 'indeed'],
       startedAt: '2026-11-01T10:00:00+00:00',
       finishedAt: '2026-11-01T10:01:00+00:00',
-      jobCount: 1,
+      jobCount: 2,
       errorCount: 0,
       error: null,
       discordStatus: null,
@@ -23,26 +45,8 @@ function makeDetail(overrides: Partial<RunDetail> = {}): RunDetail {
       discordFailed: 0,
       discordError: null,
     },
-    jobs: [
-      {
-        site: 'jobstreet',
-        matchedKeyword: 'AI Engineering',
-        title: 'ML Engineer',
-        company: 'Acme',
-        location: 'Remote',
-        url: 'https://example.com/1',
-        postedAt: null,
-      },
-    ],
+    jobs: [makeJob(), SECOND_JOB],
     failures: [],
-    payloads: [
-      {
-        keyword: 'AI Engineering',
-        site: 'jobstreet',
-        raw: { source: 'raw-jobstreet-ai' },
-        filtered: { source: 'filtered-jobstreet-ai' },
-      },
-    ],
     ...overrides,
   }
 }
@@ -61,24 +65,29 @@ function mountResults(props: Partial<Props> = {}) {
   })
 }
 
-type Wrapper = ReturnType<typeof mountResults>
-
-function tab(wrapper: Wrapper, name: string) {
-  const found = wrapper.findAll('[role="tab"]').find((node) => node.text() === name)
-  if (found === undefined) {
-    throw new Error(`No tab named ${name}`)
-  }
-  return found
+function stubScreen(isWide: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn().mockImplementation((query: string) => ({
+      matches: isWide,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  )
 }
 
-async function openTab(wrapper: Wrapper, name: string) {
-  await tab(wrapper, name).trigger('mousedown', { button: 0, ctrlKey: false })
-  await nextTick()
+function panelText(wrapper: ReturnType<typeof mountResults>): string {
+  return wrapper.get('[data-slot="job-json-panel"] pre').text()
+}
+
+function dialog(): HTMLElement | null {
+  return document.body.querySelector('[role="dialog"]')
 }
 
 describe('RunResults', () => {
   beforeEach(() => {
-    vi.stubGlobal('localStorage', createMemoryStorage())
+    stubScreen(true)
   })
 
   afterEach(() => {
@@ -93,60 +102,124 @@ describe('RunResults', () => {
     expect(wrapper.text()).toContain('AI Engineering, Vue on jobstreet, indeed')
   })
 
-  it('has a Jobs tab and a JSON tab and starts on Jobs', () => {
+  it('shows the jobs without tabs', () => {
     const wrapper = mountResults()
 
-    expect(wrapper.findAll('[role="tab"]').map((node) => node.text())).toEqual(['Jobs', 'JSON'])
-    expect(tab(wrapper, 'Jobs').attributes('aria-selected')).toBe('true')
-    expect(wrapper.text()).toContain('ML Engineer')
+    expect(wrapper.find('[role="tab"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-slot="job-card"]')).toHaveLength(2)
   })
 
-  it('shows the payloads under JSON', async () => {
+  it('shows the JSON of the first job next to the jobs to start', () => {
     const wrapper = mountResults()
 
-    await openTab(wrapper, 'JSON')
-
-    expect(wrapper.get('[data-slot="json-filtered"] pre').text()).toContain('filtered-jobstreet-ai')
-    expect(wrapper.get('[data-slot="json-raw"] pre').text()).toContain('raw-jobstreet-ai')
+    expect(
+      wrapper.get('[data-slot="job-aside"]').find('[data-slot="job-json-panel"]').exists(),
+    ).toBe(true)
+    expect(panelText(wrapper)).toContain('job-ml')
+    expect(wrapper.findAll('[data-slot="job-card"]')[0]!.attributes('data-selected')).toBe('true')
   })
 
-  it('remembers the last used tab', async () => {
-    const first = mountResults()
-    await openTab(first, 'JSON')
-
-    expect(window.localStorage.getItem(RESULTS_TAB_STORAGE_KEY)).toBe('json')
-    first.unmount()
-
-    expect(tab(mountResults(), 'JSON').attributes('aria-selected')).toBe('true')
-  })
-
-  it('opens a tab when it gets keyboard focus', async () => {
+  it('shows the JSON of the job whose card is clicked', async () => {
     const wrapper = mountResults()
 
-    ;(tab(wrapper, 'JSON').element as HTMLElement).focus()
-    await flushPromises()
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
 
-    expect(tab(wrapper, 'JSON').attributes('aria-selected')).toBe('true')
+    expect(panelText(wrapper)).toContain('job-vue')
+    expect(panelText(wrapper)).not.toContain('job-ml')
+    expect(wrapper.findAll('[data-slot="job-card"]')[1]!.attributes('data-selected')).toBe('true')
+    expect(dialog()).toBeNull()
   })
 
-  it('goes back to the first payload when another run is shown', async () => {
-    const detail = makeDetail({
-      payloads: [
-        ...makeDetail().payloads,
-        { keyword: 'Vue', site: 'indeed', raw: { source: 'raw-indeed-vue' }, filtered: null },
-      ],
-    })
+  it('goes back to the first job when another run is shown', async () => {
+    const detail = makeDetail()
     const wrapper = mountResults({ detail })
-    await openTab(wrapper, 'JSON')
-    await wrapper.findAll('[data-slot="payload-chip"]')[1]!.trigger('click')
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
 
     await wrapper.setProps({ detail: { ...detail, record: { ...detail.record, id: 'run-2' } } })
 
-    expect(wrapper.get('[data-slot="json-raw"] pre').text()).toContain('raw-jobstreet-ai')
+    expect(panelText(wrapper)).toContain('job-ml')
+  })
+
+  it('falls back to the first job when the selected one is gone', async () => {
+    const detail = makeDetail()
+    const wrapper = mountResults({ detail })
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
+
+    await wrapper.setProps({ detail: { ...detail, jobs: [makeJob()] } })
+
+    expect(panelText(wrapper)).toContain('job-ml')
+  })
+
+  it('opens the selected job JSON full screen from the panel', async () => {
+    const wrapper = mountResults()
+
+    await wrapper.get('[data-slot="job-json-panel"] [data-slot="json-fullscreen"]').trigger('click')
+    await flushPromises()
+
+    expect(dialog()?.textContent).toContain('job-ml')
+  })
+
+  it('selects the job without a dialog when its JSON button is used on a wide screen', async () => {
+    const wrapper = mountResults()
+
+    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+    await flushPromises()
+
+    expect(panelText(wrapper)).toContain('job-vue')
+    expect(dialog()).toBeNull()
+  })
+
+  it('opens the job JSON full screen when its JSON button is used on a narrow screen', async () => {
+    stubScreen(false)
+    const wrapper = mountResults()
+
+    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+    await flushPromises()
+
+    expect(dialog()?.textContent).toContain('job-vue')
+  })
+
+  it('shows no JSON panel and marks no job on a narrow screen', () => {
+    stubScreen(false)
+    const wrapper = mountResults()
+
+    expect(wrapper.find('[data-slot="job-json-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-slot="job-card"][data-selected]').exists()).toBe(false)
+    expect(wrapper.get('[data-slot="job-json"]').attributes('aria-haspopup')).toBe('dialog')
+  })
+
+  it('closes the full screen JSON when another run is shown', async () => {
+    const detail = makeDetail()
+    const wrapper = mountResults({ detail })
+    await wrapper.get('[data-slot="job-json-panel"] [data-slot="json-fullscreen"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.setProps({ detail: { ...detail, record: { ...detail.record, id: 'run-2' } } })
+    await flushPromises()
+
+    expect(dialog()).toBeNull()
+  })
+
+  it('stays on the first job when a shorter list grows back', async () => {
+    const detail = makeDetail()
+    const wrapper = mountResults({ detail })
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
+
+    await wrapper.setProps({ detail: { ...detail, jobs: [makeJob()] } })
+    await wrapper.setProps({ detail })
+
+    expect(panelText(wrapper)).toContain('job-ml')
+  })
+
+  it('shows no JSON panel when the run found no jobs', () => {
+    const wrapper = mountResults({ detail: makeDetail({ jobs: [] }) })
+
+    expect(wrapper.find('[data-slot="job-json-panel"]').exists()).toBe(false)
+    expect(wrapper.get('[data-slot="empty-state"]').text()).toContain('No jobs found')
   })
 
   describe('while pending', () => {
-    it('shows skeleton rows as a busy status instead of the tabs', () => {
+    it('shows skeleton rows as a busy status instead of the jobs', () => {
       const wrapper = mountResults({ isPending: true })
       const skeleton = wrapper.get('[data-slot="results-skeleton"]')
 
@@ -154,7 +227,7 @@ describe('RunResults', () => {
       expect(skeleton.attributes('aria-busy')).toBe('true')
       expect(skeleton.get('.sr-only').text()).toBe('Loading results')
       expect(skeleton.findAll('[data-slot="skeleton"]').length).toBeGreaterThan(2)
-      expect(wrapper.find('[role="tab"]').exists()).toBe(false)
+      expect(wrapper.find('[data-slot="job-json-panel"]').exists()).toBe(false)
       expect(wrapper.text()).not.toContain('ML Engineer')
     })
 
@@ -178,7 +251,7 @@ describe('RunResults', () => {
 
       expect(lost.attributes('role')).toBe('status')
       expect(lost.text()).toContain('Lost track of this run. Reload to check it.')
-      expect(wrapper.find('[role="tab"]').exists()).toBe(false)
+      expect(wrapper.find('[data-slot="job-json-panel"]').exists()).toBe(false)
       expect(wrapper.text()).not.toContain('ML Engineer')
       expect(wrapper.text()).not.toContain('AI Engineering, Vue')
     })

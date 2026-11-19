@@ -1,18 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import type { RunDetail } from '@/modules/runs/domain/entities/Run'
+import JobJsonDialog from '@/modules/runs/presentation/components/JobJsonDialog.vue'
+import JobJsonPanel from '@/modules/runs/presentation/components/JobJsonPanel.vue'
 import RunJobList from '@/modules/runs/presentation/components/RunJobList.vue'
-import RunJsonPanel from '@/modules/runs/presentation/components/RunJsonPanel.vue'
 import RunResultsSkeleton from '@/modules/runs/presentation/components/RunResultsSkeleton.vue'
-import {
-  isResultsTab,
-  readResultsTab,
-  writeResultsTab,
-  type ResultsTab,
-} from '@/modules/runs/presentation/components/resultsTabStorage'
 import PageSection from '@/shared/components/PageSection.vue'
 import { Button } from '@/shared/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs'
+
+const WIDE_SCREEN_QUERY = '(min-width: 64rem)'
+const FIRST_JOB_INDEX = 0
 
 const props = defineProps<{
   detail: RunDetail | null
@@ -22,20 +20,50 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ retry: [] }>()
 
-const tab = ref<ResultsTab>(readResultsTab())
+const pickedIndex = ref(FIRST_JOB_INDEX)
+const isDialogOpen = ref(false)
+const isWideScreen = useMediaQuery(WIDE_SCREEN_QUERY)
+
+const shownDetail = computed(() => (props.isLost || props.isPending ? null : props.detail))
+const jobs = computed(() => shownDetail.value?.jobs ?? [])
+const selectedIndex = computed(() =>
+  pickedIndex.value < jobs.value.length ? pickedIndex.value : FIRST_JOB_INDEX,
+)
+const selectedJob = computed(() => jobs.value[selectedIndex.value] ?? null)
 
 const summary = computed(() => {
-  if (props.isLost || props.isPending || props.detail === null) {
+  if (shownDetail.value === null) {
     return undefined
   }
-  const { keywords, sites } = props.detail.record
+  const { keywords, sites } = shownDetail.value.record
   return `${keywords.join(', ')} on ${sites.join(', ')}`
 })
 
-function changeTab(next: string | number): void {
-  if (isResultsTab(next)) {
-    tab.value = next
-    writeResultsTab(next)
+watch(
+  () => shownDetail.value?.record.id,
+  () => {
+    pickedIndex.value = FIRST_JOB_INDEX
+    isDialogOpen.value = false
+  },
+)
+
+watch(
+  () => jobs.value.length,
+  (count) => {
+    if (pickedIndex.value >= count) {
+      pickedIndex.value = FIRST_JOB_INDEX
+    }
+  },
+)
+
+function selectJob(index: number): void {
+  pickedIndex.value = index
+}
+
+function showJobJson(index: number): void {
+  pickedIndex.value = index
+  if (!isWideScreen.value) {
+    isDialogOpen.value = true
   }
 }
 </script>
@@ -51,18 +79,21 @@ function changeTab(next: string | number): void {
       Lost track of this run. Reload to check it.
     </p>
     <RunResultsSkeleton v-else-if="isPending" />
-    <Tabs v-else-if="detail" :model-value="tab" @update:model-value="changeTab">
-      <TabsList aria-label="Result views">
-        <TabsTrigger value="jobs">Jobs</TabsTrigger>
-        <TabsTrigger value="json">JSON</TabsTrigger>
-      </TabsList>
-      <TabsContent value="jobs">
-        <RunJobList :jobs="detail.jobs" :failures="detail.failures" :error="detail.record.error" />
-      </TabsContent>
-      <TabsContent value="json">
-        <RunJsonPanel :key="detail.record.id" :payloads="detail.payloads" />
-      </TabsContent>
-    </Tabs>
+    <template v-else-if="shownDetail">
+      <RunJobList
+        :jobs="shownDetail.jobs"
+        :failures="shownDetail.failures"
+        :error="shownDetail.record.error"
+        :selected-index="selectedIndex"
+        @select="selectJob"
+        @json="showJobJson"
+      >
+        <template v-if="isWideScreen" #aside>
+          <JobJsonPanel :job="selectedJob" @fullscreen="isDialogOpen = true" />
+        </template>
+      </RunJobList>
+      <JobJsonDialog v-model:open="isDialogOpen" :job="selectedJob" />
+    </template>
     <div
       v-else-if="errorMessage"
       data-slot="results-error"
