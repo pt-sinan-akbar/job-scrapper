@@ -273,7 +273,7 @@ RECORD_FIELDS = {
 }
 
 
-DETAIL_FIELDS = {"record", "jobs", "failures", "payloads"}
+DETAIL_FIELDS = {"record", "jobs", "failures"}
 JOB_FIELDS = {"site", "matched_keyword", "title", "company", "location", "url", "posted_at"}
 
 
@@ -781,14 +781,36 @@ def test_read_run_returns_detail_shape(client: TestClient):
     assert detail["jobs"][0]["site"] == "upwork"
     assert detail["jobs"][0]["matched_keyword"] == "devops"
     assert detail["failures"] == []
-    assert detail["payloads"] == [
-        {
-            "keyword": "devops",
-            "site": "upwork",
-            "raw": {"jobs": [{"t": "A"}]},
-            "filtered": {"jobs": []},
-        }
-    ]
+
+
+def test_read_run_returns_the_full_job_object(client: TestClient, gateway: FakeGateway):
+    job = {
+        "site": "upwork",
+        "matched_keyword": "devops",
+        "title": "A",
+        "company": "Acme",
+        "company_id": None,
+        "url": "https://example.com/1",
+        "location": "Remote",
+        "salary": "1000 - 2000",
+        "salary_min": 1000,
+        "salary_max": 2000.5,
+        "posted_at": "2026-11-17T10:00:00+00:00",
+        "work_type": "remote",
+        "employment_type": "full_time",
+        "experience_level": None,
+        "requirements": "Python",
+    }
+    sites = [{"site": "upwork", "jobs": [job]}]
+    gateway.scrape_result = {**SCRAPE_RESULT, "results": [{"keyword": "devops", "sites": sites}]}
+    run = _run(client)
+    _wait_for_finish(client, run["id"])
+
+    stored = _read_detail(client, run["id"])["jobs"]
+    latest = client.get("/api/runs/latest").json()["data"]["jobs"]
+
+    assert stored == [job]
+    assert latest == [job]
 
 
 def test_read_run_lists_failures(client: TestClient, gateway: FakeGateway):
@@ -804,7 +826,7 @@ def test_read_run_lists_failures(client: TestClient, gateway: FakeGateway):
 
     assert detail["failures"] == [{"keyword": "devops", "site": "upwork", "reason": "timeout"}]
     assert detail["jobs"] == []
-    assert detail["payloads"] == []
+    assert "payloads" not in detail
 
 
 def test_running_run_detail_has_empty_lists(client: TestClient, gateway: FakeGateway):
@@ -814,7 +836,8 @@ def test_running_run_detail_has_empty_lists(client: TestClient, gateway: FakeGat
     detail = _read_detail(client, run["id"])
 
     assert detail["record"]["status"] == "running"
-    assert (detail["jobs"], detail["failures"], detail["payloads"]) == ([], [], [])
+    assert set(detail) == DETAIL_FIELDS
+    assert (detail["jobs"], detail["failures"]) == ([], [])
     _wait_for_finish(client, run["id"])
 
 
@@ -826,6 +849,14 @@ def test_finished_run_is_stored_in_ui_runs(client: TestClient, database: Any):
 
     assert [document["_id"] for document in documents] == [run["id"]]
     assert documents[0]["record"]["status"] == "succeeded"
+    assert documents[0]["payloads"] == [
+        {
+            "keyword": "devops",
+            "site": "upwork",
+            "raw": {"jobs": [{"t": "A"}]},
+            "filtered": {"jobs": []},
+        }
+    ]
 
 
 def test_latest_without_any_run_is_null(client: TestClient):
@@ -840,6 +871,7 @@ def test_latest_returns_the_stored_run(client: TestClient, database: Any):
 
     data = client.get("/api/runs/latest").json()["data"]
 
+    assert set(data) == DETAIL_FIELDS
     assert data == {key: STORED_RUN[key] for key in DETAIL_FIELDS}
 
 
@@ -849,6 +881,7 @@ def test_read_stored_run_by_id(client: TestClient, database: Any):
     response = client.get(f"/api/runs/{STORED_RUN['_id']}")
 
     assert response.status_code == 200
+    assert set(response.json()["data"]) == DETAIL_FIELDS
     assert response.json()["data"]["jobs"][0]["title"] == "Stored"
 
 
@@ -863,7 +896,8 @@ def test_latest_returns_the_current_running_run(
 
     assert data["record"]["id"] == run["id"]
     assert data["record"]["status"] == "running"
-    assert (data["jobs"], data["failures"], data["payloads"]) == ([], [], [])
+    assert set(data) == DETAIL_FIELDS
+    assert (data["jobs"], data["failures"]) == ([], [])
     _wait_for_finish(client, run["id"])
 
 
