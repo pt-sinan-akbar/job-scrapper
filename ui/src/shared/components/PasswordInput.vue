@@ -18,6 +18,7 @@ const props = defineProps<{
   hint?: string
   placeholder?: string
   isInvalid?: boolean
+  isLabelHidden?: boolean
   describedBy?: string
   class?: HTMLAttributes['class']
 }>()
@@ -46,7 +47,7 @@ function toggleVisibility(): void {
 
 <template>
   <div :class="cn('flex flex-col gap-2', props.class)">
-    <div class="flex flex-wrap items-center justify-between gap-x-3">
+    <div :class="isLabelHidden ? 'sr-only' : 'flex flex-wrap items-center justify-between gap-x-3'">
       <Label :for="inputId">{{ label }}</Label>
       <slot name="labelAction" />
     </div>
