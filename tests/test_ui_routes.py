@@ -30,7 +30,7 @@ CONFIG = {
     "updated_at": "2026-11-02T01:00:00+00:00",
     "updated_by": "ui",
     "settings": {
-        "default_fields": ["title"],
+        "fields": ["title"],
         "sites": {
             "upwork": {
                 "enabled": True,
@@ -476,7 +476,8 @@ def test_config_read_returns_values_and_version(client: TestClient):
     assert data["version"] == 4
     assert data["updated_by"] == "ui"
     assert data["is_stale"] is False
-    assert set(data["values"]) == {"default_fields", "sites"}
+    assert set(data["values"]) == {"fields", "sites"}
+    assert data["values"]["fields"] == ["title"]
     assert "proxy_url" not in data["values"]
 
 
@@ -546,7 +547,6 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "limit": 30,
         "max_age_hours": None,
         "filter": {},
-        "fields": None,
         "api": {"locations": ["Remote"]},
     }
     assert sites[1] == {
@@ -555,7 +555,6 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "limit": 3,
         "max_age_hours": 72,
         "filter": {"location": ["jakarta"]},
-        "fields": None,
         "api": None,
     }
 
@@ -563,7 +562,9 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
 def test_config_read_gives_an_empty_filter_when_a_site_has_none(
     client: TestClient, gateway: FakeGateway
 ):
-    settings = {**CONFIG["settings"], "sites": {"indeed": {"limit": 3, "url_template": "x"}}}
+    config_settings = CONFIG["settings"]
+    assert isinstance(config_settings, dict)
+    settings = {**config_settings, "sites": {"indeed": {"limit": 3, "url_template": "x"}}}
     gateway.config = {**CONFIG, "settings": settings}
 
     site = client.get("/api/config").json()["data"]["values"]["sites"][0]
@@ -647,7 +648,7 @@ def _delay_body(delay: list[float]) -> dict:
     [
         _delay_body([1, 61]),
         _delay_body([61, 62]),
-        {"version": 4, "default_fields": ["title"] * 101},
+        {"version": 4, "fields": ["title"] * 101},
     ],
 )
 def test_config_update_refuses_values_over_the_cap(client: TestClient, body: dict):
@@ -743,21 +744,21 @@ def test_prod_logout_clears_session(prod_client: TestClient):
     assert prod_client.get("/api/sites").status_code == 401
 
 
-def test_spa_paths_fall_back_to_index(tmp_path: Path, gateway: FakeGateway):
+def test_spa_paths_fall_back_to_index(tmp_path: Path, gateway: FakeGateway, database: Any):
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist" / "index.html").write_text("<html>app</html>")
-    app = create_app(_settings(tmp_path), gateway)
+    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         assert "app" in test_client.get("/config").text
         assert test_client.get("/api/missing").status_code == 404
 
 
-def test_ui_files_carry_security_headers(tmp_path: Path, gateway: FakeGateway):
+def test_ui_files_carry_security_headers(tmp_path: Path, gateway: FakeGateway, database: Any):
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html>app</html>")
     (dist / "favicon.svg").write_text("<svg></svg>")
-    app = create_app(_settings(tmp_path), gateway)
+    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         responses = [
             test_client.get("/"),
@@ -779,13 +780,15 @@ def test_ui_files_carry_security_headers(tmp_path: Path, gateway: FakeGateway):
         assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
 
 
-def test_favicon_files_are_served_instead_of_index(tmp_path: Path, gateway: FakeGateway):
+def test_favicon_files_are_served_instead_of_index(
+    tmp_path: Path, gateway: FakeGateway, database: Any
+):
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html>app</html>")
     (dist / "favicon.svg").write_text("<svg></svg>")
     (dist / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
-    app = create_app(_settings(tmp_path), gateway)
+    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         svg = test_client.get("/favicon.svg")
         ico = test_client.get("/favicon.ico")
@@ -940,3 +943,33 @@ def test_latest_returns_the_finished_current_run(client: TestClient):
 
 def test_latest_needs_login(guest_client: TestClient):
     assert guest_client.get("/api/runs/latest").status_code == 401
+
+
+def test_config_read_gives_empty_fields_when_none_are_stored(
+    client: TestClient, gateway: FakeGateway
+):
+    settings = {"sites": {"indeed": {"limit": 3, "url_template": "x"}}}
+    gateway.config = {**CONFIG, "settings": settings}
+
+    assert client.get("/api/config").json()["data"]["values"]["fields"] == []
+
+
+def test_config_update_sends_top_level_fields(client: TestClient, gateway: FakeGateway):
+    body = {"version": 4, "fields": ["title", "salary_min"]}
+
+    assert client.put("/api/config", json=body).status_code == 200
+    assert gateway.arguments["update_config"]["patch"] == {"fields": ["title", "salary_min"]}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"version": 4, "default_fields": ["title"]},
+        {"version": 4, "sites": {"upwork": {"fields": ["title"]}}},
+    ],
+)
+def test_config_update_refuses_default_fields_and_site_fields(
+    client: TestClient, gateway: FakeGateway, body: dict
+):
+    assert client.put("/api/config", json=body).status_code == 422
+    assert "update_config" not in gateway.calls

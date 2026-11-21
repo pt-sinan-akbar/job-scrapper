@@ -144,8 +144,7 @@ def test_update_config_reports_invalid_patch(database: Any):
 @pytest.mark.parametrize(
     "patch",
     [
-        {"default_fields": ["title", "salary_mni"]},
-        {"sites": {"upwork": {"fields": ["salary_mni"]}}},
+        {"fields": ["title", "salary_mni"]},
     ],
 )
 def test_update_config_refuses_unknown_job_fields(database: Any, patch: dict[str, Any]):
@@ -158,19 +157,39 @@ def test_update_config_refuses_unknown_job_fields(database: Any, patch: dict[str
 
 
 def test_update_config_reports_non_text_job_fields_as_invalid(database: Any):
-    result = server.update_config({"default_fields": [["title"]]}, expected_version=1)
+    result = server.update_config({"fields": [["title"]]}, expected_version=1)
 
     assert result["ok"] is False
     assert result["reason"] == "invalid"
 
 
 def test_update_config_saves_known_job_fields(database: Any):
-    patch = {"default_fields": ["salary_min"], "sites": {"upwork": {"fields": []}}}
+    patch = {"fields": ["salary_min"]}
 
     result = server.update_config(patch, expected_version=1)
 
     assert result["ok"] is True
-    assert result["settings"]["default_fields"] == ["salary_min"]
+    assert result["settings"]["fields"] == ["salary_min"]
+
+
+def test_update_config_refuses_default_fields(database: Any):
+    result = server.update_config({"default_fields": ["title"]}, expected_version=1)
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid"
+    assert "not a job setting: default_fields" in result["message"]
+    assert server.get_config()["version"] == 1
+
+
+def test_update_config_refuses_site_fields(database: Any):
+    patch = {"sites": {"upwork": {"fields": ["title"]}}}
+
+    result = server.update_config(patch, expected_version=1)
+
+    assert result["ok"] is False
+    assert result["reason"] == "invalid"
+    assert "sites.upwork.fields is no longer supported" in result["message"]
+    assert server.get_config()["version"] == 1
 
 
 def test_update_config_refuses_proxy(database: Any):

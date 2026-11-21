@@ -71,9 +71,9 @@ def store() -> JobSettingsStore:
 
 
 def test_merge_replaces_top_level_keys():
-    merged = merge_settings(SETTINGS, {"default_fields": ["title"]})
+    merged = merge_settings(SETTINGS, {"fields": ["title"]})
 
-    assert merged["default_fields"] == ["title"]
+    assert merged["fields"] == ["title"]
     assert merged["sites"] == SETTINGS["sites"]
 
 
@@ -107,7 +107,7 @@ def test_merge_removes_site_field_on_none():
 def test_merge_does_not_change_input():
     original = deepcopy(SETTINGS)
 
-    merge_settings(SETTINGS, {"default_fields": ["title"], "sites": {"upwork": {"limit": 1}}})
+    merge_settings(SETTINGS, {"fields": ["title"], "sites": {"upwork": {"limit": 1}}})
 
     assert original == SETTINGS
 
@@ -233,6 +233,33 @@ def test_save_refuses_global_job_values(store: JobSettingsStore, key: str):
     assert store.read().version == 1
 
 
+def test_save_refuses_default_fields(store: JobSettingsStore):
+    with pytest.raises(ConfigError, match="not a job setting: default_fields"):
+        store.save({"default_fields": ["title"]}, 1, "ui")
+
+    assert store.read().version == 1
+
+
+def test_save_refuses_site_fields(store: JobSettingsStore):
+    with pytest.raises(ConfigError, match="sites.upwork.fields is no longer supported"):
+        store.save({"sites": {"upwork": {"fields": ["title"]}}}, 1, "ui")
+
+    assert store.read().version == 1
+
+
+def test_save_refuses_unknown_names_in_fields(store: JobSettingsStore):
+    with pytest.raises(ConfigError, match="unknown job fields: salary_mni"):
+        store.save({"fields": ["title", "salary_mni"]}, 1, "ui")
+
+    assert store.read().version == 1
+
+
+def test_save_stores_top_level_fields(store: JobSettingsStore):
+    saved = store.save({"fields": ["title", "salary"]}, 1, "ui")
+
+    assert saved.settings["fields"] == ["title", "salary"]
+
+
 def test_save_refuses_removing_a_site_limit(store: JobSettingsStore):
     with pytest.raises(ConfigError, match="sites.upwork.limit is required"):
         store.save(_upwork_limit(None), 1, "ui")
@@ -261,7 +288,7 @@ def test_load_app_config_joins_store_and_proxy(
     monkeypatch.setenv(PROXY_ENV_VAR, "socks5://localhost:1080")
 
     config = load_app_config(store)
-    upwork = config.site("upwork")
+    upwork = config.find_site_config("upwork")
 
     assert not hasattr(config, "keywords")
     assert config.proxy is not None
@@ -343,11 +370,11 @@ def test_migration_leaves_current_settings_alone():
 
 
 def test_migration_drops_global_keywords_and_leaves_sites_alone():
-    legacy = {**deepcopy(SETTINGS), "keywords": ["devops"], "default_fields": ["title"]}
+    legacy = {**deepcopy(SETTINGS), "keywords": ["devops"], "fields": ["title"]}
 
     migrated = migrate_legacy_settings(legacy)
 
-    assert migrated == {**SETTINGS, "default_fields": ["title"]}
+    assert migrated == {**SETTINGS, "fields": ["title"]}
     validate_job_settings(migrated)
 
 
@@ -467,7 +494,7 @@ def test_load_app_config_reads_migrated_settings(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv(PROXY_ENV_VAR, "")
 
     config = load_app_config(JobSettingsStore(_legacy_database()))
-    jobstreet = config.site("jobstreet")
+    jobstreet = config.find_site_config("jobstreet")
 
     assert jobstreet is not None
     assert jobstreet.limit == 5
@@ -599,7 +626,9 @@ def test_backup_does_not_change_reads_saves_or_seed():
 
     assert store.seed(deepcopy(SETTINGS)) is False
     assert store.read() == saved
-    assert _backup(database)["settings"] == LEGACY
+    backup = _backup(database)
+    assert backup is not None
+    assert backup["settings"] == LEGACY
 
 
 def test_migration_logs_the_sites_that_got_the_fallback_limit(monkeypatch: pytest.MonkeyPatch):
@@ -629,3 +658,100 @@ def test_migration_without_fallback_logs_no_warning(monkeypatch: pytest.MonkeyPa
     JobSettingsStore(_legacy_database()).read()
 
     logger.warning.assert_not_called()
+
+
+def test_migration_renames_default_fields_to_fields():
+    legacy = {**deepcopy(SETTINGS), "default_fields": ["title", "salary"]}
+
+    migrated = migrate_legacy_settings(legacy)
+
+    assert migrated == {**SETTINGS, "fields": ["title", "salary"]}
+    validate_job_settings(migrated)
+
+
+def test_migration_keeps_fields_when_default_fields_is_also_stored():
+    legacy = {**deepcopy(SETTINGS), "default_fields": ["title"], "fields": ["salary"]}
+
+    migrated = migrate_legacy_settings(legacy)
+
+    assert migrated["fields"] == ["salary"]
+    assert "default_fields" not in migrated
+
+
+def test_migration_keeps_an_empty_default_fields_list():
+    legacy = {**deepcopy(SETTINGS), "default_fields": []}
+
+    assert migrate_legacy_settings(legacy)["fields"] == []
+
+
+def test_migration_drops_site_fields_and_keeps_the_rest_of_the_site():
+    legacy = deepcopy(SETTINGS)
+    legacy["sites"]["upwork"]["fields"] = ["title"]
+
+    migrated = migrate_legacy_settings(legacy)
+
+    assert migrated == SETTINGS
+    validate_job_settings(migrated)
+
+
+def test_site_fields_alone_count_as_legacy():
+    legacy = deepcopy(SETTINGS)
+    legacy["sites"]["glints"]["fields"] = None
+
+    assert job_settings.has_legacy_globals(legacy) is True
+    assert job_settings.list_sites_with_fields_override(legacy) == ("glints",)
+
+
+def test_read_stores_migrated_fields_once():
+    legacy = {**deepcopy(SETTINGS), "default_fields": ["title", "salary"]}
+    legacy["sites"]["upwork"]["fields"] = ["title"]
+    database = _legacy_database(legacy)
+    store = JobSettingsStore(database)
+
+    first = store.read()
+    second = store.read()
+    document = _active(database)
+
+    assert first.version == LEGACY_VERSION + 1
+    assert first.settings == {**SETTINGS, "fields": ["title", "salary"]}
+    assert second == first
+    backup = _backup(database)
+    assert document["settings"] == first.settings
+    assert backup is not None
+    assert backup["settings"] == legacy
+
+
+def test_load_app_config_uses_migrated_default_fields(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(PROXY_ENV_VAR, "")
+    legacy = {**deepcopy(SETTINGS), "default_fields": ["salary"]}
+
+    config = load_app_config(JobSettingsStore(_legacy_database(legacy)))
+
+    assert config.fields == ("salary",)
+
+
+def test_migration_logs_the_sites_that_lost_their_fields(monkeypatch: pytest.MonkeyPatch):
+    logger = MagicMock()
+    monkeypatch.setattr(job_settings, "_LOG", logger)
+    legacy = deepcopy(SETTINGS)
+    legacy["sites"]["upwork"]["fields"] = ["title"]
+
+    JobSettingsStore(_legacy_database(legacy)).read()
+
+    logger.warning.assert_called_once()
+    message = logger.warning.call_args.args[0] % logger.warning.call_args.args[1:]
+    assert "upwork" in message
+    assert "glints" not in message
+    info_message = logger.info.call_args.args[0] % logger.info.call_args.args[1:]
+    assert "sites.upwork.fields" in info_message
+
+
+def test_migration_of_default_fields_logs_no_warning(monkeypatch: pytest.MonkeyPatch):
+    logger = MagicMock()
+    monkeypatch.setattr(job_settings, "_LOG", logger)
+    legacy = {**deepcopy(SETTINGS), "default_fields": ["title"]}
+
+    JobSettingsStore(_legacy_database(legacy)).read()
+
+    logger.warning.assert_not_called()
+    logger.info.assert_called_once()

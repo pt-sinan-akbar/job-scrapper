@@ -88,7 +88,7 @@ means, and keep that site's other filter keys:
 }}}
 ```
 
-Leave `upwork` out: its jobs are remote and worldwide. Substring + case-insensitive — `jakarta` catches Jakarta Barat, Jakarta
+Leave `upwork` out: its jobs are remote and worldwide. The location filter resolves region names — `jakarta` catches Jakarta Barat, Jakarta
 Selatan, Area DKI Jakarta, etc. See [`filters.md`](filters.md) for full
 filter semantics.
 
@@ -194,15 +194,12 @@ global filter to fall back to: `filter: {}` means no filter for that site.
 
 User: "include posted_at and salary in the JSON"
 
-Globally:
 ```json
-{"patch": {"default_fields": ["title", "company", "location", "url", "salary", "posted_date", "posted_at"]}}
+{"patch": {"fields": ["title", "company", "location", "url", "salary", "posted_date", "posted_at"]}}
 ```
 
-For one site only:
-```json
-{"patch": {"sites": {"linkedin": {"fields": ["title", "company", "location", "url", "posted_date", "posted_at"]}}}}
-```
+`fields` is one list for every site. There is no per-site list: a patch with
+`sites.<name>.fields` is refused.
 
 `site`, `matched_keyword`, `title`, `company`, `url` are anchors and always
 appear regardless of this list.
@@ -260,7 +257,8 @@ user and ask how to proceed (or whether to drop the offending key).
 
 The global value migration is one-way: older images cannot read the migrated
 document. The original is kept once as `_id: "active_pre_migration_backup"`
-in `job_settings`. Stop the scraper containers, then in `mongosh`:
+in `job_settings`. A later migration (such as `default_fields` to `fields`)
+never replaces it, so the backup can be older than the last migration. Stop the scraper containers, then in `mongosh`:
 
 ```js
 use job_scraper

@@ -7,7 +7,7 @@ import {
 
 const MODEL: ConfigModel = {
   values: {
-    default_fields: ['title'],
+    fields: ['title'],
     sites: [
       {
         name: 'upwork',
@@ -15,7 +15,6 @@ const MODEL: ConfigModel = {
         limit: 30,
         max_age_hours: null,
         filter: {},
-        fields: null,
         api: { locations: ['Remote'] },
       },
       {
@@ -24,7 +23,6 @@ const MODEL: ConfigModel = {
         limit: 10,
         max_age_hours: 24,
         filter: { location: ['jakarta'] },
-        fields: ['title'],
         api: null,
       },
     ],
@@ -43,11 +41,11 @@ describe('toConfigSnapshot', () => {
 
     expect(snapshot.version).toBe(4)
     expect(snapshot.updatedBy).toBe('ui')
-    expect(snapshot.values.defaultFields).toEqual(['title'])
+    expect(snapshot.values.fields).toEqual(['title'])
   })
 
   it('has no global job settings and no keywords', () => {
-    expect(Object.keys(toConfigSnapshot(MODEL).values).sort()).toEqual(['defaultFields', 'sites'])
+    expect(Object.keys(toConfigSnapshot(MODEL).values).sort()).toEqual(['fields', 'sites'])
   })
 
   it('ignores keywords from an older API response', () => {
@@ -73,26 +71,20 @@ describe('toConfigSnapshot', () => {
   })
 
   it('drops unknown and always-saved names from the picked job fields', () => {
-    const [upwork] = MODEL.values.sites
     const model: ConfigModel = {
       ...MODEL,
-      values: {
-        ...MODEL.values,
-        default_fields: ['site', 'salary_min', 'old_field', 'title'],
-        sites: [{ ...upwork!, fields: ['old_field', 'site', 'location'] }],
-      },
+      values: { ...MODEL.values, fields: ['site', 'salary_min', 'old_field', 'title'] },
     }
 
     const { values } = toConfigSnapshot(model)
 
-    expect(values.defaultFields).toEqual(['salary_min', 'title'])
-    expect(values.sites[0]?.fields).toEqual(['location'])
+    expect(values.fields).toEqual(['salary_min', 'title'])
   })
 
-  it('keeps a site that uses the default job fields at null', () => {
+  it('gives sites no job fields of their own', () => {
     const [upwork] = toConfigSnapshot(MODEL).values.sites
 
-    expect(upwork?.fields).toBeNull()
+    expect(upwork).not.toHaveProperty('fields')
   })
 
   it('always gives each site a filter with every list filled', () => {
@@ -186,7 +178,7 @@ describe('toConfigSnapshot location options', () => {
 describe('toConfigChangesModel', () => {
   it('maps changed fields to API names', () => {
     const model = toConfigChangesModel({
-      defaultFields: ['title'],
+      fields: ['title'],
       sites: {
         upwork: {
           isEnabled: false,
@@ -205,7 +197,7 @@ describe('toConfigChangesModel', () => {
     })
 
     expect(model).toEqual({
-      default_fields: ['title'],
+      fields: ['title'],
       sites: {
         upwork: {
           enabled: false,
@@ -244,13 +236,7 @@ describe('toConfigChangesModel', () => {
     })
   })
 
-  it('keeps null for a site that goes back to the default job fields', () => {
-    expect(toConfigChangesModel({ sites: { upwork: { fields: null } } })).toEqual({
-      sites: { upwork: { fields: null } },
-    })
-  })
-
   it('leaves out fields that did not change', () => {
-    expect(toConfigChangesModel({ defaultFields: ['url'] })).toEqual({ default_fields: ['url'] })
+    expect(toConfigChangesModel({ fields: ['url'] })).toEqual({ fields: ['url'] })
   })
 })

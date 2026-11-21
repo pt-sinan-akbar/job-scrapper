@@ -5,7 +5,7 @@ import json
 from unittest.mock import patch
 
 from mcp_server.server import (
-    _write_status,  # type: ignore[attr-defined]
+    _write_scrape_status_file,  # type: ignore[attr-defined]
     get_scrape_status,  # type: ignore[attr-defined]
 )
 
@@ -35,7 +35,7 @@ def _err_result(keyword: str = "engineer", site: str = "glints") -> dict:
 def test_write_status_creates_file(tmp_path):
     status_path = tmp_path / "status.json"
     with patch("mcp_server.server._STATUS_PATH", status_path):
-        _write_status(_ok_result(), 5.1)
+        _write_scrape_status_file(_ok_result(), 5.1)
 
     assert status_path.exists()
     data = json.loads(status_path.read_text())
@@ -47,10 +47,22 @@ def test_write_status_creates_file(tmp_path):
     assert data["per_site"]["glints"]["last_job_count"] == 3
 
 
+def test_write_status_creates_the_missing_parent_directory(tmp_path):
+    status_path = tmp_path / "logs" / "status.json"
+
+    with patch("mcp_server.server._STATUS_PATH", status_path):
+        _write_scrape_status_file(_ok_result(), 5.1)
+
+    saved_status = json.loads(status_path.read_text())
+    assert saved_status["last_run"]["ok"] is True
+    assert saved_status["per_site"]["glints"]["last_job_count"] == 3
+    assert [path.name for path in status_path.parent.iterdir()] == ["status.json"]
+
+
 def test_write_status_records_error(tmp_path):
     status_path = tmp_path / "status.json"
     with patch("mcp_server.server._STATUS_PATH", status_path):
-        _write_status(_err_result(), 2.0)
+        _write_scrape_status_file(_err_result(), 2.0)
 
     data = json.loads(status_path.read_text())
     assert data["last_run"]["ok"] is False
@@ -80,7 +92,7 @@ def test_write_status_merges_existing_per_site(tmp_path):
         )
     )
     with patch("mcp_server.server._STATUS_PATH", status_path):
-        _write_status(_ok_result(site="glints"), 3.0)
+        _write_scrape_status_file(_ok_result(site="glints"), 3.0)
 
     data = json.loads(status_path.read_text())
     assert "linkedin" in data["per_site"]
@@ -121,42 +133,11 @@ def test_get_scrape_status_returns_data(tmp_path):
     }
     status_path.write_text(json.dumps(payload))
 
-    with (
-        patch("mcp_server.server._STATUS_PATH", status_path),
-        patch("mcp_server.server._LOG_PATH", tmp_path / "scraper.log"),
-    ):
+    with patch("mcp_server.server._STATUS_PATH", status_path):
         result = get_scrape_status()
 
     assert result["available"] is True
     assert result["last_run"]["ok"] is True
     assert result["last_run"]["total_jobs"] == 4
     assert result["per_site"]["glints"]["last_status"] == "ok"
-    assert result["recent_logs"] == []
-
-
-def test_get_scrape_status_includes_recent_logs(tmp_path):
-    status_path = tmp_path / "status.json"
-    log_path = tmp_path / "scraper.log"
-
-    status_path.write_text(
-        json.dumps(
-            {
-                "last_run": {"ok": True, "total_jobs": 1, "error_count": 0},
-                "last_error": None,
-                "per_site": {},
-            }
-        )
-    )
-    log_lines = [f"line {i}" for i in range(50)]
-    log_path.write_text("\n".join(log_lines))
-
-    with (
-        patch("mcp_server.server._STATUS_PATH", status_path),
-        patch("mcp_server.server._LOG_PATH", log_path),
-    ):
-        result = get_scrape_status()
-
-    assert result["available"] is True
-    assert len(result["recent_logs"]) == 30
-    assert result["recent_logs"][0] == "line 20"
-    assert result["recent_logs"][-1] == "line 49"
+    assert "recent_logs" not in result

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 
 import { EMPTY_FILTER, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
 import SiteDetail from '@/modules/config/presentation/components/SiteDetail.vue'
@@ -10,18 +10,12 @@ const SITE: SiteSetting = {
   limit: 3,
   maxAgeHours: null,
   filter: EMPTY_FILTER,
-  fields: null,
   api: null,
 }
 
 function mountSite(site: SiteSetting) {
   return mount(SiteDetail, {
-    props: {
-      site,
-      defaultFields: ['salary_min'],
-      jobFields: ['site', 'title', 'salary_min', 'company_id'],
-      mandatoryFields: ['site', 'title'],
-    },
+    props: { site },
     attachTo: document.body,
   })
 }
@@ -36,36 +30,11 @@ describe('SiteDetail job fields', () => {
     document.body.innerHTML = ''
   })
 
-  it('hides the field grid while the site uses the default job fields', () => {
+  it('has no job fields of its own, since every site uses the global list', () => {
     const wrapper = mountSite(SITE)
 
-    expect(wrapper.find('#glints-field-salary_min').exists()).toBe(false)
-  })
-
-  it('starts its own job fields from the default ones', async () => {
-    const wrapper = mountSite(SITE)
-
-    await wrapper.get('#glints-own-fields').trigger('click')
-    await flushPromises()
-
-    expect(lastUpdate(wrapper)?.fields).toEqual(['salary_min'])
-  })
-
-  it('shows its own job fields as checkboxes with the always-saved ones locked', () => {
-    const wrapper = mountSite({ ...SITE, fields: ['company_id'] })
-
-    expect(wrapper.get('#glints-field-site').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('#glints-field-company_id').attributes('data-state')).toBe('checked')
-    expect(wrapper.get('#glints-field-salary_min').attributes('data-state')).toBe('unchecked')
-  })
-
-  it('saves an emptied pick as an empty list, not as the default fields', async () => {
-    const wrapper = mountSite({ ...SITE, fields: ['company_id'] })
-
-    await wrapper.get('#glints-field-company_id').trigger('click')
-    await flushPromises()
-
-    expect(lastUpdate(wrapper)?.fields).toEqual([])
+    expect(wrapper.find('#glints-own-fields').exists()).toBe(false)
+    expect(wrapper.find('[id^="glints-field-"]').exists()).toBe(false)
   })
 })
 
@@ -91,13 +60,7 @@ function mountApiSite(site: SiteSetting, locationOptions?: typeof LOCATION_OPTIO
     },
   )
   return mount(SiteDetail, {
-    props: {
-      site,
-      defaultFields: [],
-      jobFields: [],
-      mandatoryFields: [],
-      locationOptions,
-    },
+    props: { site, locationOptions },
     attachTo: document.body,
   })
 }
@@ -227,13 +190,7 @@ describe('SiteDetail delay', () => {
 
   it('marks the delay box named by a save issue', () => {
     const wrapper = mount(SiteDetail, {
-      props: {
-        site: API_SITE,
-        defaultFields: [],
-        jobFields: [],
-        mandatoryFields: [],
-        invalidField: 'delayMax',
-      },
+      props: { site: API_SITE, invalidField: 'delayMax' },
       attachTo: document.body,
     })
 
@@ -253,11 +210,11 @@ describe('SiteDetail basics and filter', () => {
   })
 
   it('groups the settings under labelled headings', () => {
-    expect(legends(mountSite(SITE))).toEqual(['Basics', 'Filter', 'Job fields'])
+    expect(legends(mountSite(SITE))).toEqual(['Basics', 'Filter'])
   })
 
   it('adds an API group for sites with an API', () => {
-    expect(legends(mountApiSite(API_SITE))).toEqual(['Basics', 'Filter', 'Job fields', 'API'])
+    expect(legends(mountApiSite(API_SITE))).toEqual(['Basics', 'Filter', 'API'])
   })
 
   it('makes the limit a required whole number box', () => {

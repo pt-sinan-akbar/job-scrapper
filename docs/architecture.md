@@ -6,34 +6,67 @@ config edits that touch unfamiliar areas, or when adding a new site.
 ## Package map
 
 ```
-scraper/                    # CLI + library
-├── __main__.py             # `python -m scraper --keyword KW [--keyword KW ...] [sites...]`
+scraper/                    # library used by the MCP and UI servers
 ├── runner.py               # orchestrates (keyword, site) pairs through a thread pool
 ├── config_loader.py        # settings dict → AppConfig dataclass + validation
 ├── job_settings.py         # JobSettingsStore: Mongo job settings and versions
 ├── seed_settings.py        # seeds Mongo from seeds/job_settings.yaml
 ├── types.py                # canonical Job TypedDict + CANONICAL_FIELDS
 ├── config.py               # static constants (USER_AGENT, CHALLENGE_MARKERS, etc.)
-├── fetchers/               # HTTP layer
-│   ├── base.py             # FetchChain, looks_like_challenge
-│   ├── cloudscraper.py     # cheap HTTP fetcher (Cloudflare-aware)
-│   └── playwright.py       # browser fallback (lazy import, ~280MB Chromium)
-├── api/
+├── log.py                  # get_scraper_logger() (stdout only, no log file), hide_proxy_password()
+├── html_downloaders/       # HTML page download layer
+│   ├── base.py             # FallbackHtmlDownloader, looks_like_challenge
+│   ├── curl_cffi.py        # first attempt: HTTP request that impersonates Chrome
+│   ├── cloudscraper.py     # second attempt: cheap HTTP HTML downloader (Cloudflare-aware)
+│   └── playwright.py       # last attempt: browser (lazy import, ~280MB Chromium)
+├── api/                    # API-first job sources
+│   ├── client.py           # ApiClient (one curl_cffi session, paced requests) + ApiError
+│   ├── source.py           # ApiSource protocol + search_all(): one search per city, de-duplicated
+│   ├── registry.py         # API_SOURCES: site name → API class
+│   ├── jobstreet.py        # JobstreetApi: search API + GraphQL job detail
+│   ├── glints.py           # GlintsApi: GraphQL search + job detail
+│   ├── linkedin.py         # LinkedinApi: guest search, no detail API
+│   ├── upwork.py           # UpworkApi: visitor GraphQL search, the search already returns the description
+│   ├── window.py           # max_age_hours → days or seconds search window, to_utc_iso()
+│   ├── draftjs.py          # draftjs_to_markdown() for Glints job descriptions
 │   └── locations.py        # fixed city list per site (label + API value) for the UI picker, served by get_config
 └── sites/                  # per-site adapters
     ├── base.py             # Scraper abstract
     ├── _next_data.py       # __NEXT_DATA__ extraction helper
     ├── _dates.py           # parse_to_iso() — locale-aware date parsing
-    ├── _filter.py          # project_jobs(), apply_filter()
+    ├── _filter.py          # project_jobs(), filter_reason(), apply_filter()
+    ├── _location.py        # region index for the location filter: loaded from Mongo `wilayah` on first use, cached for the process
+    ├── _markdown.py        # html_to_markdown() for job descriptions
     ├── jobstreet.py
     ├── glints.py
     ├── linkedin.py
-    └── indeed.py
+    ├── indeed.py
+    └── upwork.py           # API only: registers Upwork, parse() returns no jobs
 
 mcp_server/                 # MCP HTTP server
-├── server.py               # FastMCP, tools: list_sites, get_config, update_config, get_scrape_status, test_proxy_connection, scrape_jobs
+├── server.py               # FastMCP, tools: list_sites, get_config, get_scrape_response_structure, update_config, get_scrape_status, insert_scrape_run, get_latest_scrape_run, update_scrape_run, test_proxy_connection, scrape_jobs
 ├── discord_tools.py        # Discord tools: settings, test, channels, preview_discord_message, send_discord_message
+├── discord_settings.py     # DiscordSettingsStore: Mongo `discord_settings`, validation and defaults
+├── discord_messages.py     # build_messages(): Discord messages from jobs or text
+├── discord_sender.py       # Discord REST calls: bot identity, channel list, post messages
+├── mongo.py                # Mongo client + `scrape_runs` helpers (insert, latest, update)
 └── __init__.py             # (empty)
+
+ui_server/                  # scraper UI API (FastAPI), see the next section
+├── __main__.py             # `python -m ui_server` entry point (uvicorn)
+├── app.py                  # create_app(): services, routes, static UI files
+├── settings.py             # Settings from `UI_*` env vars
+├── dependencies.py         # Services container, session and cross-site checks
+├── errors.py               # AppError types + error handlers
+├── routes/                 # auth, config, discord, runs, sites
+├── schema/                 # request and response models
+└── services/
+    ├── mcp_gateway.py      # LocalGateway + ScraperClient: calls the MCP tool functions in process
+    ├── run_service.py      # RunService: one run at a time, optional Discord notify
+    ├── run_record.py       # RunRecord + run and Discord status
+    ├── run_detail.py       # RunDetail: record, jobs, failures, payloads
+    ├── run_repository.py   # MongoRunRepository: the `ui_runs` run store
+    └── auth_service.py     # AuthService, LoginLimiter
 ```
 
 ## Scraper UI API (`ui_server/`)
@@ -97,32 +130,40 @@ seeds/job_settings.yaml → Mongo `job_settings`
 load_app_config()   →   AppConfig (immutable dataclass)
    │
    ▼
-runner.run(config, targets, keywords)
+runner.scrape_all_sites(config, requested_sites, keywords)
    │
    ├─ build (keyword, site) cross-product list
+   ├─ build one FallbackHtmlDownloader for the run
    │
    ├─ for each pair (in ThreadPoolExecutor, SCRAPER_CONCURRENCY cap):
    │   │
-   │   ├─ scrape_cls(url=site.url_for(keyword), limit=site.limit)
+   │   ├─ SCRAPERS[site_name](url=site_config.build_search_url_for_keyword(keyword), limit=site_config.limit)
    │   │
-   │   ├─ FetchChain.fetch(url)
-   │   │     ├─ CloudscraperFetcher (cheap, first attempt)
-   │   │     │     └─ if challenge page or 4xx → fall through
-   │   │     └─ PlaywrightFetcher (browser, ~280MB)
-   │   │
-   │   ├─ Scraper.parse(html)         → list[Job] (per-site selectors)
-   │   ├─ runner._enrich_jobs()        → stamp matched_keyword + parse posted_at
-   │   ├─ runner._within_max_age()     → drop jobs older than site.max_age_hours
-   │   ├─ apply_filter()               → drop jobs not matching site.filter
-   │   └─ project_jobs(fields)         → strip to configured fields
+   │   └─ scrape_site_for_keyword()
+   │       ├─ search_jobs_via_api()                → list[Job], when the site has a usable `api` block
+   │       │     └─ if not used or failed → _scrape_jobs_from_html()   (api_only sites fail instead)
+   │       │           ├─ html_downloader.download_html(scraper.url)
+   │       │           │     ├─ CurlCffiHtmlDownloader       (first attempt)
+   │       │           │     ├─ CloudscraperHtmlDownloader   (second attempt)
+   │       │           │     └─ PlaywrightHtmlDownloader     (last attempt, browser, ~280MB)
+   │       │           │           each one runs only if the one before gave no usable page
+   │       │           │           (non-200 status, challenge page or error)
+   │       │           └─ scraper.parse(html)      → list[Job] (per-site selectors)
+   │       ├─ _fill_missing_matched_keyword_and_posted_at() → stamp matched_keyword + parse posted_at
+   │       ├─ _build_raw_payload()                 → every parsed job, all canonical fields
+   │       ├─ _drop_stale_jobs()                   → drop jobs older than site.max_age_hours
+   │       ├─ _drop_jobs_failing_content_filter()  → filter_reason() per job against site.filter
+   │       ├─ _cap_jobs_to_limit()                 → keep the first site.limit jobs
+   │       ├─ _fill_requirements_for_jobs()        → only when `requirements` is a saved field
+   │       └─ _build_filtered_payload()            → project_jobs(fields), strip to configured fields
    │
    └─ return RunResult(exit_code, results)   results keyed by (keyword, site)
 ```
 
-`run` writes nothing to disk. Each pair gives a `SitePayloads(filtered, raw)`.
+`scrape_all_sites` writes nothing to disk. Each pair gives a `FilteredAndRawPayloads(filtered, raw)`.
 A pair that was skipped or crashed still gets an entry, with an `error` such as
 `skipped: site has no entry in the job settings` or `crashed: RuntimeError`.
-When the selection is invalid `run` returns `exit_code=1` and no results. With
+When the selection is invalid `scrape_all_sites` returns `exit_code=1` and no results. With
 no keywords the error is `keywords are required`: keywords only come from the
 caller, never from the job settings.
 
@@ -132,7 +173,7 @@ caller, never from the job settings.
    All canonical keys present, mostly `None`.
 2. **Populated** by site-specific selectors / JSON walks in `parse()`.
 3. **Enriched** by the runner: `matched_keyword`, `posted_at` (parsed UTC).
-4. **Filtered** by max-age, then content filter.
+4. **Filtered** by max-age, then content filter, then capped to the site's `limit`.
 5. **Projected** to the configured fields list — extra keys dropped.
 6. **Returned** as one entry in the per-site payload `jobs` list.
 
@@ -141,12 +182,12 @@ fields you didn't configure still drive the filter.
 
 ## Concurrency model
 
-- One `ThreadPoolExecutor` per `runner.run()` call, sized to `min(resolve_concurrency(), len(pairs))`. Concurrency comes from the `SCRAPER_CONCURRENCY` env var (default 2, valid 1 to 10, an invalid value logs a warning and uses 2). It is not a job setting.
+- One `ThreadPoolExecutor` per `runner.scrape_all_sites()` call, sized to `min(read_concurrency_from_env(), len(pairs))`. Concurrency comes from the `SCRAPER_CONCURRENCY` env var (default 2, valid 1 to 10, an invalid value logs a warning and uses 2). It is not a job setting.
 - Each worker thread builds its own Playwright `sync_playwright()` context
   when needed — never share the instance across threads.
-- cloudscraper sessions are created per call (not reused), so they're
-  thread-safe by virtue of being thread-local.
-- Each worker returns its pair's payloads, and `run` gathers them after the
+- The curl_cffi and cloudscraper downloaders keep no session between calls,
+  so threads share none.
+- Each worker returns its pair's payloads, and `scrape_all_sites` gathers them after the
   pool finishes, so threads share no output state.
 
 ## URL templating
@@ -160,16 +201,16 @@ fetching:
 | `{keyword_slug}`  | lowercase + hyphens             |
 | `{keyword_plus}`  | plus-separated                  |
 
-Resolution happens in `SiteConfig.url_for(keyword)`. Validation runs at
-config load time (`parse()` formats with the placeholder keyword `data analyst` and rejects
+Resolution happens in `SiteConfig.build_search_url_for_keyword(keyword)`. Validation runs at
+config load time (`parse_job_settings_into_app_config()` formats with the placeholder keyword `data analyst` and rejects
 unknown placeholders) so a bad template fails loudly on startup, not
 mid-scrape.
 
 ## Site payload shape
 
 This is the `filtered` payload for one `(keyword, site)` pair. `scrape_jobs`
-stores it in Mongo as `filtered_results[*].payload`, and `python -m scraper`
-prints the same list on stdout.
+stores it in Mongo as `filtered_results[*].payload`, and returns it in the
+response when called with `include_payloads=true`.
 
 ```json
 {
@@ -200,6 +241,7 @@ were in `fields` (plus the always-on anchors). Every payload also has
 
 A failed pair has an `error` key instead of `jobs`, for example
 `{"error": "fetch failed", "url": ..., "keyword": ..., "attempts": [...], "source": "html", "fallback_reason": null}`.
+Each attempt is `{downloader, code, detail}`, see [`mcp.md`](mcp.md#scrape_jobs).
 
 The `raw` payload (`raw_results[*].payload` in Mongo) has the same shape
 without `max_age_hours` and `filter`, holds every parsed job before max-age,
@@ -208,13 +250,16 @@ the pair failed.
 
 ## MCP layer relationship
 
-`mcp_server/server.py` is a thin shell over `scraper.runner.run` and
+`mcp_server/server.py` is a thin shell over `scraper.runner.scrape_all_sites` and
 `scraper.job_settings.load_app_config`. It does no business logic of its own — every
-tool delegates to the same code paths the CLI uses, so MCP behavior
-matches `python -m scraper` exactly.
+tool delegates to the runner and job settings code. The UI server starts its runs
+through this same `scrape_jobs` tool, with `save_run=False` and
+`include_payloads=True`. So `scrape_jobs` does not save a UI run in `scrape_runs`
+and its `mongo_id` is null. The UI server keeps the run in its own `ui_runs`
+collection (see [`ui_runs` collection](#ui_runs-collection)).
 
 `update_config` is the mutating tool. It validates
-with the same parser (`config_loader.parse`) before writing to Mongo.
+with the same parser (`config_loader.parse_job_settings_into_app_config`) before writing to Mongo.
 See [`mcp.md`](mcp.md) for tool details.
 
 ## Where extension lives
@@ -222,11 +267,11 @@ See [`mcp.md`](mcp.md) for tool details.
 | Want to add… | Touch |
 |--------------|-------|
 | A new site | `scraper/sites/<name>.py` + register in `sites/__init__.py::SCRAPERS`; add the `sites.<name>` entry to `seeds/job_settings.yaml` and to each environment with `update_config` |
-| A new canonical field | `scraper/types.py` (Job + CANONICAL_FIELDS), per-site parsers fill it, optionally update `default_fields` |
-| A new fetcher (e.g. proxy, undetected-chromedriver) | `scraper/fetchers/<name>.py`; insert into `runner.default_fetch_chain()` |
+| A new canonical field | `scraper/types.py` (Job + CANONICAL_FIELDS), per-site parsers fill it, optionally update `fields` |
+| A new HTML downloader (e.g. proxy, undetected-chromedriver) | `scraper/html_downloaders/<name>.py`; export it in `html_downloaders/__init__.py`; insert into the `FallbackHtmlDownloader` list in `runner.scrape_all_sites()`, which runs `CurlCffiHtmlDownloader`, `CloudscraperHtmlDownloader`, `PlaywrightHtmlDownloader` in that order |
 | A new MCP tool | `mcp_server/server.py`; mark with `@mcp.tool()` |
 | A new filter key | `scraper/config_loader.py::FILTERABLE_FIELDS` + update Job extractors so the field is reliably populated |
 
 The boundaries are explicit: site adapters know nothing about HTTP,
-fetchers know nothing about parsing, config knows nothing about runtime.
+HTML downloaders know nothing about parsing, config knows nothing about runtime.
 Keep that split.

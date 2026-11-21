@@ -95,7 +95,7 @@ Job settings and Discord settings live in Mongo. The rest is baked in:
 | Want to… | How |
 |---|---|
 | Change sites, or a site's limit, max age, filter | Edit at `/config`. Applies from the next run, no deploy |
-| Change keywords | Not a setting. Type them in "Start a run", or pass them to `scrape_jobs` / `--keyword` on every run |
+| Change keywords | Not a setting. Type them in "Start a run", or pass them to `scrape_jobs` on every run |
 | Change the proxy | Update the `PROXY_URL` GitHub secret or variable → redeploy |
 | Change concurrency | Update the `SCRAPER_CONCURRENCY` GitHub variable (1 to 10, default 2) → redeploy. Locally, set it in `.env` and recreate scraper-mcp and scraper-ui |
 | Change the schedule | Scheduled runs come from a separate service outside this project. This project has no scheduler |
@@ -130,7 +130,8 @@ job settings migration also needs the settings document restored, see
 
 The first read by this image moves old global `limit`, `concurrency`,
 `max_age_hours`, `filter` and `keywords` into the sites and deletes the
-global keys (see
+global keys. It also renames `default_fields` to `fields` and drops per-site
+`fields` overrides (see
 [`configuration.md`](configuration.md#migration-from-global-values)). Older
 images need those global keys, so after the migration they cannot read the
 settings. Rolling back the image alone is not enough: restore the document too.
@@ -150,7 +151,9 @@ db.job_settings.replaceOne(
 
 Then start the old image. Changes saved after the migration are lost. Starting
 this image again migrates the restored document again; the backup is kept as
-it was.
+it was. A backup made by an earlier migration is never replaced, so after the
+`default_fields` rename the backup may still be the document from before the
+global value migration.
 
 ## Trigger flow
 
@@ -224,6 +227,17 @@ node seeds/wilayah.runner.js
 The script drops the existing `wilayah` collection, inserts all batches,
 creates a `nama` index, and verifies the exact row count. It exits
 non-zero on mismatch.
+
+### Restart after reseeding
+
+The location filter reads `wilayah` the first time it needs it and then keeps
+that copy in memory until the process stops. `scraper-mcp` and `scraper-ui`
+each hold their own copy, because the UI runs `scrape_jobs` in its own
+process. After reseeding, restart both so they read the new data:
+
+```bash
+docker restart job-scraper-mcp job-scraper-ui
+```
 
 ### Seed job settings
 

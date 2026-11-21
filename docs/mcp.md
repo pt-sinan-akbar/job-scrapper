@@ -87,7 +87,7 @@ Read-only. Returns the job settings from Mongo, with their version.
   "updated_at": "2026-11-02T01:00:00+00:00",
   "updated_by": "ui",
   "settings": {
-    "default_fields": ["title", "company", "location", "url"],
+    "fields": ["title", "company", "location", "url"],
     "sites": {
       "jobstreet": {
         "enabled": true,
@@ -108,7 +108,7 @@ Read-only. Returns the job settings from Mongo, with their version.
 }
 ```
 
-- `job_fields`: every field name `default_fields` and `sites.<name>.fields` accept, in scraper order
+- `job_fields`: every field name the top-level `fields` list accepts, in scraper order
 - `mandatory_fields`: fields saved for every job whatever the settings say
 - `location_options`: the fixed city list per site (from `scraper/api/locations.py`).
   `label` is what the UI shows, `value` is what goes into `sites.<name>.api.locations`.
@@ -119,7 +119,8 @@ Returns `{"error": "..."}` when Mongo is down or the document is missing.
 Always call `get_config` before `update_config` to know the current shape so
 your patch is minimal. A stored document that still has global `limit`,
 `concurrency`, `max_age_hours` or `filter` is migrated into the sites on the
-first read, with a new version and `updated_by: "migration"`, after a copy of
+first read (a `default_fields` key is renamed to `fields`, and per-site
+`fields` overrides are dropped), with a new version and `updated_by: "migration"`, after a copy of
 the original is kept as `active_pre_migration_backup` (see
 [`configuration.md`](configuration.md#migration-from-global-values)).
 
@@ -145,6 +146,7 @@ Read-only. Returns canonical response contract for `scrape_jobs`.
 ```
 
 Use this when you need strict output formatting in downstream automations.
+The shape of `attempts` is under [`scrape_jobs`](#scrape_jobs).
 
 ### `update_config`
 
@@ -156,11 +158,11 @@ Write. Applies a patch to the job settings, and validates the result.
 { "patch": { }, "expected_version": 4, "source": "mcp" }
 ```
 
-- `patch`: top-level keys (`default_fields`, `sites`) are replaced whole. `sites` merges by site name. Each field of a site is replaced whole, so send the full `filter` or `api`. A `null` removes the key: `max_age_hours: null` means no age cut for that site. `limit` cannot be removed, every site needs one
+- `patch`: top-level keys (`fields`, `sites`) are replaced whole. `fields` is one list for every site. `sites` merges by site name. Each field of a site is replaced whole, so send the full `filter` or `api`. A `null` removes the key: `max_age_hours: null` means no age cut for that site. `limit` cannot be removed, every site needs one
 - `expected_version`: optional. The version you read. A mismatch saves nothing
 - `source`: `ui` or `mcp`. Kept with the version
 
-Only job setting keys are allowed: `default_fields`, `sites`. `limit`, `max_age_hours` and `filter` are per site only, so a top-level `limit`, `concurrency`, `max_age_hours`, `filter`, `keywords` or `proxy` is refused with `not a job setting: <key>`. Keywords are not stored: pass them to `scrape_jobs` on every call. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Field names in `default_fields` or `sites.<name>.fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`.
+Only job setting keys are allowed: `fields`, `sites`. `limit`, `max_age_hours` and `filter` are per site only, so a top-level `limit`, `concurrency`, `max_age_hours`, `filter`, `keywords`, `default_fields` or `proxy` is refused with `not a job setting: <key>`. Keywords are not stored: pass them to `scrape_jobs` on every call. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Field names in `fields` that are not in `get_config`'s `job_fields` are refused with reason `invalid`. A site has no fields of its own: `sites.<name>.fields` is refused with reason `invalid` and `sites.<name>.fields is no longer supported, use the top-level fields`.
 
 **Returns** (success):
 
@@ -178,9 +180,9 @@ Only job setting keys are allowed: `default_fields`, `sites`. `limit`, `max_age_
 
 #### Patch examples
 
-Change the default job fields:
+Change the job fields for every site:
 ```json
-{"patch": {"default_fields": ["title", "company", "url", "salary"]}}
+{"patch": {"fields": ["title", "company", "url", "salary"]}}
 ```
 
 Tighten recency on one site:
@@ -225,7 +227,7 @@ Replace LinkedIn URL template (e.g. switch to a different geoId):
 
 #### Validation
 
-Every patch is merged, then run through `scraper.config_loader.parse` before
+Every patch is merged, then run through `scraper.config_loader.parse_job_settings_into_app_config` before
 anything is saved. The same rules listed in
 [`configuration.md`](configuration.md) apply: a missing or malformed site
 `limit`, top-level global keys, missing required keys, invalid URL placeholders, etc. all return
@@ -234,7 +236,7 @@ anything is saved. The same rules listed in
 ### `test_proxy_connection`
 
 Read-only network probe. Performs one HTTPS GET through the proxy using the
-same curl_cffi stack as the scraper fetchers (so HTTP, HTTPS, and SOCKS5 proxy
+same curl_cffi stack as the scraper HTML downloaders (so HTTP, HTTPS, and SOCKS5 proxy
 URLs work the same as in a scrape).
 
 **Args** (all optional):
@@ -342,6 +344,37 @@ job settings`), that crashed (`crashed: <ExceptionType>`), or that the runner ga
 no result for (`scraper returned no result for this pair (exit code 1)`, when the
 site selection was invalid).
 
+An error whose HTML download failed (`fetch failed`) also has `attempts`: one
+`{downloader, code, detail}` entry per HTML downloader tried, in order.
+
+```json
+{
+  "keyword": "data analyst",
+  "site": "glints",
+  "reason": "fetch failed",
+  "attempts": [
+    {"downloader": "curl_cffi", "code": "http_403", "detail": "status=403"},
+    {"downloader": "cloudscraper", "code": "challenge", "detail": "title=Just a moment..."},
+    {"downloader": "playwright", "code": "timeout", "detail": "..."}
+  ]
+}
+```
+
+- `downloader`: `curl_cffi`, `cloudscraper` or `playwright`
+- `detail`: more text about the outcome, or `null`
+- `code`: one of
+
+| Code            | Meaning                                                  |
+|-----------------|----------------------------------------------------------|
+| `http_<status>` | site rejected the request (e.g. `http_403`)              |
+| `challenge`     | anti-bot wall (`detail` is the matched title or marker)  |
+| `timeout`       | network or page-load timeout                             |
+| `runtime_error` | unexpected exception (`detail` is the class and message) |
+| `not_installed` | HTML downloader dependency missing                       |
+
+Runs saved before the rename from fetchers to HTML downloaders carry the key
+`fetcher` instead of `downloader`.
+
 **Returns** (no keywords): when `keywords` is `null`, empty or only blank, nothing runs, no
 status is written and nothing is saved to Mongo:
 
@@ -361,7 +394,7 @@ status is written and nothing is saved to Mongo:
 `keywords` argument out entirely is rejected by the MCP argument check before
 the tool runs.
 
-Results come straight back from `scraper.runner.run`. Nothing is written to disk.
+Results come straight back from `scraper.runner.scrape_all_sites`. Nothing is written to disk.
 
 With `include_payloads: true` the response also has two optional lists, each
 entry `{"keyword": "...", "site": "...", "payload": {...}}`:

@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
-from ..log import get_logger
+from ..log import get_scraper_logger
 from ..types import Job, empty_job
 from ._markdown import html_to_markdown
 from .base import Scraper
 
-_LOG = get_logger()
+_LOG = get_scraper_logger()
 
 _INDEED_API_URL = "https://apis.indeed.com/graphql"
 _INDEED_API_KEY = (

@@ -2,7 +2,7 @@
 # environment and never overwrites. After that, change settings at /config
 
 # anchors (site, matched_keyword, title, company, url) always included
-default_fields:
+fields:
   - title
   - company
   - company_id

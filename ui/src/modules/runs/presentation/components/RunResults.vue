@@ -56,10 +56,6 @@ watch(
   },
 )
 
-function selectJob(index: number): void {
-  pickedIndex.value = index
-}
-
 function showJobJson(index: number): void {
   pickedIndex.value = index
   if (!isWideScreen.value) {
@@ -85,8 +81,7 @@ function showJobJson(index: number): void {
         :failures="shownDetail.failures"
         :error="shownDetail.record.error"
         :selected-index="selectedIndex"
-        @select="selectJob"
-        @json="showJobJson"
+        @select="showJobJson"
       >
         <template v-if="isWideScreen" #aside>
           <JobJsonPanel :job="selectedJob" @fullscreen="isDialogOpen = true" />

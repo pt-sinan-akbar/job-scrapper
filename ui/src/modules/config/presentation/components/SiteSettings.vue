@@ -12,9 +12,6 @@ import SelectionTransition from '@/shared/components/SelectionTransition.vue'
 
 const props = defineProps<{
   sites: SiteSetting[]
-  defaultFields: string[]
-  jobFields: string[]
-  mandatoryFields: string[]
   locationOptions: Record<string, LocationOption[]>
   issue?: SiteIssue | null
 }>()
@@ -83,9 +80,6 @@ watch(
         </h4>
         <SiteDetail
           :site="selectedSite"
-          :default-fields="defaultFields"
-          :job-fields="jobFields"
-          :mandatory-fields="mandatoryFields"
           :location-options="locationOptions[selectedSite.name]"
           :invalid-field="invalidField"
           @update="emit('update', $event)"

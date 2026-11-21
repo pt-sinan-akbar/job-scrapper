@@ -25,12 +25,9 @@ LOG_TAIL = "200"
 # Dev smoke tests: each is one `docker exec` against an already-running
 # container (started via the profile Start buttons). The keys are the button
 # ids and the preview/run wiring in app.py iterates this tuple.
-TESTS = ("scrape", "mongo")
+TESTS = ("mongo",)
 
 _MCP_CONTAINER = CONTAINER_NAMES["scraper-mcp"]
-
-SMOKE_KEYWORD = "software engineer"
-_SCRAPE_ARGV = ("python", "-m", "scraper", "--keyword", SMOKE_KEYWORD)
 
 # Reuses the real Mongo connection/auth (mcp_server.mongo, MONGO_URI from the
 # container env) but writes to an isolated throwaway collection so the real
@@ -135,20 +132,11 @@ def build_test(test: str) -> list[Command]:
     Mirrors build_sequence: the UI previews Command.preview() and the runner
     executes Command.argv, so preview == exec holds here too. Each test runs
     against an already-running container — it does not start or tear down a
-    stack. scrape/mongo need scraper-mcp up.
+    stack. mongo needs scraper-mcp up.
 
     The runner uses create_subprocess_exec (argv, no shell), so the multi-line
     python -c bodies pass as a single argv element with no escaping.
     """
-    if test == "scrape":
-        # python -m scraper is isolated: it scrapes only (no Mongo write, no
-        # Discord post) using whatever config is loaded in the container.
-        return [Command(["docker", "exec", _MCP_CONTAINER, *_SCRAPE_ARGV])]
     if test == "mongo":
         return [Command(["docker", "exec", _MCP_CONTAINER, "python", "-c", _MONGO_PING_SCRIPT])]
     raise ValueError(f"unknown test: {test!r}")
-
-
-def build_scrape_site(site: str) -> list[Command]:
-    """Scrape one platform: docker exec job-scraper-mcp python -m scraper --keyword <kw> <site>."""
-    return [Command(["docker", "exec", _MCP_CONTAINER, *_SCRAPE_ARGV, site])]

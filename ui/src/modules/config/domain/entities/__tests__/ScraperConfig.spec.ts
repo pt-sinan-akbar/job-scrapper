@@ -20,7 +20,6 @@ const SITE: SiteSetting = {
   limit: 30,
   maxAgeHours: 72,
   filter: EMPTY_FILTER,
-  fields: null,
   api: {
     isEnabled: true,
     locations: ['Remote'],
@@ -31,7 +30,7 @@ const SITE: SiteSetting = {
 }
 
 const ORIGINAL: ConfigValues = {
-  defaultFields: ['title'],
+  fields: ['title'],
   sites: [SITE],
 }
 
@@ -48,10 +47,10 @@ describe('toConfigChanges', () => {
     expect(hasConfigChanges(toConfigChanges(ORIGINAL, ORIGINAL))).toBe(false)
   })
 
-  it('sends changed default fields', () => {
-    const changes = toConfigChanges({ ...ORIGINAL, defaultFields: ['title', 'url'] }, ORIGINAL)
+  it('sends changed job fields', () => {
+    const changes = toConfigChanges({ ...ORIGINAL, fields: ['title', 'url'] }, ORIGINAL)
 
-    expect(changes).toEqual({ defaultFields: ['title', 'url'] })
+    expect(changes).toEqual({ fields: ['title', 'url'] })
   })
 
   it('sends only the changed site field', () => {
@@ -102,11 +101,11 @@ describe('toConfigChanges', () => {
 
   it('has no global job settings', () => {
     const changes = toConfigChanges(
-      { ...withSite({ limit: 9 }), defaultFields: ['title', 'url'] },
+      { ...withSite({ limit: 9 }), fields: ['title', 'url'] },
       ORIGINAL,
     )
 
-    expect(Object.keys(changes).sort()).toEqual(['defaultFields', 'sites'])
+    expect(Object.keys(changes).sort()).toEqual(['fields', 'sites'])
   })
 })
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowUpRightIcon, BracesIcon } from '@lucide/vue'
+import { ArrowUpRightIcon } from '@lucide/vue'
 import type { RunJob } from '@/modules/runs/domain/entities/Run'
 import { toJobTitle } from '@/modules/runs/presentation/components/jobJsonLabels'
 import RunJobDescription from '@/modules/runs/presentation/components/RunJobDescription.vue'
@@ -9,7 +9,6 @@ import {
   formatRelativeTime,
 } from '@/modules/runs/presentation/components/relativeTime'
 import { Badge } from '@/shared/components/ui/badge'
-import { Button } from '@/shared/components/ui/button'
 import { cn } from '@/shared/utils/cn'
 
 type FactKey = 'salary' | 'workType' | 'employmentType' | 'experienceLevel' | 'matchedKeyword'
@@ -41,8 +40,8 @@ const FACT_FIELDS: readonly FactField[] = [
   { label: 'Keyword', key: 'matchedKeyword' },
 ]
 
-const props = defineProps<{ job: RunJob; isSelected: boolean; isJsonInDialog?: boolean }>()
-const emit = defineEmits<{ select: []; json: [] }>()
+const props = defineProps<{ job: RunJob; isSelected: boolean }>()
+const emit = defineEmits<{ select: [] }>()
 
 const now = new Date()
 
@@ -123,7 +122,7 @@ function onCardClick(event: MouseEvent): void {
   >
     <div class="flex min-w-0 flex-col gap-1">
       <header
-        class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 @md:grid-cols-[minmax(0,1fr)_auto_auto]"
+        class="grid grid-cols-[minmax(0,1fr)] items-start gap-x-3 gap-y-1 @md:grid-cols-[minmax(0,1fr)_auto]"
       >
         <h4 data-slot="job-title" class="pt-1 text-subheading wrap-break-word text-ink">
           <a
@@ -139,24 +138,9 @@ function onCardClick(event: MouseEvent): void {
           >
           <template v-else>{{ title }}</template>
         </h4>
-        <Badge
-          v-if="job.site"
-          data-slot="job-site"
-          class="col-start-1 row-start-2 @md:col-start-2 @md:row-start-1 @md:mt-1"
-        >
+        <Badge v-if="job.site" data-slot="job-site" class="justify-self-start @md:mt-1">
           {{ job.site }}
         </Badge>
-        <Button
-          data-slot="job-json"
-          size="icon"
-          :aria-label="`Show JSON for ${title}`"
-          :aria-pressed="isJsonInDialog ? undefined : isSelected"
-          :aria-haspopup="isJsonInDialog ? 'dialog' : undefined"
-          class="col-start-2 row-start-1 aria-pressed:border-transparent aria-pressed:bg-accent aria-pressed:text-on-accent aria-pressed:hover:bg-accent-hover aria-pressed:hover:text-on-accent @md:col-start-3"
-          @click="emit('json')"
-        >
-          <BracesIcon aria-hidden="true" class="size-4" />
-        </Button>
       </header>
       <p v-if="metaParts.length > 0" data-slot="job-meta" class="text-body-sm text-ink-muted">
         <template v-for="(part, index) in metaParts" :key="part.key">

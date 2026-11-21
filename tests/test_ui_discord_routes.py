@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import mongomock
 import pytest
 from argon2 import PasswordHasher
 from fastapi import FastAPI
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from tests.test_ui_routes import PASSWORD
 from ui_server.app import create_app
 from ui_server.errors import McpUnavailableError
+from ui_server.services.run_repository import MongoRunRepository
 from ui_server.settings import Settings
 
 LOCAL_URL = "http://127.0.0.1:8090"
@@ -81,8 +83,13 @@ def gateway() -> FakeGateway:
 
 
 @pytest.fixture
-def app(tmp_path: Path, gateway: FakeGateway) -> FastAPI:
-    return create_app(_settings(tmp_path), gateway)
+def run_repository() -> MongoRunRepository:
+    return MongoRunRepository(mongomock.MongoClient()["job_scraper"])
+
+
+@pytest.fixture
+def app(tmp_path: Path, gateway: FakeGateway, run_repository: MongoRunRepository) -> FastAPI:
+    return create_app(_settings(tmp_path), gateway, run_repository)
 
 
 @pytest.fixture
@@ -93,7 +100,7 @@ def client(app: FastAPI):
 
 
 @pytest.fixture
-def prod_client(tmp_path: Path, gateway: FakeGateway):
+def prod_client(tmp_path: Path, gateway: FakeGateway, run_repository: MongoRunRepository):
     settings = _settings(
         tmp_path,
         env="prod",
@@ -101,7 +108,8 @@ def prod_client(tmp_path: Path, gateway: FakeGateway):
         session_secret="s" * 32,
         domain="testserver",
     )
-    with TestClient(create_app(settings, gateway), base_url="https://testserver") as test_client:
+    app = create_app(settings, gateway, run_repository)
+    with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
 
 

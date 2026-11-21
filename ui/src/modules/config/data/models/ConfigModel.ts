@@ -28,7 +28,6 @@ export interface SiteModel {
   limit: number
   max_age_hours: number | null
   filter: FilterModel
-  fields: string[] | null
   api: ApiModel | null
 }
 
@@ -39,7 +38,7 @@ export interface LocationOptionModel {
 
 export interface ConfigModel {
   values: {
-    default_fields: string[]
+    fields: string[]
     sites: SiteModel[]
   }
   version: number
@@ -62,12 +61,11 @@ export interface SiteChangesModel {
   limit?: number
   max_age_hours?: number | null
   filter?: FilterChangesModel
-  fields?: string[] | null
   api?: ApiModel | null
 }
 
 export interface ConfigChangesModel {
-  default_fields?: string[]
+  fields?: string[]
   sites?: Record<string, SiteChangesModel>
 }
 
@@ -89,14 +87,13 @@ function toApiSetting(model: ApiModel): ApiSetting {
   }
 }
 
-function toSiteSetting(model: SiteModel, pickFields: (fields: string[]) => string[]): SiteSetting {
+function toSiteSetting(model: SiteModel): SiteSetting {
   return {
     name: model.name,
     isEnabled: model.enabled,
     limit: model.limit,
     maxAgeHours: model.max_age_hours,
     filter: toFilterSetting(model.filter),
-    fields: model.fields === null ? null : pickFields(model.fields),
     api: model.api === null ? null : toApiSetting(model.api),
   }
 }
@@ -124,12 +121,10 @@ function toLocationOptions(model: unknown): Record<string, LocationOption[]> {
 }
 
 export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
-  const pickFields = (fields: string[]): string[] =>
-    toPickedFields(fields, model.job_fields, model.mandatory_fields)
   return {
     values: {
-      defaultFields: pickFields(model.values.default_fields),
-      sites: model.values.sites.map((site) => toSiteSetting(site, pickFields)),
+      fields: toPickedFields(model.values.fields, model.job_fields, model.mandatory_fields),
+      sites: model.values.sites.map(toSiteSetting),
     },
     version: model.version,
     updatedAt: model.updated_at,
@@ -170,9 +165,9 @@ function toSiteChangesModel(changes: SiteChanges): SiteChangesModel {
 }
 
 export function toConfigChangesModel(changes: ConfigChanges): ConfigChangesModel {
-  const { defaultFields, sites } = changes
+  const { fields, sites } = changes
   return {
-    ...(defaultFields === undefined ? {} : { default_fields: defaultFields }),
+    ...(fields === undefined ? {} : { fields }),
     ...(sites === undefined
       ? {}
       : {

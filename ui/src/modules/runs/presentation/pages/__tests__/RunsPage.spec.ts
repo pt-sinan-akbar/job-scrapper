@@ -110,7 +110,7 @@ const SETTINGS: DiscordSettings = {
 
 const CONFIG_SNAPSHOT: ConfigSnapshot = {
   values: {
-    defaultFields: ['title'],
+    fields: ['title'],
     sites: [],
   },
   version: 4,
@@ -333,7 +333,7 @@ describe('RunsPage', () => {
 
     const config = useConfigStore()
     config.snapshot = CONFIG_SNAPSHOT
-    config.values = { ...structuredClone(CONFIG_SNAPSHOT.values), defaultFields: ['url'] }
+    config.values = { ...structuredClone(CONFIG_SNAPSHOT.values), fields: ['url'] }
     await nextTick()
 
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()

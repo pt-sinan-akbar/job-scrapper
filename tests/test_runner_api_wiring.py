@@ -7,8 +7,8 @@ import yaml
 
 from scraper import runner
 from scraper.api.client import DEFAULT_DELAY_SECONDS, DETAIL_DELAY_SECONDS
-from scraper.config_loader import ApiConfig, parse
-from scraper.runner import build_api_callbacks
+from scraper.config_loader import ApiConfig, parse_job_settings_into_app_config
+from scraper.runner import build_api_search_and_requirements_functions
 from scraper.types import Job, empty_job
 
 
@@ -36,16 +36,16 @@ def _factory(**kwargs: Any) -> dict[str, Any]:
     return {"delay": kwargs.get("delay", DEFAULT_DELAY_SECONDS), "proxy": kwargs.get("proxy")}
 
 
-def _build(api_cfg: ApiConfig):
+def _build(api_config: ApiConfig):
     RecordingSource.instances.clear()
-    return build_api_callbacks(
+    return build_api_search_and_requirements_functions(
         cast(Any, RecordingSource),
-        api_cfg,
+        api_config,
         "devops",
         proxy_url="http://p:1",
         max_age_hours=72,
         limit=30,
-        client_factory=_factory,
+        build_api_client=_factory,
     )
 
 
@@ -55,10 +55,13 @@ def test_search_uses_site_delay_and_detail_uses_short_delay():
     assert [j["job_id"] for j in search()] == ["A", "B"]
     assert detail(empty_job("stub", "T", "C")) == f"detail via {DETAIL_DELAY_SECONDS}"
 
-    search_source, detail_source = RecordingSource.instances
-    assert search_source.client == {"delay": (4.0, 6.0), "proxy": "http://p:1"}
-    assert detail_source.client == {"delay": DETAIL_DELAY_SECONDS, "proxy": "http://p:1"}
-    assert detail_source.searched == []
+    api_source_for_search, api_source_for_requirements = RecordingSource.instances
+    assert api_source_for_search.client == {"delay": (4.0, 6.0), "proxy": "http://p:1"}
+    assert api_source_for_requirements.client == {
+        "delay": DETAIL_DELAY_SECONDS,
+        "proxy": "http://p:1",
+    }
+    assert api_source_for_requirements.searched == []
 
 
 def test_search_falls_back_to_default_delay():
@@ -66,7 +69,9 @@ def test_search_falls_back_to_default_delay():
     assert RecordingSource.instances[0].client["delay"] == DEFAULT_DELAY_SECONDS
 
 
-def test_run_wires_api_callbacks_into_run_one(monkeypatch: pytest.MonkeyPatch):
+def test_scrape_all_sites_wires_api_functions_into_scrape_site_for_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+):
     raw_config = yaml.safe_load(
         """
 sites:
@@ -91,18 +96,24 @@ sites:
     def detail(job: Job) -> str | None:
         return None
 
-    def fake_build(source_factory, api_cfg, keyword, **kwargs):
-        built.append((keyword, api_cfg.locations, api_cfg.delay_seconds))
+    def fake_build(build_api_source, api_config, keyword, **kwargs):
+        built.append((keyword, api_config.locations, api_config.delay_seconds))
         return search, detail
 
-    def fake_run_one(*args: Any, **kwargs: Any) -> runner.SitePayloads:
+    def fake_scrape_site_for_keyword(*args: Any, **kwargs: Any) -> runner.FilteredAndRawPayloads:
         received.append(kwargs)
-        return runner.SitePayloads(filtered={"count": 0, "jobs": []}, raw={"count": 0, "jobs": []})
+        return runner.FilteredAndRawPayloads(
+            filtered={"count": 0, "jobs": []}, raw={"count": 0, "jobs": []}
+        )
 
-    monkeypatch.setattr(runner, "refresh_index", lambda: None)
-    monkeypatch.setattr(runner, "build_api_callbacks", fake_build)
-    monkeypatch.setattr(runner, "run_one", fake_run_one)
+    monkeypatch.setattr(runner, "build_api_search_and_requirements_functions", fake_build)
+    monkeypatch.setattr(runner, "scrape_site_for_keyword", fake_scrape_site_for_keyword)
 
-    assert runner.run(parse(raw_config, None), keywords=["devops"]).exit_code == 0
+    assert (
+        runner.scrape_all_sites(
+            parse_job_settings_into_app_config(raw_config, None), keywords=["devops"]
+        ).exit_code
+        == 0
+    )
     assert built == [("devops", ("Jakarta Raya",), (4.0, 6.0))]
-    assert received == [{"api_search": search, "api_detail": detail}]
+    assert received == [{"search_jobs_via_api": search, "read_requirements_via_api": detail}]

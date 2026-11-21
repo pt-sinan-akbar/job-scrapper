@@ -21,7 +21,7 @@ from textual.message import Message
 from textual.widgets import Button, Footer, Header, RichLog, Static
 
 from . import compose as compose_mod
-from .commands import ACTIONS, ALL, TESTS, build_scrape_site, build_sequence, build_test
+from .commands import ACTIONS, ALL, TESTS, build_sequence, build_test
 from .config_view import load_config_summary, masked_env
 from .model import Manifest
 from .runner import SequenceRunner
@@ -30,9 +30,8 @@ _SUMMARY_ENV_KEYS = ("MONGO_URI",)
 _PREVIEW_HINT = "(focus an action — Tab/arrows — to preview its command)"
 
 # Test button labels. Keys must match commands.TESTS; ids are f"test-{key}".
-# scrape/mongo run against scraper-mcp.
+# mongo runs against scraper-mcp.
 _TEST_LABELS = {
-    "scrape": "Scrape",
     "mongo": "Mongo",
 }
 
@@ -163,10 +162,7 @@ class ManagerApp(App):
     .scope-row { height: 1; }
     .scope-label { width: 18; height: 1; content-align: left middle; }
 
-    /* tests + scrape side by side to save one vertical row. */
-    #bottom { height: auto; }
-    #tests { height: auto; width: 1fr; border: round $warning; padding: 0 1; }
-    #scrape { height: auto; width: 1fr; border: round $success; padding: 0 1; }
+    #tests { height: auto; border: round $warning; padding: 0 1; }
 
     /* The log takes the remaining space but is guaranteed a usable minimum so
        command output is always visible. */
@@ -213,11 +209,7 @@ class ManagerApp(App):
             id="top",
         )
         yield VerticalScroll(*self._row_widgets(), id="profiles")
-        yield Horizontal(
-            Horizontal(*self._test_widgets(), id="tests"),
-            Horizontal(*self._scrape_widgets(), id="scrape"),
-            id="bottom",
-        )
+        yield Horizontal(*self._test_widgets(), id="tests")
         # wrap=True so long stream-json lines fold to panel width instead of
         # scrolling horizontally off-screen. Click-to-copy still works because
         # each entry is written as a meta-tagged Text: every wrapped strip of an
@@ -259,12 +251,6 @@ class ManagerApp(App):
         children += [Button(_TEST_LABELS[test], id=f"test-{test}") for test in TESTS]
         return children
 
-    def _scrape_widgets(self) -> list[Static | Button]:
-        cfg = load_config_summary(self.env, masked_env())
-        children: list[Static | Button] = [Static("scrape site:", classes="scope-label")]
-        children += [Button(site, id=f"scrape-{site}") for site in cfg.site_names]
-        return children
-
     # ---- events ------------------------------------------------------------
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
@@ -275,8 +261,6 @@ class ManagerApp(App):
             self._run_action(scope, action)
         elif button_id.startswith("test-"):
             self._run_test(button_id[len("test-") :])
-        elif button_id.startswith("scrape-"):
-            self._run_scrape_site(button_id[len("scrape-") :])
 
     def on_descendant_focus(self, event) -> None:
         widget = getattr(event, "widget", None) or getattr(event, "control", None)
@@ -286,8 +270,6 @@ class ManagerApp(App):
             self._preview(scope, action)
         elif widget_id.startswith("test-"):
             self._preview_test(widget_id[len("test-") :])
-        elif widget_id.startswith("scrape-"):
-            self._preview_scrape(widget_id[len("scrape-") :])
 
     # ---- actions -----------------------------------------------------------
     def _run_action(self, scope: str, action: str) -> None:
@@ -297,14 +279,6 @@ class ManagerApp(App):
         sequence = build_sequence(self.env, scope, action, self.profile_map)
         self._preview(scope, action)
         self.run_worker(self._execute(sequence, action), exclusive=True, group="runner")
-
-    def _run_scrape_site(self, site: str) -> None:
-        if self.runner.is_running:
-            self._log("! a command is already running — press 'c' to cancel it first")
-            return
-        sequence = build_scrape_site(site)
-        self._preview_scrape(site)
-        self.run_worker(self._execute(sequence, "test"), exclusive=True, group="runner")
 
     def _run_test(self, test: str) -> None:
         if self.runner.is_running:
@@ -356,7 +330,7 @@ class ManagerApp(App):
 
     def action_toggle_log(self) -> None:
         is_visible = self.query_one("#top").display
-        for widget_id in ("top", "profiles", "bottom"):
+        for widget_id in ("top", "profiles", "tests"):
             self.query_one(f"#{widget_id}").display = not is_visible
 
     def action_copy_log(self) -> None:
@@ -426,9 +400,6 @@ class ManagerApp(App):
         container = self.query_one("#profiles", VerticalScroll)
         await container.remove_children()
         await container.mount(*self._row_widgets())
-        scrape_container = self.query_one("#scrape", Horizontal)
-        await scrape_container.remove_children()
-        await scrape_container.mount(*self._scrape_widgets())
         self._render_summary()
         self._update_env_buttons()
         self._set_preview(_PREVIEW_HINT)
@@ -447,10 +418,6 @@ class ManagerApp(App):
     def _preview_test(self, test: str) -> None:
         sequence = build_test(test)
         self._set_preview("\n".join(command.preview() for command in sequence))
-
-    def _preview_scrape(self, site: str) -> None:
-        sequence = build_scrape_site(site)
-        self._set_preview("\n".join(cmd.preview() for cmd in sequence))
 
     def _set_preview(self, text: str) -> None:
         self.query_one("#preview", Static).update(text)

@@ -38,7 +38,7 @@ def test_committed_seed_file_keeps_upwork_location_filter_off():
 def test_committed_seed_file_has_no_global_job_values():
     settings = yaml.safe_load(SEED_PATH.read_text())
 
-    assert set(settings) == {"default_fields", "sites"}
+    assert set(settings) == {"fields", "sites"}
 
 
 def test_committed_seed_file_gives_each_site_its_old_values():
@@ -82,3 +82,10 @@ def test_main_reports_invalid_file(
 
     assert seed_settings.main(["--file", str(path)]) == 2
     assert "not a job setting: keywords" in capsys.readouterr().err
+
+
+def test_committed_seed_file_has_no_site_fields():
+    sites = yaml.safe_load(SEED_PATH.read_text())["sites"]
+
+    for site in sites.values():
+        assert "fields" not in site

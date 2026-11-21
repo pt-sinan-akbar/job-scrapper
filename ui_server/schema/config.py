@@ -42,7 +42,6 @@ class SiteUpdate(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=MAX_LIMIT)
     max_age_hours: int | None = Field(default=None, ge=1, le=MAX_AGE_HOURS)
     filter: FilterSettings | None = None
-    fields: FieldList | None = None
     api: ApiSettings | None = None
 
     @field_validator("limit", "filter", mode="before")
@@ -57,7 +56,7 @@ class ConfigUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(ge=1)
-    default_fields: FieldList | None = None
+    fields: FieldList | None = None
     sites: dict[SiteName, SiteUpdate] = Field(default_factory=dict)
 
     def to_patch(self) -> dict[str, Any]:

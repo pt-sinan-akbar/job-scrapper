@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import scraper.sites._filter as filt
+import scraper.sites._location as loc
 from scraper.sites._filter import filter_reason, matches_filter
+from scraper.sites._location import build_wilayah_index
 from scraper.types import empty_job
+from tests.wilayah_rows import WILAYAH_ROWS
 
 
 def _job(location: str | None):
@@ -38,17 +44,11 @@ def test_matches_filter_consistent_with_reason():
 
 # --- hierarchy-aware location dispatch (patch the wilayah index) ---
 
-from unittest.mock import patch  # noqa: E402
-
-import scraper.sites._filter as filt  # noqa: E402
-from scraper.sites._location import build_index_from_rows  # noqa: E402
-from tests.test_location import _ROWS  # noqa: E402
-
 JKT = {"location": ["jakarta", "tangerang", "bandung", "bekasi", "indonesia"]}
 
 
-def _with_index(rows=_ROWS):
-    return patch.object(filt, "get_index", return_value=build_index_from_rows(rows))
+def _with_index(rows=WILAYAH_ROWS):
+    return patch.object(filt, "get_location_index", return_value=build_wilayah_index(rows))
 
 
 def test_district_cakung_kept():
@@ -124,6 +124,30 @@ def test_other_keys_still_substring():
 
 
 def test_legacy_fallback_when_index_none():
-    with patch.object(filt, "get_index", return_value=None):
+    with patch.object(filt, "get_location_index", return_value=None):
         assert filt.filter_reason(_job("Jakarta Selatan"), {"location": ["jakarta"]}) is None
         assert filt.filter_reason(_job("Surabaya"), {"location": ["jakarta"]}) is not None
+
+
+def test_location_filter_loads_index_through_cached_getter():
+    index = build_wilayah_index(WILAYAH_ROWS)
+    with patch.object(loc, "_load_wilayah_index_from_mongo", return_value=index) as loader:
+        assert filt.filter_reason(_job("Cakung"), JKT) is None
+        assert filt.filter_reason(_job("Surabaya"), JKT) is not None
+    assert loader.call_count == 1
+
+
+def test_location_filter_falls_back_to_substring_when_index_load_fails():
+    with patch.object(loc, "_load_wilayah_index_from_mongo", return_value=None) as loader:
+        assert filt.filter_reason(_job("Jakarta Selatan"), {"location": ["jakarta"]}) is None
+        assert filt.filter_reason(_job("Surabaya"), {"location": ["jakarta"]}) is not None
+    assert loader.call_count == 1
+
+
+def test_filter_without_location_key_never_loads_index():
+    job = _job("Jakarta")
+    job["employment_type"] = "Full-time"
+    with patch.object(loc, "_load_wilayah_index_from_mongo") as loader:
+        assert filt.filter_reason(job, {"employment_type": ["full-time"]}) is None
+        assert filt.filter_reason(job, {"location": []}) is None
+    assert loader.call_count == 0

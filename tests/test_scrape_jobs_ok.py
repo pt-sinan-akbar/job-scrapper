@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
+from scraper.config_loader import AppConfig
 from scraper.job_settings import SettingsMissingError
-from scraper.runner import RunResult, SitePayloads, pair_error
+from scraper.runner import FilteredAndRawPayloads, RunResult, build_keyword_site_pair_error_payloads
 from scraper.types import JOB_FIELD_ORDER
 
 KEYWORD = "data analyst"
@@ -15,14 +16,14 @@ SITE = "jobstreet"
 EMPTY_RAW: dict[str, Any] = {"keyword": KEYWORD, "count": 0, "jobs": []}
 
 
-def _make_config(site: str = SITE):
-    cfg = MagicMock()
-    cfg.enabled_site_names.return_value = (site,)
-    return cfg
+def _make_config(site: str = SITE) -> MagicMock:
+    config = create_autospec(AppConfig, instance=True)
+    config.list_enabled_site_names.return_value = (site,)
+    return config
 
 
 def _run_result(filtered: dict[str, Any], raw: dict[str, Any] | None = None) -> RunResult:
-    payloads = SitePayloads(filtered=filtered, raw=raw if raw is not None else EMPTY_RAW)
+    payloads = FilteredAndRawPayloads(filtered=filtered, raw=raw if raw is not None else EMPTY_RAW)
     return RunResult(exit_code=0, results=MappingProxyType({(KEYWORD, SITE): payloads}))
 
 
@@ -31,7 +32,7 @@ def _scrape_with(run_result: RunResult, **kwargs: Any) -> dict[str, Any]:
 
     with (
         patch("mcp_server.server._load_config", return_value=_make_config()),
-        patch("mcp_server.server.run_scraper", return_value=run_result),
+        patch("mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result),
     ):
         return scrape_jobs(keywords=[KEYWORD], sites=[SITE], **kwargs)
 
@@ -80,7 +81,7 @@ def test_ok_false_when_fetch_failed(mock_mongo):
 
 @patch("mcp_server.server.mongo")
 def test_fetch_failure_attempts_are_reported(mock_mongo):
-    attempts = [{"fetcher": "curl_cffi", "code": "http_403", "detail": None}]
+    attempts = [{"downloader": "curl_cffi", "code": "http_403", "detail": None}]
     result = _scrape_with(_run_result({**FETCH_FAILED, "attempts": attempts}))
 
     assert result["errors"][0]["attempts"] == attempts
@@ -103,7 +104,7 @@ def test_ok_false_when_pair_missing_from_run_result(mock_mongo):
 
 
 @patch("mcp_server.server.mongo")
-def test_selection_error_reason_is_reported_for_every_pair(mock_mongo):
+def test_input_error_reason_is_reported_for_every_pair(mock_mongo):
     result = _scrape_with(RunResult(exit_code=1, error="unknown sites: nope"))
 
     assert result["ok"] is False
@@ -112,7 +113,7 @@ def test_selection_error_reason_is_reported_for_every_pair(mock_mongo):
 
 @patch("mcp_server.server.mongo")
 def test_skipped_or_crashed_pair_is_reported_as_error(mock_mongo):
-    payloads = pair_error(KEYWORD, "crashed: RuntimeError")
+    payloads = build_keyword_site_pair_error_payloads(KEYWORD, "crashed: RuntimeError")
     run_result = RunResult(exit_code=0, results=MappingProxyType({(KEYWORD, SITE): payloads}))
     mock_mongo.insert_run.return_value = "id1"
 
@@ -126,7 +127,7 @@ def test_skipped_or_crashed_pair_is_reported_as_error(mock_mongo):
 
 
 @patch("mcp_server.server.mongo")
-@patch("mcp_server.server._write_status")
+@patch("mcp_server.server._write_scrape_status_file")
 def test_scrape_jobs_writes_status(mock_write_status, mock_mongo):
     _scrape_with(_run_result(_filtered([{"title": "A"}], max_age_hours=None)))
 
@@ -265,8 +266,8 @@ def test_scrape_jobs_includes_payloads_when_run_is_not_saved(mock_mongo):
 
 
 @pytest.mark.parametrize("keywords", [None, [], ["", "   "]])
-@patch("mcp_server.server._write_status")
-@patch("mcp_server.server.run_scraper")
+@patch("mcp_server.server._write_scrape_status_file")
+@patch("mcp_server.server.scrape_all_sites", autospec=True)
 @patch("mcp_server.server._load_config")
 @patch("mcp_server.server.mongo")
 def test_scrape_jobs_without_keywords_is_refused_without_running_or_saving(
@@ -331,7 +332,7 @@ def test_scrape_jobs_tool_schema_lists_keywords_as_required():
     assert tools["scrape_jobs"].inputSchema["required"] == ["keywords"]
 
 
-@patch("mcp_server.server._write_status")
+@patch("mcp_server.server._write_scrape_status_file")
 @patch("mcp_server.server.mongo")
 def test_scrape_jobs_strips_keywords_and_drops_blank_ones(mock_mongo, mock_write_status):
     from mcp_server.server import scrape_jobs
@@ -339,9 +340,51 @@ def test_scrape_jobs_strips_keywords_and_drops_blank_ones(mock_mongo, mock_write
     run_result = _run_result(_filtered([]))
     with (
         patch("mcp_server.server._load_config", return_value=_make_config()),
-        patch("mcp_server.server.run_scraper", return_value=run_result) as mock_run,
+        patch(
+            "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
+        ) as mock_run,
     ):
         result = scrape_jobs([SITE], keywords=[f"  {KEYWORD} ", " "])
 
     assert mock_run.call_args.kwargs["keywords"] == [KEYWORD]
     assert result["keywords"] == [KEYWORD]
+
+
+@patch("mcp_server.server._write_scrape_status_file")
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_forwards_requested_sites_to_scrape_all_sites(mock_mongo, mock_write_status):
+    from mcp_server.server import scrape_jobs
+
+    config = _make_config()
+    run_result = _run_result(_filtered([]))
+    with (
+        patch("mcp_server.server._load_config", return_value=config),
+        patch(
+            "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
+        ) as mock_scrape_all_sites,
+    ):
+        scrape_jobs([SITE, "glints"], keywords=[KEYWORD])
+
+    mock_scrape_all_sites.assert_called_once_with(
+        config, requested_sites=[SITE, "glints"], keywords=[KEYWORD]
+    )
+
+
+@patch("mcp_server.server._write_scrape_status_file")
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_without_sites_forwards_the_enabled_sites_from_config(
+    mock_mongo, mock_write_status
+):
+    from mcp_server.server import scrape_jobs
+
+    config = _make_config(site="linkedin")
+    run_result = _run_result(_filtered([]))
+    with (
+        patch("mcp_server.server._load_config", return_value=config),
+        patch(
+            "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
+        ) as mock_scrape_all_sites,
+    ):
+        scrape_jobs(keywords=[KEYWORD])
+
+    assert mock_scrape_all_sites.call_args.kwargs["requested_sites"] == ["linkedin"]
