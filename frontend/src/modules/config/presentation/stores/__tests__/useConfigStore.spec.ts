@@ -347,4 +347,145 @@ describe('useConfigStore', () => {
 
     expect(store.saveError).toBeNull()
   })
+
+  describe('auto save', () => {
+    const API_SNAPSHOT: ConfigSnapshot = {
+      ...SNAPSHOT,
+      values: {
+        ...SNAPSHOT.values,
+        sites: [
+          {
+            ...SNAPSHOT.values.sites[0]!,
+            api: {
+              isEnabled: true,
+              locations: ['jakarta'],
+              isCountryWide: false,
+              delayMin: 1,
+              delayMax: 2,
+            },
+          },
+        ],
+      },
+    }
+
+    function savedSnapshot(next: Partial<ConfigSnapshot['values']>, version = 5): ConfigSnapshot {
+      return { ...SNAPSHOT, version, values: { ...SNAPSHOT.values, ...next } }
+    }
+
+    it('saves picked job fields at once and leaves nothing to save', async () => {
+      getConfig.execute
+        .mockResolvedValueOnce(SNAPSHOT)
+        .mockResolvedValueOnce(savedSnapshot({ fields: ['title', 'salary_min'] }))
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = useConfigStore()
+      await store.load()
+
+      await expect(store.saveJobFields(['title', 'salary_min'])).resolves.toBe(true)
+
+      expect(saveConfig.execute).toHaveBeenCalledWith({ fields: ['title', 'salary_min'] }, 4)
+      expect(store.values?.fields).toEqual(['title', 'salary_min'])
+      expect(store.snapshot?.version).toBe(5)
+      expect(store.isDirty).toBe(false)
+    })
+
+    it('saves a site switched off at once', async () => {
+      const offSites = [{ ...SNAPSHOT.values.sites[0]!, isEnabled: false }]
+      getConfig.execute
+        .mockResolvedValueOnce(SNAPSHOT)
+        .mockResolvedValueOnce(savedSnapshot({ sites: offSites }))
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = useConfigStore()
+      await store.load()
+
+      await store.saveSiteToggle({ siteName: 'upwork', field: 'isEnabled', isOn: false })
+
+      expect(saveConfig.execute).toHaveBeenCalledWith(
+        { sites: { upwork: { isEnabled: false } } },
+        4,
+      )
+      expect(store.values?.sites[0]?.isEnabled).toBe(false)
+      expect(store.isDirty).toBe(false)
+    })
+
+    it('saves only the API toggle, not unsaved API edits', async () => {
+      getConfig.execute.mockResolvedValue(API_SNAPSHOT)
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = useConfigStore()
+      await store.load()
+      store.values!.sites[0]!.api!.delayMax = 9
+
+      await store.saveSiteToggle({ siteName: 'upwork', field: 'apiCountryWide', isOn: true })
+
+      expect(saveConfig.execute).toHaveBeenCalledWith(
+        {
+          sites: {
+            upwork: { api: { ...API_SNAPSHOT.values.sites[0]!.api!, isCountryWide: true } },
+          },
+        },
+        4,
+      )
+    })
+
+    it('keeps other unsaved edits after an auto save', async () => {
+      getConfig.execute
+        .mockResolvedValueOnce(SNAPSHOT)
+        .mockResolvedValueOnce(savedSnapshot({ fields: ['title', 'company_id'] }))
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = useConfigStore()
+      await store.load()
+      store.values!.sites[0]!.limit = 9
+
+      await store.saveJobFields(['title', 'company_id'])
+
+      expect(store.values?.sites[0]?.limit).toBe(9)
+      expect(store.values?.fields).toEqual(['title', 'company_id'])
+      expect(store.isDirty).toBe(true)
+    })
+
+    it('puts the checkbox back and keeps the error when the save fails', async () => {
+      getConfig.execute.mockResolvedValue(SNAPSHOT)
+      saveConfig.execute.mockRejectedValue(new Error('Config changed elsewhere'))
+      const store = useConfigStore()
+      await store.load()
+
+      await expect(store.saveJobFields(['title', 'salary_min'])).resolves.toBe(false)
+
+      expect(store.values?.fields).toEqual(['title'])
+      expect(store.autoSaveError).toBe('Config changed elsewhere')
+      expect(store.isDirty).toBe(false)
+    })
+
+    it('saves fast clicks one after another with the newest version', async () => {
+      getConfig.execute
+        .mockResolvedValueOnce(SNAPSHOT)
+        .mockResolvedValueOnce(savedSnapshot({ fields: ['title', 'salary_min'] }, 5))
+        .mockResolvedValueOnce(savedSnapshot({ fields: ['title', 'salary_min', 'company_id'] }, 6))
+      saveConfig.execute.mockResolvedValue(undefined)
+      const store = useConfigStore()
+      await store.load()
+
+      const first = store.saveJobFields(['title', 'salary_min'])
+      const second = store.saveJobFields(['title', 'salary_min', 'company_id'])
+      await Promise.all([first, second])
+
+      expect(saveConfig.execute).toHaveBeenNthCalledWith(1, { fields: ['title', 'salary_min'] }, 4)
+      expect(saveConfig.execute).toHaveBeenNthCalledWith(
+        2,
+        { fields: ['title', 'salary_min', 'company_id'] },
+        5,
+      )
+      expect(store.isDirty).toBe(false)
+    })
+
+    it('does not save while the scraper is busy', async () => {
+      getConfig.execute.mockResolvedValue({ ...SNAPSHOT, isStale: true })
+      const store = useConfigStore()
+      await store.load()
+
+      await expect(store.saveJobFields(['title', 'salary_min'])).resolves.toBe(false)
+
+      expect(saveConfig.execute).not.toHaveBeenCalled()
+      expect(store.values?.fields).toEqual(['title'])
+    })
+  })
 })

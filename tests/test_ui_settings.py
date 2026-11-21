@@ -9,7 +9,7 @@ STRONG_SECRET = "s" * 32
 DOMAIN = "ui.example.com"
 FAKE_HASH = "hash"  # pragma: allowlist secret
 SHORT_SECRET = "short"  # pragma: allowlist secret
-DEV_LOGIN_KEY = "dev-login-key-for-tests"
+AUTH_TOKEN = "auth-token-for-tests-1234"
 
 
 def test_env_is_required(monkeypatch: pytest.MonkeyPatch):
@@ -20,11 +20,11 @@ def test_env_is_required(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_host_defaults_to_loopback():
-    assert Settings(env="dev", dev_login_key=DEV_LOGIN_KEY).host == "127.0.0.1"
+    assert Settings(env="dev", auth_token=AUTH_TOKEN).host == "127.0.0.1"
 
 
 def test_dev_allows_only_local_hosts():
-    assert Settings(env="dev", dev_login_key=DEV_LOGIN_KEY).allowed_hosts == (
+    assert Settings(env="dev", auth_token=AUTH_TOKEN).allowed_hosts == (
         "localhost",
         "127.0.0.1",
     )
@@ -43,31 +43,60 @@ def test_prod_refuses_to_start_without_domain():
         Settings(env="prod", password_hash=FAKE_HASH, session_secret=STRONG_SECRET)
 
 
-def test_dev_needs_only_the_dev_login_key():
-    settings = Settings(env="dev", dev_login_key=DEV_LOGIN_KEY)
+def test_dev_needs_only_the_auth_token():
+    settings = Settings(env="dev", auth_token=AUTH_TOKEN)
 
-    assert settings.dev_login_key == DEV_LOGIN_KEY
+    assert settings.auth_token == AUTH_TOKEN
     assert settings.cookie_secure is False
 
 
-def test_dev_refuses_to_start_without_dev_login_key(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("UI_DEV_LOGIN_KEY", raising=False)
+def test_dev_refuses_to_start_without_auth_token(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("AUTH_TOKEN", raising=False)
 
-    with pytest.raises(ValidationError, match="UI_DEV_LOGIN_KEY"):
+    with pytest.raises(ValidationError, match="AUTH_TOKEN"):
         Settings(env="dev")
 
 
-def test_dev_refuses_a_short_dev_login_key():
-    with pytest.raises(ValidationError, match="UI_DEV_LOGIN_KEY must have at least 16"):
-        Settings(env="dev", dev_login_key="k" * 15)
+def test_refuses_a_short_auth_token():
+    with pytest.raises(ValidationError, match="AUTH_TOKEN must have at least 16"):
+        Settings(env="dev", auth_token="k" * 15)
 
 
-def test_prod_needs_no_dev_login_key():
+def test_prod_keeps_an_optional_auth_token():
+    settings = Settings(
+        env="prod",
+        password_hash=FAKE_HASH,
+        session_secret=STRONG_SECRET,
+        domain=DOMAIN,
+        auth_token="t" * 16,
+    )
+
+    assert settings.auth_token == "t" * 16
+
+
+def test_prod_refuses_a_short_auth_token():
+    with pytest.raises(ValidationError, match="AUTH_TOKEN must have at least 16"):
+        Settings(
+            env="prod",
+            password_hash=FAKE_HASH,
+            session_secret=STRONG_SECRET,
+            domain=DOMAIN,
+            auth_token="t" * 15,
+        )
+
+
+def test_auth_token_is_read_from_the_auth_token_variable(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AUTH_TOKEN", "from-env-token-1234")
+
+    assert Settings(env="dev").auth_token == "from-env-token-1234"
+
+
+def test_prod_needs_no_auth_token():
     settings = Settings(
         env="prod", password_hash=FAKE_HASH, session_secret=STRONG_SECRET, domain=DOMAIN
     )
 
-    assert settings.dev_login_key == ""
+    assert settings.auth_token == ""
 
 
 def test_prod_refuses_to_start_without_password_hash():

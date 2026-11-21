@@ -55,6 +55,13 @@ function selectedName(wrapper: Wrapper): string | undefined {
     .text()
 }
 
+function lastToggle(wrapper: {
+  emitted: (event: string) => unknown[][] | undefined
+}): unknown[] | undefined {
+  const toggles = wrapper.emitted('toggle') ?? []
+  return toggles[toggles.length - 1]
+}
+
 function lastUpdate(wrapper: Wrapper): SiteSetting | undefined {
   const updates = wrapper.emitted('update') ?? []
   return updates[updates.length - 1]?.[0] as SiteSetting | undefined
@@ -155,7 +162,7 @@ describe('SiteSettings list and detail', () => {
     await wrapper.get('[aria-label="Turn on linkedin"]').trigger('click')
     await flushPromises()
 
-    expect(lastUpdate(wrapper)).toEqual({ ...SITES[2], isEnabled: false })
+    expect(lastToggle(wrapper)).toEqual([{ siteName: 'linkedin', field: 'isEnabled', isOn: false }])
     expect(selectedName(wrapper)).toBe('glints')
   })
 

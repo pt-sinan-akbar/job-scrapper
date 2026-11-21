@@ -54,6 +54,7 @@ function makeDetail(overrides: Partial<ScrapeDetail> = {}): ScrapeDetail {
 interface Props {
   detail: ScrapeDetail | null
   isPending: boolean
+  runningRecord?: ScrapeDetail['record'] | null
   isLost: boolean
   errorMessage: string | null
 }
@@ -95,11 +96,23 @@ describe('ScrapeResults', () => {
     document.body.innerHTML = ''
   })
 
-  it('titles the card Results with the scrape keywords and sites', () => {
+  it('titles the card Results with no keyword and site summary', () => {
     const wrapper = mountResults()
 
     expect(wrapper.get('h3').text()).toBe('Results')
-    expect(wrapper.text()).toContain('AI Engineering, Vue on jobstreet, indeed')
+    expect(wrapper.text()).not.toContain('AI Engineering, Vue on jobstreet, indeed')
+  })
+
+  it('shows the total job count next to the title', () => {
+    const wrapper = mountResults()
+
+    expect(wrapper.get('[data-slot="results-count"]').text()).toBe('2 jobs')
+  })
+
+  it('says 1 job for a single result', () => {
+    const wrapper = mountResults({ detail: makeDetail({ jobs: [makeJob()] }) })
+
+    expect(wrapper.get('[data-slot="results-count"]').text()).toBe('1 job')
   })
 
   it('shows the jobs without tabs', () => {
@@ -234,6 +247,34 @@ describe('ScrapeResults', () => {
       const wrapper = mountResults({ isPending: true })
 
       expect(wrapper.text()).not.toContain('AI Engineering, Vue')
+    })
+
+    it('hides the job count while pending', () => {
+      const wrapper = mountResults({ isPending: true })
+
+      expect(wrapper.find('[data-slot="results-count"]').exists()).toBe(false)
+    })
+
+    it('shows the scrape progress with its keywords and sites while a scrape runs', () => {
+      const runningRecord = {
+        ...makeDetail().record,
+        status: 'running' as const,
+        keywords: ['Data analyst'],
+        sites: ['glints', 'linkedin'],
+      }
+      const wrapper = mountResults({ isPending: true, runningRecord })
+      const progress = wrapper.get('[data-slot="scrape-progress"]')
+
+      expect(progress.get('[data-slot="scrape-progress-title"]').text()).toBe('Scraping 2 sites')
+      expect(progress.get('[data-slot="scrape-progress-keywords"]').text()).toBe('Data analyst')
+      expect(progress.findAll('li').map((item) => item.text())).toEqual(['glints', 'linkedin'])
+    })
+
+    it('shows only the skeleton when no scrape is running', () => {
+      const wrapper = mountResults({ isPending: true, runningRecord: null })
+
+      expect(wrapper.find('[data-slot="scrape-progress"]').exists()).toBe(false)
+      expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(true)
     })
 
     it('shows the skeleton when nothing has loaded yet', () => {

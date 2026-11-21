@@ -3,6 +3,7 @@ import type {
   ApiSetting,
   LocationOption,
   SiteField,
+  SiteToggleField,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import LocationPicker from '@/modules/config/presentation/components/LocationPicker.vue'
 import NumberInput from '@/modules/config/presentation/components/NumberInput.vue'
@@ -21,6 +22,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   update: [api: ApiSetting]
+  toggle: [field: SiteToggleField, isOn: boolean]
 }>()
 
 function change(changes: Partial<ApiSetting>): void {
@@ -35,7 +37,7 @@ function change(changes: Partial<ApiSetting>): void {
         <Checkbox
           :id="`${idPrefix}-api-enabled`"
           :model-value="api.isEnabled"
-          @update:model-value="change({ isEnabled: $event === true })"
+          @update:model-value="emit('toggle', 'apiEnabled', $event === true)"
         />
         <Label :for="`${idPrefix}-api-enabled`" class="cursor-pointer">Use the API</Label>
       </div>
@@ -43,7 +45,7 @@ function change(changes: Partial<ApiSetting>): void {
         <Checkbox
           :id="`${idPrefix}-api-country`"
           :model-value="api.isCountryWide"
-          @update:model-value="change({ isCountryWide: $event === true })"
+          @update:model-value="emit('toggle', 'apiCountryWide', $event === true)"
         />
         <Label :for="`${idPrefix}-api-country`" class="cursor-pointer">
           Also search the whole country

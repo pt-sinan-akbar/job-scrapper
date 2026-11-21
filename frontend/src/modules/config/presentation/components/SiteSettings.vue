@@ -4,6 +4,7 @@ import type {
   LocationOption,
   SiteIssue,
   SiteSetting,
+  SiteToggle,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import SiteDetail from '@/modules/config/presentation/components/SiteDetail.vue'
 import SiteList from '@/modules/config/presentation/components/SiteList.vue'
@@ -18,6 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   update: [site: SiteSetting]
+  toggle: [toggle: SiteToggle]
 }>()
 
 const pickedName = ref<string | null>(null)
@@ -66,7 +68,7 @@ watch(
       :selected-name="selectedSite.name"
       :panel-id="panelId"
       @select="pickedName = $event"
-      @update="emit('update', $event)"
+      @toggle="emit('toggle', $event)"
     />
     <SelectionTransition>
       <section
@@ -83,6 +85,7 @@ watch(
           :location-options="locationOptions[selectedSite.name]"
           :invalid-field="invalidField"
           @update="emit('update', $event)"
+          @toggle="emit('toggle', $event)"
         />
       </section>
     </SelectionTransition>

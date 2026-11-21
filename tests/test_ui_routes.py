@@ -20,7 +20,7 @@ from backend.services.scrape_report_repository import (
 from backend.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
-DEV_LOGIN_KEY = "dev-login-key-for-tests"
+AUTH_TOKEN = "auth-token-for-tests-1234"
 LOCAL_URL = "http://127.0.0.1:8090"
 SITES = {
     "sites": [{"name": "upwork", "enabled": True, "url_template": "x", "sample_url": "x"}],
@@ -136,20 +136,21 @@ class FakeGateway:
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     values = {
         "env": "dev",
-        "dev_login_key": DEV_LOGIN_KEY,
+        "auth_token": AUTH_TOKEN,
         "static_dir": tmp_path / "dist",
     }
     return Settings(**{**values, **overrides})
 
 
-def _prod_settings(tmp_path: Path) -> Settings:
-    return _settings(
-        tmp_path,
-        env="prod",
-        password_hash=PasswordHasher().hash(PASSWORD),
-        session_secret="s" * 32,
-        domain="testserver",
-    )
+def _prod_settings(tmp_path: Path, **overrides: Any) -> Settings:
+    values = {
+        "env": "prod",
+        "password_hash": PasswordHasher().hash(PASSWORD),
+        "session_secret": "s" * 32,
+        "domain": "testserver",
+        "auth_token": "",
+    }
+    return _settings(tmp_path, **{**values, **overrides})
 
 
 @pytest.fixture
@@ -171,7 +172,7 @@ def guest_client(tmp_path: Path, gateway: FakeGateway, database: Any):
 
 @pytest.fixture
 def client(guest_client: TestClient):
-    guest_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
+    guest_client.post("/api/auth/login", json={"password": AUTH_TOKEN})
     return guest_client
 
 
@@ -216,8 +217,43 @@ def test_dev_session_needs_login(guest_client: TestClient):
     assert guest_client.get("/api/sites").status_code == 401
 
 
-def test_dev_login_key_opens_api(guest_client: TestClient):
-    response = guest_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
+def test_bearer_auth_token_opens_api_without_login(guest_client: TestClient):
+    headers = {"Authorization": f"Bearer {AUTH_TOKEN}"}
+
+    assert guest_client.get("/api/sites", headers=headers).status_code == 200
+    response = guest_client.post(
+        "/api/scrapes", json={"keywords": ["devops"], "sites": ["upwork"]}, headers=headers
+    )
+    assert response.status_code == 202
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    ["Bearer wrong-token-value-123", AUTH_TOKEN, f"Basic {AUTH_TOKEN}", "Bearer "],
+)
+def test_wrong_bearer_header_returns_401(guest_client: TestClient, authorization: str):
+    response = guest_client.get("/api/sites", headers={"Authorization": authorization})
+
+    assert response.status_code == 401
+
+
+def test_bearer_auth_token_opens_api_in_prod(tmp_path: Path, gateway: FakeGateway, database: Any):
+    settings = _prod_settings(tmp_path, auth_token=AUTH_TOKEN)
+    app = create_app(settings, gateway, MongoScrapeReportRepository(database))
+    with TestClient(app, base_url="https://testserver") as prod_client:
+        response = prod_client.get("/api/sites", headers={"Authorization": f"Bearer {AUTH_TOKEN}"})
+
+    assert response.status_code == 200
+
+
+def test_prod_without_auth_token_refuses_any_bearer(prod_client: TestClient):
+    response = prod_client.get("/api/sites", headers={"Authorization": "Bearer "})
+
+    assert response.status_code == 401
+
+
+def test_auth_token_login_opens_api(guest_client: TestClient):
+    response = guest_client.post("/api/auth/login", json={"password": AUTH_TOKEN})
 
     assert response.status_code == 200
     assert guest_client.get("/api/auth/session").json()["data"] == {
@@ -457,7 +493,7 @@ def test_unknown_scrape_returns_503_when_scrape_storage_is_down(
 ):
     app = create_app(_settings(tmp_path), gateway, _UnavailableRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
-        test_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
+        test_client.post("/api/auth/login", json={"password": AUTH_TOKEN})
         response = test_client.get("/api/scrapes/nope")
         latest = test_client.get("/api/scrapes/latest")
 

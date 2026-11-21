@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import ScrapeConfigSection from '@/modules/config/presentation/components/ScrapeConfigSection.vue'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
 import { useDiscordSettingsStore } from '@/modules/discord/presentation/stores/useDiscordSettingsStore'
 import ScrapeForm from '@/modules/scrapes/presentation/components/ScrapeForm.vue'
+import ScrapeProgressOverlay from '@/modules/scrapes/presentation/components/ScrapeProgressOverlay.vue'
 import ScrapeResults from '@/modules/scrapes/presentation/components/ScrapeResults.vue'
 import { useDeferredScroll } from '@/modules/scrapes/presentation/composables/useDeferredScroll'
 import { toNotifyDiscordBlock } from '@/modules/scrapes/presentation/components/notifyDiscordBlock'
@@ -20,6 +21,10 @@ const route = useRoute()
 const store = useScrapeStore()
 const configStore = useConfigStore()
 const discordSettingsStore = useDiscordSettingsStore()
+const hiddenOverlayScrapeId = ref<string | null>(null)
+const isOverlayHidden = computed(
+  () => store.runningRecord !== null && store.runningRecord.id === hiddenOverlayScrapeId.value,
+)
 const isFirstLoad = computed(() => isPendingStatus(store.status) && store.options === null)
 const notifyDiscordBlock = computed(() =>
   toNotifyDiscordBlock(discordSettingsStore.status, discordSettingsStore.settings),
@@ -49,6 +54,10 @@ onMounted(() => {
     startConfigScroll()
   }
 })
+
+function hideScrapeOverlay(): void {
+  hiddenOverlayScrapeId.value = store.runningRecord?.id ?? null
+}
 </script>
 
 <template>
@@ -99,11 +108,18 @@ onMounted(() => {
       v-if="isResultsVisible"
       :detail="store.latestScrape"
       :is-pending="store.isResultsPending"
+      :running-record="store.runningRecord"
       :is-lost="store.isResultsLost"
       :error-message="store.latestErrorMessage"
       @retry="store.loadLatest"
     />
 
     <ScrapeConfigSection :id="CONFIG_ID" class="scroll-mt-24" />
+
+    <ScrapeProgressOverlay
+      :record="store.runningRecord"
+      :is-hidden="isOverlayHidden"
+      @hide="hideScrapeOverlay"
+    />
   </div>
 </template>

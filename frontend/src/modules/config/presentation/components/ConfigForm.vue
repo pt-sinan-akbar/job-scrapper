@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { toast } from 'vue-sonner'
-import type { SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
+import type { SiteSetting, SiteToggle } from '@/modules/config/domain/entities/ScraperConfig'
 import JobFieldsInput from '@/modules/config/presentation/components/JobFieldsInput.vue'
 import SiteSettings from '@/modules/config/presentation/components/SiteSettings.vue'
 import { useConfigStore } from '@/modules/config/presentation/stores/useConfigStore'
@@ -12,6 +12,8 @@ import { cn } from '@/shared/utils/cn'
 withDefaults(defineProps<{ isSaveBarSticky?: boolean }>(), { isSaveBarSticky: true })
 
 const SAVED_MESSAGE = 'Config saved'
+const AUTO_SAVED_MESSAGE = 'Saved'
+const AUTO_SAVE_TOAST_ID = 'config-auto-save'
 const store = useConfigStore()
 const isStale = computed(() => store.snapshot?.isStale ?? true)
 const jobFields = computed(() => store.snapshot?.jobFields ?? [])
@@ -21,6 +23,24 @@ const locationOptions = computed(() => store.snapshot?.locationOptions ?? {})
 function updateSite(next: SiteSetting): void {
   if (store.values !== null) {
     store.values.sites = store.values.sites.map((site) => (site.name === next.name ? next : site))
+  }
+}
+
+async function saveJobFields(fields: string[]): Promise<void> {
+  showAutoSaveResult(await store.saveJobFields(fields))
+}
+
+async function saveSiteToggle(toggle: SiteToggle): Promise<void> {
+  showAutoSaveResult(await store.saveSiteToggle(toggle))
+}
+
+function showAutoSaveResult(isSaved: boolean): void {
+  if (isSaved) {
+    toast.success(AUTO_SAVED_MESSAGE, { id: AUTO_SAVE_TOAST_ID })
+    return
+  }
+  if (store.autoSaveError !== null) {
+    toast.error(store.autoSaveError, { id: AUTO_SAVE_TOAST_ID })
   }
 }
 
@@ -57,7 +77,8 @@ async function save(): Promise<void> {
           <JobFieldsInput
             id-prefix="default"
             legend="Job fields"
-            v-model="store.values.fields"
+            :model-value="store.values.fields"
+            @update:model-value="saveJobFields"
             :job-fields="jobFields"
             :mandatory-fields="mandatoryFields"
           />
@@ -69,6 +90,7 @@ async function save(): Promise<void> {
             :location-options="locationOptions"
             :issue="store.siteIssue"
             @update="updateSite"
+            @toggle="saveSiteToggle"
           />
         </PageSection>
       </fieldset>

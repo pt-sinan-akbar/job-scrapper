@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick } from 'vue'
-import type { SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
+import type { SiteSetting, SiteToggle } from '@/modules/config/domain/entities/ScraperConfig'
 import { Checkbox } from '@/shared/components/ui/checkbox'
 import { cn } from '@/shared/utils/cn'
 
@@ -15,7 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [name: string]
-  update: [site: SiteSetting]
+  toggle: [toggle: SiteToggle]
 }>()
 
 function toTargetIndex(key: string, index: number): number | null {
@@ -71,7 +71,9 @@ async function moveSelection(event: KeyboardEvent, index: number): Promise<void>
       <Checkbox
         :model-value="site.isEnabled"
         :aria-label="`Turn on ${site.name}`"
-        @update:model-value="emit('update', { ...site, isEnabled: $event === true })"
+        @update:model-value="
+          emit('toggle', { siteName: site.name, field: 'isEnabled', isOn: $event === true })
+        "
       />
       <button
         type="button"

@@ -4,11 +4,17 @@ import {
   findSiteIssue,
   hasConfigChanges,
   isSame,
+  readSiteToggle,
+  setSiteToggle,
   toConfigChanges,
+  toSiteToggleChanges,
   toSiteIssues,
+  type ConfigChanges,
   type ConfigSnapshot,
   type ConfigValues,
   type SiteIssue,
+  type SiteSetting,
+  type SiteToggle,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import { requireConfigUseCases } from '@/modules/config/presentation/stores/configUseCases'
 import { toErrorMessage } from '@/shared/utils/errorMessage'
@@ -30,6 +36,8 @@ export const useConfigStore = defineStore('config', () => {
   const saveError = ref<string | null>(null)
   const isSaving = ref(false)
   const siteIssue = ref<SiteIssue | null>(null)
+  const autoSaveError = ref<string | null>(null)
+  let autoSaveQueue: Promise<boolean> = Promise.resolve(true)
 
   const isDirty = computed(
     () =>
@@ -110,6 +118,81 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
+  function saveJobFields(fields: string[]): Promise<boolean> {
+    const current = values.value
+    if (current === null) {
+      return Promise.resolve(false)
+    }
+    current.fields = fields
+    return queueAutoSave({ fields }, revertJobFields)
+  }
+
+  function saveSiteToggle(toggle: SiteToggle): Promise<boolean> {
+    const current = values.value
+    const savedSite = findSavedSite(toggle.siteName)
+    if (current === null || savedSite === undefined) {
+      return Promise.resolve(false)
+    }
+    current.sites = current.sites.map((site) =>
+      site.name === toggle.siteName ? setSiteToggle(site, toggle.field, toggle.isOn) : site,
+    )
+    return queueAutoSave(toSiteToggleChanges(savedSite, toggle), () => revertSiteToggle(toggle))
+  }
+
+  function queueAutoSave(changes: ConfigChanges, revert: () => void): Promise<boolean> {
+    autoSaveQueue = autoSaveQueue.then(() => sendAutoSave(changes, revert))
+    return autoSaveQueue
+  }
+
+  async function sendAutoSave(changes: ConfigChanges, revert: () => void): Promise<boolean> {
+    const loaded = snapshot.value
+    if (loaded === null || loaded.isStale) {
+      revert()
+      return false
+    }
+    autoSaveError.value = null
+    try {
+      await requireConfigUseCases().saveConfig.execute(changes, loaded.version)
+      await refreshSnapshotKeepingEdits()
+      return true
+    } catch (error) {
+      revert()
+      autoSaveError.value = toErrorMessage(error, FALLBACK_ERROR_MESSAGE)
+      return false
+    }
+  }
+
+  async function refreshSnapshotKeepingEdits(): Promise<void> {
+    const next = await requireConfigUseCases().getConfig.execute()
+    snapshot.value = next
+    if (values.value === null || isSame(values.value, next.values)) {
+      values.value = structuredClone(next.values)
+    }
+  }
+
+  function revertJobFields(): void {
+    const loaded = snapshot.value
+    if (values.value === null || loaded === null) {
+      return
+    }
+    values.value.fields = [...loaded.values.fields]
+  }
+
+  function revertSiteToggle(toggle: SiteToggle): void {
+    const savedSite = findSavedSite(toggle.siteName)
+    if (values.value === null || savedSite === undefined) {
+      return
+    }
+    const savedIsOn = readSiteToggle(savedSite, toggle.field)
+    values.value.sites = values.value.sites.map((site) =>
+      site.name === toggle.siteName ? setSiteToggle(site, toggle.field, savedIsOn) : site,
+    )
+  }
+
+  function findSavedSite(siteName: string): SiteSetting | undefined {
+    return snapshot.value?.values.sites.find((site) => site.name === siteName)
+  }
+
   return {
     status,
     values,
@@ -119,8 +202,11 @@ export const useConfigStore = defineStore('config', () => {
     siteIssue,
     isSaving,
     isDirty,
+    autoSaveError,
     discard,
     load,
     save,
+    saveJobFields,
+    saveSiteToggle,
   }
 })

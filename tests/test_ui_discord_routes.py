@@ -16,7 +16,7 @@ from backend.settings import Settings
 from tests.test_ui_routes import PASSWORD
 
 LOCAL_URL = "http://127.0.0.1:8090"
-DEV_LOGIN_KEY = "dev-login-key-for-tests"
+AUTH_TOKEN = "auth-token-for-tests-1234"
 CHANNEL_ID = "123456789012345678"
 SETTINGS = {
     "configured": True,
@@ -71,7 +71,7 @@ def _failed(reason: str, message: str = "nope") -> dict[str, Any]:
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     values = {
         "env": "dev",
-        "dev_login_key": DEV_LOGIN_KEY,
+        "auth_token": AUTH_TOKEN,
         "static_dir": tmp_path / "dist",
     }
     return Settings(**{**values, **overrides})
@@ -97,7 +97,7 @@ def app(
 @pytest.fixture
 def client(app: FastAPI):
     with TestClient(app, base_url=LOCAL_URL) as test_client:
-        test_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
+        test_client.post("/api/auth/login", json={"password": AUTH_TOKEN})
         yield test_client
 
 

@@ -15,7 +15,7 @@ from backend.services.auth_service import (
 from backend.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
-DEV_LOGIN_KEY = "dev-login-key-for-tests"
+AUTH_TOKEN = "auth-token-for-tests-1234"
 
 
 def _service() -> AuthService:
@@ -29,17 +29,17 @@ def _service() -> AuthService:
 
 
 def _dev_service() -> AuthService:
-    return AuthService(Settings(env="dev", dev_login_key=DEV_LOGIN_KEY))
+    return AuthService(Settings(env="dev", auth_token=AUTH_TOKEN))
 
 
-def test_dev_login_key_gives_valid_session():
+def test_auth_token_gives_valid_session_in_dev():
     service = _dev_service()
 
-    assert service.is_signed_in(service.login(DEV_LOGIN_KEY, "1.1.1.1")) is True
+    assert service.is_signed_in(service.login(AUTH_TOKEN, "1.1.1.1")) is True
 
 
-@pytest.mark.parametrize("password", ["wrong", f"{DEV_LOGIN_KEY} ", DEV_LOGIN_KEY.upper(), ""])
-def test_dev_rejects_anything_but_the_dev_login_key(password: str):
+@pytest.mark.parametrize("password", ["wrong", f"{AUTH_TOKEN} ", AUTH_TOKEN.upper(), ""])
+def test_dev_rejects_anything_but_the_auth_token(password: str):
     with pytest.raises(InvalidPasswordError):
         _dev_service().login(password, "1.1.1.1")
 
@@ -48,7 +48,7 @@ def test_dev_ignores_the_prod_password_hash():
     service = AuthService(
         Settings(
             env="dev",
-            dev_login_key=DEV_LOGIN_KEY,
+            auth_token=AUTH_TOKEN,
             password_hash=PasswordHasher().hash(PASSWORD),
         )
     )
@@ -70,7 +70,7 @@ def test_dev_failures_block_client():
             service.login("wrong", "1.1.1.1")
 
     with pytest.raises(TooManyAttemptsError):
-        service.login(DEV_LOGIN_KEY, "1.1.1.1")
+        service.login(AUTH_TOKEN, "1.1.1.1")
 
 
 def test_right_password_gives_valid_session():

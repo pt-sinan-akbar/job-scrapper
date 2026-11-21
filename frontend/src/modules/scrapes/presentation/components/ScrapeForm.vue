@@ -85,7 +85,7 @@ function setSite(name: string, isPicked: boolean | 'indeterminate'): void {
     @submit.prevent="emit('start', keywords, pickedSites, notifyDiscord)"
   >
     <div class="flex flex-col gap-2">
-      <Label for="scrape-keywords">Keywords, separated by commas</Label>
+      <Label for="scrape-keywords" class="sr-only">Keywords, separated by commas</Label>
       <div class="flex flex-col gap-3 sm:flex-row">
         <Input
           id="scrape-keywords"

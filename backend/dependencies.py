@@ -13,6 +13,7 @@ from backend.settings import Settings
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
+BEARER_PREFIX = "Bearer "
 
 
 @dataclass(frozen=True)
@@ -31,8 +32,17 @@ ServicesDep = Annotated[Services, Depends(get_services)]
 
 
 def require_session(request: Request, services: ServicesDep) -> None:
+    if services.auth.is_auth_token(read_bearer_token(request)):
+        return
     if not services.auth.is_signed_in(request.cookies.get(SESSION_COOKIE)):
         raise NotSignedInError()
+
+
+def read_bearer_token(request: Request) -> str | None:
+    authorization = request.headers.get("authorization")
+    if authorization is None or not authorization.startswith(BEARER_PREFIX):
+        return None
+    return authorization.removeprefix(BEARER_PREFIX)
 
 
 def reject_cross_site(request: Request) -> None:

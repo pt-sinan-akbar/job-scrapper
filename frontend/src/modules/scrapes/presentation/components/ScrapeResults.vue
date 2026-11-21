@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useMediaQuery } from '@vueuse/core'
-import type { ScrapeDetail } from '@/modules/scrapes/domain/entities/Scrape'
+import type { ScrapeDetail, ScrapeRecord } from '@/modules/scrapes/domain/entities/Scrape'
 import JobJsonDialog from '@/modules/scrapes/presentation/components/JobJsonDialog.vue'
 import JobJsonPanel from '@/modules/scrapes/presentation/components/JobJsonPanel.vue'
 import ScrapeJobList from '@/modules/scrapes/presentation/components/ScrapeJobList.vue'
 import ScrapeResultsSkeleton from '@/modules/scrapes/presentation/components/ScrapeResultsSkeleton.vue'
 import PageSection from '@/shared/components/PageSection.vue'
+import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 
 const WIDE_SCREEN_QUERY = '(min-width: 64rem)'
@@ -15,6 +16,7 @@ const FIRST_JOB_INDEX = 0
 const props = defineProps<{
   detail: ScrapeDetail | null
   isPending: boolean
+  runningRecord?: ScrapeRecord | null
   isLost?: boolean
   errorMessage: string | null
 }>()
@@ -30,13 +32,12 @@ const selectedIndex = computed(() =>
   pickedIndex.value < jobs.value.length ? pickedIndex.value : FIRST_JOB_INDEX,
 )
 const selectedJob = computed(() => jobs.value[selectedIndex.value] ?? null)
-
-const summary = computed(() => {
-  if (shownDetail.value === null) {
-    return undefined
+const jobCountLabel = computed(() => {
+  const count = jobs.value.length
+  if (count === 1) {
+    return '1 job'
   }
-  const { keywords, sites } = shownDetail.value.record
-  return `${keywords.join(', ')} on ${sites.join(', ')}`
+  return `${count} jobs`
 })
 
 watch(
@@ -65,7 +66,10 @@ function showJobJson(index: number): void {
 </script>
 
 <template>
-  <PageSection title="Results" :description="summary">
+  <PageSection title="Results">
+    <template v-if="shownDetail" #badge>
+      <Badge data-slot="results-count">{{ jobCountLabel }}</Badge>
+    </template>
     <p
       v-if="isLost"
       data-slot="results-lost"
@@ -74,7 +78,7 @@ function showJobJson(index: number): void {
     >
       Lost track of this run. Reload to check it.
     </p>
-    <ScrapeResultsSkeleton v-else-if="isPending" />
+    <ScrapeResultsSkeleton v-else-if="isPending" :running-record="runningRecord" />
     <template v-else-if="shownDetail">
       <ScrapeJobList
         :jobs="shownDetail.jobs"
