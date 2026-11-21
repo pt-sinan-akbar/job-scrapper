@@ -7,7 +7,6 @@ from typing import Any
 
 import mongomock
 import pytest
-from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
@@ -145,10 +144,8 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
 def _prod_settings(tmp_path: Path, **overrides: Any) -> Settings:
     values = {
         "env": "prod",
-        "password_hash": PasswordHasher().hash(PASSWORD),
-        "session_secret": "s" * 32,
         "domain": "testserver",
-        "auth_token": "",
+        "auth_token": PASSWORD,
     }
     return _settings(tmp_path, **{**values, **overrides})
 
@@ -246,7 +243,7 @@ def test_bearer_auth_token_opens_api_in_prod(tmp_path: Path, gateway: FakeGatewa
     assert response.status_code == 200
 
 
-def test_prod_without_auth_token_refuses_any_bearer(prod_client: TestClient):
+def test_prod_refuses_an_empty_bearer(prod_client: TestClient):
     response = prod_client.get("/api/sites", headers={"Authorization": "Bearer "})
 
     assert response.status_code == 401

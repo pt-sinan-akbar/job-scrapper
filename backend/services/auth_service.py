@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import hmac
-import secrets
 import time
 from collections.abc import Callable
 
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError
 from itsdangerous import BadSignature, TimestampSigner
 
 from backend.errors import InvalidPasswordError, TooManyAttemptsError
@@ -17,7 +14,6 @@ SESSION_MAX_AGE_SECONDS = 12 * 60 * 60
 SESSION_SUBJECT = "owner"
 SESSION_SALT = "scraper-ui-session"
 MAX_FAILED_ATTEMPTS = 5
-SESSION_SECRET_BYTES = 32
 FAILURE_WINDOW_SECONDS = 15 * 60.0
 
 
@@ -53,19 +49,13 @@ class LoginLimiter:
 
 class AuthService:
     def __init__(self, settings: Settings) -> None:
-        self._is_dev = settings.env == "dev"
-        self._password_hash = settings.password_hash
         self._auth_token = settings.auth_token
-        self._signer = TimestampSigner(
-            settings.session_secret or secrets.token_urlsafe(SESSION_SECRET_BYTES),
-            salt=SESSION_SALT,
-        )
-        self._hasher = PasswordHasher()
+        self._signer = TimestampSigner(settings.auth_token, salt=SESSION_SALT)
         self._limiter = LoginLimiter()
 
     def login(self, password: str, client: str) -> str:
         self._limiter.check(client)
-        if not self._is_right_password(password):
+        if not self.is_auth_token(password):
             self._limiter.record_failure(client)
             raise InvalidPasswordError()
         self._limiter.clear(client)
@@ -84,11 +74,3 @@ class AuthService:
         if token is None or not self._auth_token:
             return False
         return hmac.compare_digest(token.encode(), self._auth_token.encode())
-
-    def _is_right_password(self, password: str) -> bool:
-        if self._is_dev:
-            return self.is_auth_token(password)
-        try:
-            return self._hasher.verify(self._password_hash, password)
-        except (VerificationError, InvalidHashError):
-            return False
