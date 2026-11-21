@@ -8,21 +8,16 @@ import {
   type SiteSetting,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import FilterFields from '@/modules/config/presentation/components/FilterFields.vue'
-import JobFieldsInput from '@/modules/config/presentation/components/JobFieldsInput.vue'
 import NumberInput from '@/modules/config/presentation/components/NumberInput.vue'
 import SiteApiGroup from '@/modules/config/presentation/components/SiteApiGroup.vue'
 import SiteGroup from '@/modules/config/presentation/components/SiteGroup.vue'
 import { toSiteIdPrefix } from '@/modules/config/presentation/components/siteIds'
-import { Checkbox } from '@/shared/components/ui/checkbox'
 import { Label } from '@/shared/components/ui/label'
 
 const LIMIT_HINT = `${SITE_LIMIT_MIN} to ${SITE_LIMIT_MAX}`
 
 const props = defineProps<{
   site: SiteSetting
-  defaultFields: string[]
-  jobFields: string[]
-  mandatoryFields: string[]
   locationOptions?: LocationOption[]
   invalidField?: SiteField | null
 }>()
@@ -70,27 +65,6 @@ function change(changes: Partial<Omit<SiteSetting, 'name'>>): void {
         :id-prefix="idPrefix"
         :model-value="site.filter"
         @update:model-value="change({ filter: $event })"
-      />
-    </SiteGroup>
-    <SiteGroup legend="Job fields">
-      <div class="flex items-center gap-3">
-        <Checkbox
-          :id="`${idPrefix}-own-fields`"
-          :model-value="site.fields !== null"
-          @update:model-value="change({ fields: $event === true ? defaultFields : null })"
-        />
-        <Label :for="`${idPrefix}-own-fields`" class="cursor-pointer">
-          Use its own job fields
-        </Label>
-      </div>
-      <JobFieldsInput
-        v-if="site.fields !== null"
-        :id-prefix="idPrefix"
-        :legend="`${site.name} job fields`"
-        :model-value="site.fields"
-        :job-fields="jobFields"
-        :mandatory-fields="mandatoryFields"
-        @update:model-value="change({ fields: $event })"
       />
     </SiteGroup>
     <SiteApiGroup

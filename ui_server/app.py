@@ -20,6 +20,15 @@ from ui_server.settings import Settings
 NOT_FOUND_STATUS = 404
 API_PREFIX = "api"
 INDEX_FILE = "index.html"
+PROD_ENV = "prod"
+APP_TITLE = "Scraper UI"
+DOCS_PATH = "/docs"
+OPENAPI_PATH = "/openapi.json"
+HEALTH_PATH = "/health"
+HEALTH_STATUS_OK = "ok"
+UI_MOUNT_PATH = "/"
+UI_MOUNT_NAME = "ui"
+ROUTE_MODULES = (auth, sites, runs, config, discord)
 CONTENT_SECURITY_POLICY = "; ".join(
     (
         "default-src 'self'",
@@ -42,6 +51,29 @@ SECURITY_HEADERS = {
 }
 
 
+def create_app(
+    settings: Settings | None = None,
+    gateway: McpGateway | None = None,
+    run_repository: RunRepository | None = None,
+) -> FastAPI:
+    resolved_settings = _resolve_settings(settings)
+    resolved_repository = _resolve_run_repository(run_repository)
+    resolved_gateway = _resolve_gateway(gateway)
+    services = _build_services(resolved_settings, resolved_gateway, resolved_repository)
+
+    app = _create_fastapi(resolved_settings)
+    app.state.services = services
+    _add_trusted_host_middleware(app, resolved_settings)
+    install_error_handlers(app)
+    _register_routes(app)
+    _mount_static_ui(app, resolved_settings)
+    return app
+
+
+def health() -> dict[str, str]:
+    return {"status": HEALTH_STATUS_OK}
+
+
 class SpaStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope: Scope) -> Any:
         response = await self._find_response(path, scope)
@@ -52,9 +84,27 @@ class SpaStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except HTTPException as exc:
-            if exc.status_code != NOT_FOUND_STATUS or path.startswith(API_PREFIX):
+            if not _should_fall_back_to_index(exc, path):
                 raise
             return await super().get_response(INDEX_FILE, scope)
+
+
+def _resolve_settings(settings: Settings | None) -> Settings:
+    if settings is None:
+        return Settings()
+    return settings
+
+
+def _resolve_run_repository(run_repository: RunRepository | None) -> RunRepository:
+    if run_repository is None:
+        return open_run_repository()
+    return run_repository
+
+
+def _resolve_gateway(gateway: McpGateway | None) -> McpGateway:
+    if gateway is None:
+        return LocalGateway()
+    return gateway
 
 
 def _build_services(settings: Settings, gateway: McpGateway, repository: RunRepository) -> Services:
@@ -67,32 +117,41 @@ def _build_services(settings: Settings, gateway: McpGateway, repository: RunRepo
     )
 
 
-def create_app(
-    settings: Settings | None = None,
-    gateway: McpGateway | None = None,
-    run_repository: RunRepository | None = None,
-) -> FastAPI:
-    resolved = settings or Settings()
-    repository = run_repository or open_run_repository()
-    services = _build_services(resolved, gateway or LocalGateway(), repository)
-
-    app = FastAPI(
-        title="Scraper UI",
+def _create_fastapi(settings: Settings) -> FastAPI:
+    return FastAPI(
+        title=APP_TITLE,
         dependencies=[Depends(reject_cross_site)],
-        docs_url=None if resolved.env == "prod" else "/docs",
+        docs_url=_path_unless_prod(settings, DOCS_PATH),
         redoc_url=None,
-        openapi_url=None if resolved.env == "prod" else "/openapi.json",
+        openapi_url=_path_unless_prod(settings, OPENAPI_PATH),
     )
-    app.state.services = services
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(resolved.allowed_hosts))
-    install_error_handlers(app)
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
 
-    for module in (auth, sites, runs, config, discord):
+def _path_unless_prod(settings: Settings, path: str) -> str | None:
+    if settings.env == PROD_ENV:
+        return None
+    return path
+
+
+def _add_trusted_host_middleware(app: FastAPI, settings: Settings) -> None:
+    allowed_hosts = list(settings.allowed_hosts)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+
+def _register_routes(app: FastAPI) -> None:
+    app.get(HEALTH_PATH)(health)
+    for module in ROUTE_MODULES:
         app.include_router(module.router)
-    if resolved.static_dir.exists():
-        app.mount("/", SpaStaticFiles(directory=resolved.static_dir, html=True), name="ui")
-    return app
+
+
+def _mount_static_ui(app: FastAPI, settings: Settings) -> None:
+    if not settings.static_dir.exists():
+        return
+    static_files = SpaStaticFiles(directory=settings.static_dir, html=True)
+    app.mount(UI_MOUNT_PATH, static_files, name=UI_MOUNT_NAME)
+
+
+def _should_fall_back_to_index(exc: HTTPException, path: str) -> bool:
+    if exc.status_code != NOT_FOUND_STATUS:
+        return False
+    return not path.startswith(API_PREFIX)

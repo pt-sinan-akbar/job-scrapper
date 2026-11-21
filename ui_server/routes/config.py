@@ -26,14 +26,13 @@ def _to_site(name: str, site: dict[str, Any]) -> dict[str, Any]:
         "limit": site.get("limit"),
         "max_age_hours": site.get("max_age_hours"),
         "filter": _to_filter(site.get("filter")),
-        "fields": site.get("fields"),
         "api": site.get("api"),
     }
 
 
 def _to_values(settings: dict[str, Any]) -> dict[str, Any]:
     return {
-        "default_fields": settings.get("default_fields", []),
+        "fields": settings.get("fields", []),
         "sites": [_to_site(name, site) for name, site in settings.get("sites", {}).items()],
     }
 

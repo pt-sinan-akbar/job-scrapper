@@ -11,7 +11,6 @@ const SITES: SiteSetting[] = [
     limit: 30,
     maxAgeHours: 72,
     filter: EMPTY_FILTER,
-    fields: null,
     api: { isEnabled: true, locations: [], isCountryWide: true, delayMin: null, delayMax: null },
   },
   {
@@ -20,7 +19,6 @@ const SITES: SiteSetting[] = [
     limit: 10,
     maxAgeHours: null,
     filter: EMPTY_FILTER,
-    fields: null,
     api: null,
   },
   {
@@ -29,14 +27,13 @@ const SITES: SiteSetting[] = [
     limit: 5,
     maxAgeHours: 24,
     filter: EMPTY_FILTER,
-    fields: null,
     api: null,
   },
 ]
 
 function mountSettings(sites: SiteSetting[] = SITES) {
   return mount(SiteSettings, {
-    props: { sites, defaultFields: [], jobFields: [], mandatoryFields: [], locationOptions: {} },
+    props: { sites, locationOptions: {} },
     attachTo: document.body,
   })
 }

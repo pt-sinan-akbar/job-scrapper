@@ -10,7 +10,7 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    defaultFields: ['title'],
+    fields: ['title'],
     sites: [
       {
         name: 'upwork',
@@ -18,7 +18,6 @@ const SNAPSHOT: ConfigSnapshot = {
         limit: 3,
         maxAgeHours: 72,
         filter: EMPTY_FILTER,
-        fields: null,
         api: null,
       },
     ],
@@ -307,7 +306,7 @@ describe('useConfigStore', () => {
     const store = useConfigStore()
     await store.load()
     store.values!.sites[0]!.limit = 9
-    store.values!.defaultFields.push('company')
+    store.values!.fields.push('company')
 
     store.discard()
 
@@ -321,9 +320,9 @@ describe('useConfigStore', () => {
     await store.load()
     store.discard()
 
-    store.values!.defaultFields.push('company')
+    store.values!.fields.push('company')
 
-    expect(store.snapshot?.values.defaultFields).toEqual(['title'])
+    expect(store.snapshot?.values.fields).toEqual(['title'])
     expect(store.isDirty).toBe(true)
   })
 

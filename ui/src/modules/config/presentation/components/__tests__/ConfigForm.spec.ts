@@ -12,7 +12,7 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    defaultFields: ['title'],
+    fields: ['title'],
     sites: [
       {
         name: 'upwork',
@@ -20,7 +20,6 @@ const SNAPSHOT: ConfigSnapshot = {
         limit: 3,
         maxAgeHours: 72,
         filter: EMPTY_FILTER,
-        fields: null,
         api: null,
       },
       {
@@ -29,7 +28,6 @@ const SNAPSHOT: ConfigSnapshot = {
         limit: 10,
         maxAgeHours: null,
         filter: EMPTY_FILTER,
-        fields: null,
         api: null,
       },
     ],

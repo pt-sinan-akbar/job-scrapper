@@ -18,12 +18,11 @@ export interface SiteSetting {
   limit: number | null
   maxAgeHours: number | null
   filter: FilterSetting
-  fields: string[] | null
   api: ApiSetting | null
 }
 
 export interface ConfigValues {
-  defaultFields: string[]
+  fields: string[]
   sites: SiteSetting[]
 }
 
@@ -46,7 +45,7 @@ export interface ConfigSnapshot {
 export type SiteChanges = Partial<Omit<SiteSetting, 'name' | 'limit'>> & { limit?: number }
 
 export interface ConfigChanges {
-  defaultFields?: string[]
+  fields?: string[]
   sites?: Record<string, SiteChanges>
 }
 
@@ -67,7 +66,7 @@ export interface SiteIssue {
   message: string
 }
 
-const SITE_FIELDS = ['isEnabled', 'limit', 'maxAgeHours', 'filter', 'fields', 'api'] as const
+const SITE_FIELDS = ['isEnabled', 'limit', 'maxAgeHours', 'filter', 'api'] as const
 
 export function isValidSiteLimit(limit: number | null): limit is number {
   return (
@@ -194,9 +193,7 @@ function toSitesChanges(values: ConfigValues, original: ConfigValues): Record<st
 export function toConfigChanges(values: ConfigValues, original: ConfigValues): ConfigChanges {
   const sites = toSitesChanges(values, original)
   return {
-    ...(isSame(values.defaultFields, original.defaultFields)
-      ? {}
-      : { defaultFields: values.defaultFields }),
+    ...(isSame(values.fields, original.fields) ? {} : { fields: values.fields }),
     ...(Object.keys(sites).length > 0 ? { sites } : {}),
   }
 }

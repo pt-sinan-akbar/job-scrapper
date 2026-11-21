@@ -36,6 +36,10 @@ const JOBS: RunJob[] = [
   }),
 ]
 
+const FIVE_JOBS: RunJob[] = [1, 2, 3, 4, 5].map((number) =>
+  makeJob({ title: `Job ${number}`, url: `https://example.com/${number}` }),
+)
+
 const ASIDE = '<p data-slot="aside-probe">panel</p>'
 
 const FAILURES: RunFailure[] = [
@@ -87,21 +91,15 @@ describe('RunJobList', () => {
   it('marks only the selected job when its JSON shows in the aside', () => {
     const wrapper = mountList({ selectedIndex: 1 }, ASIDE)
     const cards = wrapper.findAll('[data-slot="job-card"]')
-    const buttons = wrapper.findAll('[data-slot="job-json"]')
 
     expect(cards[0]!.attributes('data-selected')).toBeUndefined()
     expect(cards[1]!.attributes('data-selected')).toBe('true')
-    expect(buttons[1]!.attributes('aria-pressed')).toBe('true')
-    expect(buttons[1]!.attributes('aria-haspopup')).toBeUndefined()
   })
 
-  it('marks no job and offers the JSON in a dialog when there is no aside', () => {
+  it('marks no job when there is no aside', () => {
     const wrapper = mountList({ selectedIndex: 1 })
-    const buttons = wrapper.findAll('[data-slot="job-json"]')
 
     expect(wrapper.find('[data-slot="job-card"][data-selected]').exists()).toBe(false)
-    expect(buttons[1]!.attributes('aria-pressed')).toBeUndefined()
-    expect(buttons[1]!.attributes('aria-haspopup')).toBe('dialog')
   })
 
   it('asks to select the job whose card is clicked', async () => {
@@ -112,13 +110,53 @@ describe('RunJobList', () => {
     expect(wrapper.emitted('select')).toEqual([[1]])
   })
 
-  it('asks for the JSON of the job whose JSON button is clicked', async () => {
-    const wrapper = mountList()
+  it('shows only the first three jobs with a show more button', () => {
+    const wrapper = mountList({ jobs: FIVE_JOBS })
+    const toggle = wrapper.get('[data-slot="job-list-toggle"]')
 
-    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+    expect(wrapper.findAll('[data-slot="job-row"]')).toHaveLength(3)
+    expect(toggle.text()).toBe('Show 2 more')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+  })
 
-    expect(wrapper.emitted('json')).toEqual([[1]])
-    expect(wrapper.emitted('select')).toBeUndefined()
+  it('shows every job after show more and collapses after show less', async () => {
+    const wrapper = mountList({ jobs: FIVE_JOBS })
+    const toggle = wrapper.get('[data-slot="job-list-toggle"]')
+
+    await toggle.trigger('click')
+
+    expect(wrapper.findAll('[data-slot="job-row"]')).toHaveLength(5)
+    expect(toggle.text()).toBe('Show less')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+
+    await toggle.trigger('click')
+
+    expect(wrapper.findAll('[data-slot="job-row"]')).toHaveLength(3)
+  })
+
+  it('asks to select a job revealed by show more', async () => {
+    const wrapper = mountList({ jobs: FIVE_JOBS })
+
+    await wrapper.get('[data-slot="job-list-toggle"]').trigger('click')
+    await wrapper.findAll('[data-slot="job-card"]')[4]!.trigger('click')
+
+    expect(wrapper.emitted('select')).toEqual([[4]])
+  })
+
+  it('collapses again when other jobs are shown', async () => {
+    const wrapper = mountList({ jobs: FIVE_JOBS })
+    await wrapper.get('[data-slot="job-list-toggle"]').trigger('click')
+
+    await wrapper.setProps({ jobs: [...FIVE_JOBS] })
+
+    expect(wrapper.findAll('[data-slot="job-row"]')).toHaveLength(3)
+  })
+
+  it('shows no show more button with three jobs or fewer', () => {
+    const wrapper = mountList({ jobs: FIVE_JOBS.slice(0, 3) })
+
+    expect(wrapper.findAll('[data-slot="job-row"]')).toHaveLength(3)
+    expect(wrapper.find('[data-slot="job-list-toggle"]').exists()).toBe(false)
   })
 
   it('shows the aside next to the jobs', () => {

@@ -118,9 +118,6 @@ describe('RunJobCard', () => {
       const wrapper = mountCard({ title: null })
 
       expect(wrapper.get('[data-slot="job-title"]').text()).toContain('Untitled job')
-      expect(wrapper.get('[data-slot="job-json"]').attributes('aria-label')).toBe(
-        'Show JSON for Untitled job',
-      )
     })
 
     it('shows the site badge only when the site is known', () => {
@@ -226,7 +223,6 @@ describe('RunJobCard', () => {
       await wrapper.trigger('click')
 
       expect(wrapper.emitted('select')).toHaveLength(2)
-      expect(wrapper.emitted('json')).toBeUndefined()
     })
 
     it('does not emit select when the title link is clicked', async () => {
@@ -273,44 +269,8 @@ describe('RunJobCard', () => {
       expect(wrapper.emitted('select')).toHaveLength(1)
     })
 
-    it('emits json and not select when the JSON button is clicked', async () => {
-      const wrapper = mountCard()
-
-      await wrapper.get('[data-slot="job-json"]').trigger('click')
-      await wrapper.get('[data-slot="job-json"] svg').trigger('click')
-
-      expect(wrapper.emitted('json')).toHaveLength(2)
-      expect(wrapper.emitted('select')).toBeUndefined()
-    })
-
-    it('names the JSON button after the job and reflects the selection', async () => {
-      const wrapper = mountCard()
-      const button = wrapper.get('[data-slot="job-json"]')
-
-      expect(button.element.tagName).toBe('BUTTON')
-      expect(button.attributes('type')).toBe('button')
-      expect(button.attributes('aria-label')).toBe('Show JSON for ML Engineer')
-      expect(button.attributes('aria-pressed')).toBe('false')
-
-      await wrapper.setProps({ isSelected: true })
-
-      expect(button.attributes('aria-pressed')).toBe('true')
-    })
-
-    it('announces the JSON button as a dialog opener when the JSON opens in a dialog', () => {
-      const wrapper = mount(RunJobCard, {
-        props: { job: FULL_JOB, isSelected: true, isJsonInDialog: true },
-      })
-      const button = wrapper.get('[data-slot="job-json"]')
-
-      expect(button.attributes('aria-haspopup')).toBe('dialog')
-      expect(button.attributes('aria-pressed')).toBeUndefined()
-    })
-
-    it('does not announce a dialog when the JSON shows next to the jobs', () => {
-      const button = mountCard().get('[data-slot="job-json"]')
-
-      expect(button.attributes('aria-haspopup')).toBeUndefined()
+    it('shows no JSON button', () => {
+      expect(mountCard().find('[data-slot="job-json"]').exists()).toBe(false)
     })
   })
 

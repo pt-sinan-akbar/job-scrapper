@@ -57,7 +57,7 @@ async function save(): Promise<void> {
           <JobFieldsInput
             id-prefix="default"
             legend="Job fields"
-            v-model="store.values.defaultFields"
+            v-model="store.values.fields"
             :job-fields="jobFields"
             :mandatory-fields="mandatoryFields"
           />
@@ -66,9 +66,6 @@ async function save(): Promise<void> {
         <PageSection title="Sites">
           <SiteSettings
             :sites="store.values.sites"
-            :default-fields="store.values.defaultFields"
-            :job-fields="jobFields"
-            :mandatory-fields="mandatoryFields"
             :location-options="locationOptions"
             :issue="store.siteIssue"
             @update="updateSite"

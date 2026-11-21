@@ -15,7 +15,7 @@ const saveConfig = { execute: vi.fn() }
 
 const SNAPSHOT: ConfigSnapshot = {
   values: {
-    defaultFields: ['title'],
+    fields: ['title'],
     sites: [],
   },
   version: 4,

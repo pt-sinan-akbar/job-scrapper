@@ -159,21 +159,21 @@ describe('RunResults', () => {
     expect(dialog()?.textContent).toContain('job-ml')
   })
 
-  it('selects the job without a dialog when its JSON button is used on a wide screen', async () => {
+  it('selects the job without a dialog when its card is clicked on a wide screen', async () => {
     const wrapper = mountResults()
 
-    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
     await flushPromises()
 
     expect(panelText(wrapper)).toContain('job-vue')
     expect(dialog()).toBeNull()
   })
 
-  it('opens the job JSON full screen when its JSON button is used on a narrow screen', async () => {
+  it('opens the job JSON full screen when its card is clicked on a narrow screen', async () => {
     stubScreen(false)
     const wrapper = mountResults()
 
-    await wrapper.findAll('[data-slot="job-json"]')[1]!.trigger('click')
+    await wrapper.findAll('[data-slot="job-card"]')[1]!.trigger('click')
     await flushPromises()
 
     expect(dialog()?.textContent).toContain('job-vue')
@@ -185,7 +185,6 @@ describe('RunResults', () => {
 
     expect(wrapper.find('[data-slot="job-json-panel"]').exists()).toBe(false)
     expect(wrapper.find('[data-slot="job-card"][data-selected]').exists()).toBe(false)
-    expect(wrapper.get('[data-slot="job-json"]').attributes('aria-haspopup')).toBe('dialog')
   })
 
   it('closes the full screen JSON when another run is shown', async () => {
