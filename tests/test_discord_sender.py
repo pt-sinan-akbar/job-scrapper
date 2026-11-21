@@ -11,7 +11,7 @@ import discord
 import pytest
 
 from mcp_server import discord_sender
-from mcp_server.discord_messages import OutgoingMessage
+from mcp_server.discord_messages import MessageAttachment, OutgoingMessage
 from mcp_server.discord_sender import (
     DiscordFailure,
     DiscordRestClient,
@@ -52,6 +52,7 @@ class FakeClient:
         self._hang_on = hang_on
         self.sent: list[tuple[str, str]] = []
         self.mentions: list[str | None] = []
+        self.attachments: list[MessageAttachment | None] = []
         self.closed = False
 
     async def __aenter__(self) -> FakeClient:
@@ -62,20 +63,27 @@ class FakeClient:
     async def __aexit__(self, *exc_info: object) -> None:
         self.closed = True
 
-    async def identity(self) -> discord_sender.BotIdentity:
+    async def fetch_bot_identity(self) -> discord_sender.BotIdentity:
         return discord_sender.BotIdentity(name=self._identity[0], id=self._identity[1])
 
-    async def channels(self) -> list[dict[str, Any]]:
+    async def fetch_text_channels(self) -> list[dict[str, Any]]:
         return self._channels
 
     async def check_channel(self, channel_id: str) -> None:
         if self._channel_error:
             raise self._channel_error
 
-    async def send(self, channel_id: str, content: str, mention_user_id: str | None = None) -> str:
+    async def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        mention_user_id: str | None = None,
+        attachment: MessageAttachment | None = None,
+    ) -> str:
         call = len(self.sent)
         self.sent.append((channel_id, content))
         self.mentions.append(mention_user_id)
+        self.attachments.append(attachment)
         if call == self._hang_on:
             await asyncio.sleep(3600)
         if call in self._send_errors:
@@ -92,11 +100,21 @@ def use_client(monkeypatch: pytest.MonkeyPatch):
     return install
 
 
-def messages(*kinds: str) -> list[OutgoingMessage]:
-    return [
-        OutgoingMessage(kind=kind, title=f"t{i}" if kind == "job" else None, content=f"c{i}")  # type: ignore[arg-type]
-        for i, kind in enumerate(kinds)
-    ]
+ATTACHMENT = MessageAttachment(file_name="jobs-2026-11-21.md", file_text="## Job 1\n")
+
+
+def build_file_message(content: str = "digest", job_count: int = 3) -> OutgoingMessage:
+    return OutgoingMessage(
+        kind="file",
+        title=ATTACHMENT.file_name,
+        content=content,
+        attachment=ATTACHMENT,
+        job_count=job_count,
+    )
+
+
+def messages(count: int) -> list[OutgoingMessage]:
+    return [OutgoingMessage(kind="text", title=None, content=f"c{i}") for i in range(count)]
 
 
 def test_fetch_identity_returns_the_bot(use_client):
@@ -114,7 +132,7 @@ def test_fetch_identity_failure_carries_reason(use_client):
         asyncio.run(fetch_identity("token"))
 
     assert caught.value.reason == "unauthorized"
-    assert caught.value.as_result() == {
+    assert caught.value.to_failure_result() == {
         "ok": False,
         "reason": "unauthorized",
         "message": "Discord rejected the token",
@@ -142,15 +160,16 @@ def test_fetch_channels_sorts_by_guild_name_then_position(use_client):
 def test_post_messages_sends_each_message_in_order(use_client):
     client = use_client(FakeClient())
 
-    result = asyncio.run(post_messages("token", CHANNEL_ID, messages("job", "job", "summary")))
+    result = asyncio.run(post_messages("token", CHANNEL_ID, messages(3)))
 
-    assert [content for _, content in client.sent[:2]] == ["c0", "c1"]
+    assert [content for _, content in client.sent] == ["c0", "c1", "c2"]
     assert result["ok"] is True
     assert (result["sent"], result["failed"]) == (3, 0)
     assert result["results"][0] == {
         "index": 0,
-        "kind": "job",
-        "title": "t0",
+        "kind": "text",
+        "title": None,
+        "job_count": 0,
         "status": "sent",
         "message_id": "msg-0",
         "error": None,
@@ -158,27 +177,41 @@ def test_post_messages_sends_each_message_in_order(use_client):
     assert client.closed is True
 
 
-def test_summary_is_posted_as_given_even_when_jobs_fail(use_client):
-    client = use_client(
-        FakeClient(
-            send_errors={
-                0: DiscordFailure("unavailable", "boom"),
-                1: DiscordFailure("unavailable", "boom"),
-            }
-        )
-    )
+def test_post_messages_sends_a_file_message_with_its_attachment(use_client):
+    client = use_client(FakeClient())
 
-    result = asyncio.run(post_messages("token", CHANNEL_ID, messages("job", "job", "summary")))
+    result = asyncio.run(post_messages("token", CHANNEL_ID, [build_file_message()]))
 
-    assert [content for _, content in client.sent] == ["c0", "c1", "c2"]
-    assert (result["sent"], result["failed"]) == (1, 2)
-    assert [entry["kind"] for entry in result["results"]] == ["job", "job", "summary"]
+    assert client.sent == [(CHANNEL_ID, "digest")]
+    assert client.attachments == [ATTACHMENT]
+    assert result["results"] == [
+        {
+            "index": 0,
+            "kind": "file",
+            "title": "jobs-2026-11-21.md",
+            "job_count": 3,
+            "status": "sent",
+            "message_id": "msg-0",
+            "error": None,
+        }
+    ]
+
+
+def test_a_failed_file_message_reports_failed_with_its_job_count(use_client):
+    use_client(FakeClient(send_errors={0: DiscordFailure("unavailable", "boom")}))
+
+    result = asyncio.run(post_messages("token", CHANNEL_ID, [build_file_message()]))
+
+    assert (result["sent"], result["failed"]) == (0, 1)
+    assert result["results"][0]["status"] == "failed"
+    assert result["results"][0]["job_count"] == 3
+    assert result["results"][0]["error"] == "boom"
 
 
 def test_one_failed_message_does_not_stop_the_others(use_client):
     client = use_client(FakeClient(send_errors={0: DiscordFailure("forbidden", "no access")}))
 
-    result = asyncio.run(post_messages("token", CHANNEL_ID, messages("job", "job")))
+    result = asyncio.run(post_messages("token", CHANNEL_ID, messages(2)))
 
     assert len(client.sent) == 2
     assert [entry["status"] for entry in result["results"]] == ["failed", "sent"]
@@ -189,7 +222,7 @@ def test_one_failed_message_does_not_stop_the_others(use_client):
 def test_auth_failure_midway_stops_everything(use_client):
     client = use_client(FakeClient(send_errors={1: DiscordFailure("unauthorized", "rejected")}))
 
-    result = asyncio.run(post_messages("token", CHANNEL_ID, messages("job", "job", "job")))
+    result = asyncio.run(post_messages("token", CHANNEL_ID, messages(3)))
 
     assert len(client.sent) == 2
     assert [entry["status"] for entry in result["results"]] == ["sent", "failed", "failed"]
@@ -200,7 +233,7 @@ def test_channel_failure_aborts_before_sending(use_client):
     client = use_client(FakeClient(channel_error=DiscordFailure("forbidden", "no access")))
 
     with pytest.raises(DiscordFailure) as caught:
-        asyncio.run(post_messages("token", CHANNEL_ID, messages("text")))
+        asyncio.run(post_messages("token", CHANNEL_ID, messages(1)))
 
     assert caught.value.reason == "forbidden"
     assert client.sent == []
@@ -281,7 +314,7 @@ def run_with_client(token: str, action):
 
 
 def test_rest_client_uses_no_gateway_intents_and_closes(fake_discord):
-    run_with_client("secret", lambda client: client.identity())
+    run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert fake_discord.last.intents == discord.Intents.none()
     assert fake_discord.last.logged_in_with == "secret"
@@ -289,7 +322,7 @@ def test_rest_client_uses_no_gateway_intents_and_closes(fake_discord):
 
 
 def test_rest_client_identity(fake_discord):
-    identity = run_with_client("secret", lambda client: client.identity())
+    identity = run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert identity == discord_sender.BotIdentity(name="JobBot", id="555")
 
@@ -308,7 +341,7 @@ def test_login_rejection_is_unauthorized_and_still_closes(fake_discord, monkeypa
     monkeypatch.setattr(FakeDiscordClient, "__init__", init)
 
     with pytest.raises(DiscordFailure) as caught:
-        run_with_client("secret", lambda client: client.identity())
+        run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert caught.value.reason == "unauthorized"
     assert "secret" not in caught.value.message
@@ -334,7 +367,7 @@ def test_login_network_problem_is_unavailable(fake_discord, monkeypatch, error):
     monkeypatch.setattr(FakeDiscordClient, "__init__", init)
 
     with pytest.raises(DiscordFailure) as caught:
-        run_with_client("secret", lambda client: client.identity())
+        run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert caught.value.reason == "unavailable"
 
@@ -348,7 +381,7 @@ def test_rest_client_lists_text_channels_with_guild_details(fake_discord):
                 [FakeTextChannel(1, "general", 2), SimpleNamespace(id=2, name="voice", position=0)],
             )
         ]
-        return await client.channels()
+        return await client.fetch_text_channels()
 
     channels = run_with_client("secret", action)
 
@@ -366,7 +399,7 @@ def test_rest_client_channel_listing_failure_is_unavailable(fake_discord):
 
         guild.fetch_channels = broken  # type: ignore[method-assign]
         fake_discord.last.guilds = [guild]
-        return await client.channels()
+        return await client.fetch_text_channels()
 
     with pytest.raises(DiscordFailure) as caught:
         run_with_client("secret", action)
@@ -380,7 +413,7 @@ def test_rest_client_sends_with_safe_mentions(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        return await client.send(CHANNEL_ID, "hello")
+        return await client.send_message(CHANNEL_ID, "hello")
 
     message_id = run_with_client("secret", action)
 
@@ -446,7 +479,7 @@ def test_send_maps_rejections_to_failures(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        await client.send(CHANNEL_ID, "hello")
+        await client.send_message(CHANNEL_ID, "hello")
 
     with pytest.raises(DiscordFailure) as caught:
         run_with_client("secret", action)
@@ -460,7 +493,7 @@ def test_rest_client_allows_only_the_given_user_to_be_mentioned(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        return await client.send(CHANNEL_ID, f"<@{USER_ID}>\nhello", USER_ID)
+        return await client.send_message(CHANNEL_ID, f"<@{USER_ID}>\nhello", USER_ID)
 
     run_with_client("secret", action)
 
@@ -476,7 +509,7 @@ def test_rest_client_blocks_a_mention_inside_job_text(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        return await client.send(CHANNEL_ID, "## <@123456789012345678>", None)
+        return await client.send_message(CHANNEL_ID, "## <@123456789012345678>", None)
 
     run_with_client("secret", action)
 
@@ -487,18 +520,80 @@ def test_rest_client_blocks_a_mention_inside_job_text(fake_discord):
 def test_post_messages_passes_the_mention_user_id_of_each_message(use_client):
     client = use_client(FakeClient())
     outgoing = [
-        OutgoingMessage(kind="job", title="a", content="c0", mention_user_id=USER_ID),
-        OutgoingMessage(kind="job", title="<@123456789012345678>", content="c1"),
-        OutgoingMessage(kind="summary", title=None, content="c2"),
+        OutgoingMessage(kind="text", title=None, content="c0", mention_user_id=USER_ID),
+        OutgoingMessage(kind="text", title=None, content="<@123456789012345678>"),
     ]
 
     asyncio.run(post_messages("token", CHANNEL_ID, outgoing))
 
-    assert client.mentions == [USER_ID, None, None]
+    assert client.mentions == [USER_ID, None]
+
+
+def test_rest_client_uploads_the_attachment_as_a_markdown_file(fake_discord):
+    channel = FakeTextChannel(1, "general", 0)
+
+    async def action(client: DiscordRestClient):
+        fake_discord.last.channel = channel
+        await client.check_channel(CHANNEL_ID)
+        return await client.send_message(CHANNEL_ID, f"<@{USER_ID}>\ndigest", USER_ID, ATTACHMENT)
+
+    message_id = run_with_client("secret", action)
+
+    assert message_id == "777"
+    sent = channel.sent[0]
+    assert sent["content"] == f"<@{USER_ID}>\ndigest"
+    assert sent["file"].filename == "jobs-2026-11-21.md"
+    assert sent["file"].fp.read() == b"## Job 1\n"
+    mentions = sent["allowed_mentions"]
+    assert (mentions.everyone, mentions.roles) == (False, False)
+    assert [user.id for user in mentions.users] == [int(USER_ID)]
+
+
+def test_rest_client_file_upload_blocks_mentions_without_a_saved_user(fake_discord):
+    channel = FakeTextChannel(1, "general", 0)
+
+    async def action(client: DiscordRestClient):
+        fake_discord.last.channel = channel
+        await client.check_channel(CHANNEL_ID)
+        return await client.send_message(CHANNEL_ID, "digest", None, ATTACHMENT)
+
+    run_with_client("secret", action)
+
+    mentions = channel.sent[0]["allowed_mentions"]
+    assert (mentions.everyone, mentions.roles, mentions.users) == (False, False, False)
+
+
+def test_rest_client_text_send_has_no_file(fake_discord):
+    channel = FakeTextChannel(1, "general", 0)
+
+    async def action(client: DiscordRestClient):
+        fake_discord.last.channel = channel
+        await client.check_channel(CHANNEL_ID)
+        return await client.send_message(CHANNEL_ID, "hello")
+
+    run_with_client("secret", action)
+
+    assert "file" not in channel.sent[0]
+
+
+def test_rejected_file_upload_maps_to_a_failure(fake_discord):
+    channel = FakeTextChannel(1, "general", 0)
+    channel.error = http_error(discord.HTTPException, 413, "Request entity too large")
+
+    async def action(client: DiscordRestClient):
+        fake_discord.last.channel = channel
+        await client.check_channel(CHANNEL_ID)
+        await client.send_message(CHANNEL_ID, "digest", None, ATTACHMENT)
+
+    with pytest.raises(DiscordFailure) as caught:
+        run_with_client("secret", action)
+
+    assert caught.value.reason == "unavailable"
+    assert "413" in caught.value.message
 
 
 def test_rest_client_limits_rate_limit_waits(fake_discord):
-    run_with_client("secret", lambda client: client.identity())
+    run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert fake_discord.last.max_ratelimit_timeout == 30.0
 
@@ -510,7 +605,7 @@ def test_rate_limited_send_is_a_failure_that_names_the_wait(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        await client.send(CHANNEL_ID, "hello")
+        await client.send_message(CHANNEL_ID, "hello")
 
     with pytest.raises(DiscordFailure) as caught:
         run_with_client("secret", action)
@@ -530,7 +625,7 @@ def test_rate_limited_login_is_unavailable(fake_discord, monkeypatch):
     monkeypatch.setattr(FakeDiscordClient, "__init__", init)
 
     with pytest.raises(DiscordFailure) as caught:
-        run_with_client("secret", lambda client: client.identity())
+        run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert caught.value.reason == "unavailable"
     assert fake_discord.last.closed is True
@@ -540,12 +635,14 @@ def test_rate_limited_message_fails_and_the_rest_continue(use_client):
     client = use_client(
         FakeClient(
             send_errors={
-                0: discord_sender._failure_from_exception(discord.RateLimited(45.0), channel=True)
+                0: discord_sender._build_failure_from_exception(
+                    discord.RateLimited(45.0), channel=True
+                )
             }
         )
     )
 
-    result = asyncio.run(post_messages("token", CHANNEL_ID, messages("job", "job")))
+    result = asyncio.run(post_messages("token", CHANNEL_ID, messages(2)))
 
     assert [entry["status"] for entry in result["results"]] == ["failed", "sent"]
     assert "rate limit" in result["results"][0]["error"]
@@ -556,9 +653,7 @@ def test_deadline_stops_posting_and_fails_the_rest(use_client, monkeypatch):
     monkeypatch.setattr(discord_sender, "SEND_DEADLINE_SECONDS", 0.05)
     client = use_client(FakeClient(hang_on=1))
 
-    result = asyncio.run(
-        post_messages("token", CHANNEL_ID, messages("job", "job", "job", "summary"))
-    )
+    result = asyncio.run(post_messages("token", CHANNEL_ID, messages(4)))
 
     assert result["ok"] is True
     assert (result["sent"], result["failed"]) == (1, 3)
@@ -588,7 +683,7 @@ def test_unexpected_error_during_login_still_closes_the_client(fake_discord, mon
     monkeypatch.setattr(FakeDiscordClient, "__init__", init)
 
     with pytest.raises(RuntimeError):
-        run_with_client("secret", lambda client: client.identity())
+        run_with_client("secret", lambda client: client.fetch_bot_identity())
 
     assert fake_discord.last.closed is True
 
@@ -600,7 +695,7 @@ def test_http_error_text_is_included_in_the_failure(fake_discord):
     async def action(client: DiscordRestClient):
         fake_discord.last.channel = channel
         await client.check_channel(CHANNEL_ID)
-        await client.send(CHANNEL_ID, "hello")
+        await client.send_message(CHANNEL_ID, "hello")
 
     with pytest.raises(DiscordFailure) as caught:
         run_with_client("secret", action)
@@ -611,7 +706,7 @@ def test_http_error_text_is_included_in_the_failure(fake_discord):
 def test_http_error_text_is_trimmed_and_flattened():
     exc = http_error(discord.HTTPException, 400, "line one\n" + "x" * 500)
 
-    failure = discord_sender._failure_from_exception(exc)
+    failure = discord_sender._build_failure_from_exception(exc)
 
     assert "\n" not in failure.message
     assert failure.message.startswith("Discord returned an error (400): line one xxx")
@@ -621,7 +716,7 @@ def test_http_error_text_is_trimmed_and_flattened():
 def test_http_error_without_text_keeps_the_short_message():
     exc = http_error(discord.HTTPException, 500, "")
 
-    failure = discord_sender._failure_from_exception(exc)
+    failure = discord_sender._build_failure_from_exception(exc)
 
     assert failure.message == "Discord returned an error (500)"
 
@@ -630,7 +725,7 @@ def test_http_error_message_never_includes_headers_or_the_token():
     exc = http_error(discord.HTTPException, 400, "bad")
     exc.response.headers = {"Authorization": "Bot secret"}
 
-    failure = discord_sender._failure_from_exception(exc)
+    failure = discord_sender._build_failure_from_exception(exc)
 
     assert "secret" not in failure.message
     assert "Authorization" not in failure.message

@@ -47,46 +47,51 @@ mcp_server/                 # MCP HTTP server
 ├── server.py               # FastMCP, tools: list_sites, get_config, get_scrape_response_structure, update_config, get_scrape_status, insert_scrape_run, get_latest_scrape_run, update_scrape_run, test_proxy_connection, scrape_jobs
 ├── discord_tools.py        # Discord tools: settings, test, channels, preview_discord_message, send_discord_message
 ├── discord_settings.py     # DiscordSettingsStore: Mongo `discord_settings`, validation and defaults
-├── discord_messages.py     # build_messages(): Discord messages from jobs or text
-├── discord_sender.py       # Discord REST calls: bot identity, channel list, post messages
+├── discord_messages.py     # build_messages(): one text message, or one job digest with the jobs .md file
+├── discord_sender.py       # Discord REST calls: bot identity, channel list, post messages and the file
 ├── mongo.py                # Mongo client + `scrape_runs` helpers (insert, latest, update)
 └── __init__.py             # (empty)
 
-ui_server/                  # scraper UI API (FastAPI), see the next section
-├── __main__.py             # `python -m ui_server` entry point (uvicorn)
-├── app.py                  # create_app(): services, routes, static UI files
+backend/                  # scraper UI API (FastAPI), see the next section
+├── __main__.py             # `python -m backend` entry point (uvicorn)
+├── app.py                  # create_app(): services, API routers, static UI files
 ├── settings.py             # Settings from `UI_*` env vars
 ├── dependencies.py         # Services container, session and cross-site checks
 ├── errors.py               # AppError types + error handlers
-├── routes/                 # auth, config, discord, runs, sites
-├── schema/                 # request and response models
+├── api/                    # auth, config, discord, scrapes, sites
+├── schemas/                # request and response models
 └── services/
-    ├── mcp_gateway.py      # LocalGateway + ScraperClient: calls the MCP tool functions in process
-    ├── run_service.py      # RunService: one run at a time, optional Discord notify
-    ├── run_record.py       # RunRecord + run and Discord status
-    ├── run_detail.py       # RunDetail: record, jobs, failures, payloads
-    ├── run_repository.py   # MongoRunRepository: the `ui_runs` run store
+    ├── scraper_client.py   # LocalGateway + ScraperClient: calls the MCP tool functions in process
+    ├── scrape_service.py   # ScrapeService: one scrape at a time, optional Discord notify
+    ├── scrape_summary.py   # ScrapeSummary + scrape and Discord status
+    ├── scrape_report.py    # ScrapeReport: summary, jobs, failures, payloads
+    ├── scrape_report_repository.py  # MongoScrapeReportRepository: the `ui_runs` scrape store
     └── auth_service.py     # AuthService, LoginLimiter
 ```
 
-## Scraper UI API (`ui_server/`)
+## Scraper UI API (`backend/`)
 
 The UI calls the MCP tool functions in its own process through `LocalGateway`
-(`ui_server/services/mcp_gateway.py`), not over HTTP. Sync tools run in a worker
+(`backend/services/scraper_client.py`), not over HTTP. Sync tools run in a worker
 thread with `asyncio.to_thread`, async ones are awaited.
 
 - `GET /api/config`: the job settings plus `location_options`, the same
   `{site: [{label, value}]}` map `get_config` returns.
-- `POST /api/runs`: starts one run at a time (409 while one is running) and
-  returns its record. UI runs call `scrape_jobs` with `save_run: false` and
-  `include_payloads: true`, so they never reach `scrape_runs`.
-- `GET /api/runs/latest`: the newest run as `{record, jobs, failures, payloads}`.
+- `POST /api/scrapes`: starts one scrape at a time (409 while one is running) and
+  returns its record. UI scrapes call `scrape_jobs` with `save_run: false`, so
+  they never reach `scrape_runs`.
+- `GET /api/scrapes/latest`: the newest scrape as `{record, jobs, failures}`.
   That is the current run when the UI server has one, else the stored run in
   `ui_runs`. `data` is `null` when there is none.
-- `GET /api/runs/{id}`: the same detail for the current run or the stored run.
+- `POST /api/scrapes/latest/discord`: sends the jobs of the newest finished run
+  (`succeeded` or `partial`) to the default Discord channel, the same way a
+  run with Notify Discord does: one digest message with the jobs `.md` file.
+  Returns 202 with the record at `discord_status: sending`, poll the run to
+  see it settle. 404 when there is no run, 409 while a run or a send is in
+  progress or when the run failed.
+- `GET /api/scrapes/{scrape_id}`: the same detail for the current run or the stored run.
   Any other id returns 404, or 503 `Run storage is unavailable.` when Mongo
-  cannot be read. While a run is running, `jobs`, `failures` and
-  `payloads` are `[]`.
+  cannot be read. While a run is running, `jobs` and `failures` are `[]`.
 
 Detail fields:
 
@@ -96,8 +101,6 @@ Detail fields:
 - `jobs`: `[{site, matched_keyword, title, company, location, url, posted_at}]`,
   each value a string or `null`
 - `failures`: `[{keyword, site, reason}]`
-- `payloads`: `[{keyword, site, raw, filtered}]`, `raw` and `filtered` are the
-  site payload before and after max age, filter and limit, or `null`
 
 ### `ui_runs` collection
 
@@ -108,11 +111,18 @@ the latest run is kept: each save deletes every other document. Discord status
 changes after the run update the stored `record` too. The main app backend reads
 `scrape_runs`, never `ui_runs`.
 
+The stored document holds the detail fields above plus `payloads`:
+`[{keyword, site, filtered}]`, one entry per `results` entry of the
+`scrape_jobs` response, where `filtered` is that entry's site payload (after
+max age, filter and limit). `payloads` is stored only, the API never returns
+it. Raw results are not saved. A run saved earlier still has a `raw` key in
+each payload entry, and it still loads.
+
 The run store uses its own Mongo client with a 1000 ms server selection
 timeout. If Mongo is down, the run still works. The first failure logs one
 warning and pauses run storage for 30 s: reads and writes skip Mongo in that
 time, so they never hold up a request thread or the Discord status. The result
-is served from memory only, so it is lost on restart. `GET /api/runs/latest`
+is served from memory only, so it is lost on restart. `GET /api/scrapes/latest`
 returns the in-memory run or `null`.
 
 When a save fails for another reason (for example a detail over Mongo's 16 MB
@@ -142,6 +152,8 @@ runner.scrape_all_sites(config, requested_sites, keywords)
    │   └─ scrape_site_for_keyword()
    │       ├─ search_jobs_via_api()                → list[Job], when the site has a usable `api` block
    │       │     └─ if not used or failed → _scrape_jobs_from_html()   (api_only sites fail instead)
+   │       │           ├─ requires_search_html is False (Indeed) → scraper.parse("") makes the site's own
+   │       │           │     request, nothing is downloaded, a failure gives `api failed: <code>`
    │       │           ├─ html_downloader.download_html(scraper.url)
    │       │           │     ├─ CurlCffiHtmlDownloader       (first attempt)
    │       │           │     ├─ CloudscraperHtmlDownloader   (second attempt)
@@ -209,8 +221,8 @@ mid-scrape.
 ## Site payload shape
 
 This is the `filtered` payload for one `(keyword, site)` pair. `scrape_jobs`
-stores it in Mongo as `filtered_results[*].payload`, and returns it in the
-response when called with `include_payloads=true`.
+returns it as `results[*].payload` and stores it in Mongo under the same key.
+Only these filtered payloads are saved in Mongo.
 
 ```json
 {
@@ -242,21 +254,32 @@ were in `fields` (plus the always-on anchors). Every payload also has
 A failed pair has an `error` key instead of `jobs`, for example
 `{"error": "fetch failed", "url": ..., "keyword": ..., "attempts": [...], "source": "html", "fallback_reason": null}`.
 Each attempt is `{downloader, code, detail}`, see [`mcp.md`](mcp.md#scrape_jobs).
+When the request of an API-only site or of Indeed fails, the payload is
+`{"error": "api failed: <code>", "keyword": ..., "source": "api", "fallback_reason": null}`.
 
-The `raw` payload (`raw_results[*].payload` in Mongo) has the same shape
-without `max_age_hours` and `filter`, holds every parsed job before max-age,
-filter and limit, and is `{"keyword", "count": 0, "jobs": [], "error"}` when
-the pair failed.
+The `raw` payload has the same shape without `max_age_hours` and `filter`,
+holds every parsed job before max-age, filter and limit, and is
+`{"keyword", "count": 0, "jobs": [], "error"}` when the pair failed. It is not
+saved in Mongo: it exists only as `raw_results[*].payload` in the `scrape_jobs`
+response with `include_raw_results=true`.
 
 ## MCP layer relationship
 
 `mcp_server/server.py` is a thin shell over `scraper.runner.scrape_all_sites` and
 `scraper.job_settings.load_app_config`. It does no business logic of its own — every
 tool delegates to the runner and job settings code. The UI server starts its runs
-through this same `scrape_jobs` tool, with `save_run=False` and
-`include_payloads=True`. So `scrape_jobs` does not save a UI run in `scrape_runs`
-and its `mongo_id` is null. The UI server keeps the run in its own `ui_runs`
-collection (see [`ui_runs` collection](#ui_runs-collection)).
+through this same `scrape_jobs` tool, with `save_run=False`. So `scrape_jobs`
+does not save a UI run in `scrape_runs` and its `mongo_id` is null. The UI
+server keeps the run in its own `ui_runs` collection (see
+[`ui_runs` collection](#ui_runs-collection)).
+
+A run saved in `scrape_runs` is `{run_metadata, results, note, _created_at}`.
+`results` is the same `[{keyword, site, payload}]` list `scrape_jobs` returns.
+Raw results are not saved: `raw_results` exists only in the `scrape_jobs`
+response with `include_raw_results=true`. Runs saved before this change use
+`filtered_results` instead of `results` and may contain `raw_results`.
+`get_latest_scrape_run` returns them as stored, and the job-agent backend reads
+both `results` and `filtered_results`.
 
 `update_config` is the mutating tool. It validates
 with the same parser (`config_loader.parse_job_settings_into_app_config`) before writing to Mongo.

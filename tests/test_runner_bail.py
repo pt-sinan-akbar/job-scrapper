@@ -58,7 +58,32 @@ def test_scrape_site_for_keyword_skips_bail_for_indeed_style_scraper():
     )
 
     assert scraper.parsed_html_pages == [""]
+    html_downloader.download_html.assert_not_called()
     out = result.filtered
     assert out["count"] == 1
     assert out["jobs"][0]["title"] == "API job"
     assert out["jobs"][0]["requirements"] == "from API"
+
+
+def test_scraper_making_its_own_request_never_gets_the_search_page():
+    scraper = FakeScraper(
+        name="indeed",
+        url="https://id.indeed.com/jobs?q=x",
+        limit=10,
+        jobs=[],
+        requires_search_html=False,
+    )
+    html_downloader = build_html_downloader_returning("<html>ok</html>")
+
+    payloads = scrape_site_for_keyword(
+        scraper=scraper,
+        html_downloader=html_downloader,
+        keyword="data analyst",
+        fields=frozenset({"title"}),
+        max_age_hours=None,
+        content_filter={},
+    )
+
+    assert scraper.parsed_html_pages == [""]
+    html_downloader.download_html.assert_not_called()
+    assert payloads.filtered["count"] == 0

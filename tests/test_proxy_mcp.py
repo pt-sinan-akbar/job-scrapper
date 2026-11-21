@@ -24,7 +24,7 @@ def test_test_proxy_connection_rejects_non_http_scheme():
     assert "http(s)" in out["error"]
 
 
-@patch("mcp_server.server._load_config")
+@patch("mcp_server.server._load_app_config")
 def test_test_proxy_connection_errors_when_no_proxy_configured(mock_load_config):
     cfg = MagicMock()
     cfg.proxy = None
@@ -58,7 +58,7 @@ def test_test_proxy_connection_ok_with_explicit_proxy(mock_get):
     }
 
 
-@patch("mcp_server.server._load_config")
+@patch("mcp_server.server._load_app_config")
 @patch("curl_cffi.requests.get")
 def test_test_proxy_connection_uses_config_proxy(mock_get, mock_load_config):
     cfg = MagicMock()

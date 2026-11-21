@@ -31,7 +31,7 @@ def _scrape_with(run_result: RunResult, **kwargs: Any) -> dict[str, Any]:
     from mcp_server.server import scrape_jobs
 
     with (
-        patch("mcp_server.server._load_config", return_value=_make_config()),
+        patch("mcp_server.server._load_app_config", return_value=_make_config()),
         patch("mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result),
     ):
         return scrape_jobs(keywords=[KEYWORD], sites=[SITE], **kwargs)
@@ -57,7 +57,7 @@ def test_ok_true_when_zero_jobs(mock_mongo):
 
     assert result["ok"] is True
     assert result["errors"] == []
-    assert result["results"][0]["sites"][0]["count"] == 0
+    assert result["results"] == [{"keyword": KEYWORD, "site": SITE, "payload": _filtered([])}]
 
 
 @patch("mcp_server.server.mongo")
@@ -66,7 +66,9 @@ def test_ok_true_when_jobs_found(mock_mongo):
 
     assert result["ok"] is True
     assert result["errors"] == []
-    assert result["results"][0]["sites"][0]["count"] == 2
+    assert len(result["results"]) == 1
+    assert result["results"][0]["payload"]["count"] == 2
+    assert result["results"][0]["payload"]["jobs"] == [{"title": "A"}, {"title": "B"}]
 
 
 @patch("mcp_server.server.mongo")
@@ -76,7 +78,9 @@ def test_ok_false_when_fetch_failed(mock_mongo):
     assert result["ok"] is False
     assert len(result["errors"]) == 1
     assert result["errors"][0]["reason"] == "fetch failed"
-    assert result["results"][0]["sites"] == []
+    assert (result["errors"][0]["keyword"], result["errors"][0]["site"]) == (KEYWORD, SITE)
+    assert result["results"] == [{"keyword": KEYWORD, "site": SITE, "payload": FETCH_FAILED}]
+    assert result["results"][0]["payload"]["error"] == "fetch failed"
 
 
 @patch("mcp_server.server.mongo")
@@ -100,7 +104,7 @@ def test_ok_false_when_pair_missing_from_run_result(mock_mongo):
             "reason": "scraper returned no result for this pair (exit code 1)",
         }
     ]
-    assert result["results"][0]["sites"] == []
+    assert result["results"] == []
 
 
 @patch("mcp_server.server.mongo")
@@ -121,9 +125,11 @@ def test_skipped_or_crashed_pair_is_reported_as_error(mock_mongo):
 
     assert result["ok"] is False
     assert result["errors"][0]["reason"] == "crashed: RuntimeError"
+    assert result["results"][0]["payload"]["error"] == "crashed: RuntimeError"
     doc = mock_mongo.insert_run.call_args.args[0]
-    assert doc["filtered_results"][0]["payload"]["error"] == "crashed: RuntimeError"
-    assert doc["raw_results"][0]["payload"]["jobs"] == []
+    assert doc["results"][0]["payload"]["error"] == "crashed: RuntimeError"
+    assert "filtered_results" not in doc
+    assert "raw_results" not in doc
 
 
 @patch("mcp_server.server.mongo")
@@ -138,7 +144,7 @@ def test_scrape_jobs_writes_status(mock_write_status, mock_mongo):
 
 
 @patch("mcp_server.server.mongo")
-def test_scrape_jobs_normalizes_jobs_to_canonical_schema(mock_mongo):
+def test_scrape_jobs_returns_each_site_payload_unchanged(mock_mongo):
     filtered = {
         **_filtered(
             [
@@ -154,14 +160,11 @@ def test_scrape_jobs_normalizes_jobs_to_canonical_schema(mock_mongo):
     }
 
     result = _scrape_with(_run_result(filtered))
-    site_entry = result["results"][0]["sites"][0]
-    job = site_entry["jobs"][0]
 
-    assert set(job.keys()) == set(JOB_FIELD_ORDER)
-    assert job["site"] == SITE
-    assert job["matched_keyword"] == KEYWORD
-    assert "extra" not in job
-    assert site_entry["count"] == 1
+    assert result["results"] == [{"keyword": KEYWORD, "site": SITE, "payload": filtered}]
+    assert set(result["results"][0]) == {"keyword", "site", "payload"}
+    assert "sites" not in result["results"][0]
+    assert "filtered_results" not in result
 
 
 @patch("mcp_server.server.mongo")
@@ -178,8 +181,11 @@ def test_scrape_jobs_returns_mongo_id_and_builds_document(mock_mongo):
 
     assert result["mongo_id"] == "deadbeef"
     doc = mock_mongo.insert_run.call_args.args[0]
-    assert doc["raw_results"][0]["payload"]["count"] == 5
-    assert doc["filtered_results"][0]["payload"]["count"] == 2
+    assert set(doc) == {"run_metadata", "results", "note"}
+    assert "raw_results" not in doc
+    assert "filtered_results" not in doc
+    assert doc["results"] == result["results"]
+    assert doc["results"][0]["payload"]["count"] == 2
     assert doc["run_metadata"]["per_site_counts"] == {SITE: {KEYWORD: 2}}
     assert "raw_results" not in doc["run_metadata"]
     assert doc["note"] is None
@@ -202,7 +208,7 @@ def test_scrape_jobs_skips_mongo_when_save_run_is_false(mock_mongo):
     mock_mongo.insert_run.assert_not_called()
     assert result["mongo_id"] is None
     assert result["ok"] is True
-    assert result["results"][0]["sites"][0]["count"] == 1
+    assert result["results"][0]["payload"]["count"] == 1
 
 
 def test_get_scrape_response_structure_exposes_canonical_fields():
@@ -221,9 +227,58 @@ def test_get_scrape_response_structure_exposes_canonical_fields():
         "errors",
         "mongo_id",
     ]
+    assert out["optional_top_level_fields"] == ["raw_results"]
+    assert out["result_fields"] == ["keyword", "site", "payload"]
+    assert out["error_fields"] == ["keyword", "site", "reason", "attempts"]
+    assert "site_result_fields" not in out
 
 
-@patch("mcp_server.server._load_config", side_effect=SettingsMissingError("settings missing"))
+@patch("mcp_server.server.mongo")
+def test_get_scrape_response_structure_matches_the_real_response_keys(mock_mongo):
+    from mcp_server.server import get_scrape_response_structure
+
+    mock_mongo.insert_run.return_value = "deadbeef"
+    structure = get_scrape_response_structure()
+    sample = structure["sample"]
+
+    result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD))
+    result_with_raw = _scrape_with(
+        _run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_raw_results=True
+    )
+
+    assert list(result) == structure["top_level_fields"]
+    assert list(result_with_raw) == [
+        *structure["top_level_fields"],
+        *structure["optional_top_level_fields"],
+    ]
+    assert list(sample) == structure["top_level_fields"]
+    assert list(result["results"][0]) == structure["result_fields"]
+    assert list(sample["results"][0]) == structure["result_fields"]
+    assert list(sample["results"][0]["payload"]) == structure["payload_fields"]
+    assert set(sample["results"][0]["payload"]["jobs"][0]) == set(JOB_FIELD_ORDER)
+
+
+def test_get_scrape_response_structure_payload_fields_match_the_runner_payload():
+    from mcp_server.server import get_scrape_response_structure
+    from scraper import runner
+    from tests.runner_fakes import FakeScraper, build_html_downloader_returning
+
+    job = {"title": "A", "company": "ACME", "url": "https://x/A", "location": "Jakarta"}
+    scraper = FakeScraper(name="fake", url="https://example.test/search", limit=5, jobs=[job])
+
+    payloads = runner.scrape_site_for_keyword(
+        scraper,
+        build_html_downloader_returning("<html>ok</html>"),
+        KEYWORD,
+        frozenset({"title", "company", "url", "location"}),
+        None,
+        {},
+    )
+
+    assert list(payloads.filtered) == get_scrape_response_structure()["payload_fields"]
+
+
+@patch("mcp_server.server._load_app_config", side_effect=SettingsMissingError("settings missing"))
 def test_ok_false_when_settings_cannot_load(mock_load):
     from mcp_server.server import scrape_jobs
 
@@ -237,38 +292,74 @@ FILTERED_PAYLOAD = _filtered([{"title": "A"}], max_age_hours=None)
 
 
 @patch("mcp_server.server.mongo")
-def test_scrape_jobs_omits_payloads_by_default(mock_mongo):
+def test_scrape_jobs_omits_raw_results_by_default(mock_mongo):
     result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD))
 
     assert "raw_results" not in result
     assert "filtered_results" not in result
+    assert result["results"] == [{"keyword": KEYWORD, "site": SITE, "payload": FILTERED_PAYLOAD}]
 
 
 @patch("mcp_server.server.mongo")
-def test_scrape_jobs_includes_raw_and_filtered_payloads_when_asked(mock_mongo):
-    result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_payloads=True)
+def test_scrape_jobs_omits_raw_results_when_include_raw_results_is_false(mock_mongo):
+    result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_raw_results=False)
+
+    assert "raw_results" not in result
+
+
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_includes_raw_results_when_asked(mock_mongo):
+    result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_raw_results=True)
 
     assert result["raw_results"] == [{"keyword": KEYWORD, "site": SITE, "payload": RAW_PAYLOAD}]
-    assert result["filtered_results"] == [
-        {"keyword": KEYWORD, "site": SITE, "payload": FILTERED_PAYLOAD}
-    ]
+    assert result["results"] == [{"keyword": KEYWORD, "site": SITE, "payload": FILTERED_PAYLOAD}]
+    assert "filtered_results" not in result
 
 
 @patch("mcp_server.server.mongo")
-def test_scrape_jobs_includes_payloads_when_run_is_not_saved(mock_mongo):
+def test_scrape_jobs_returns_raw_results_but_saves_only_results(mock_mongo):
+    mock_mongo.insert_run.return_value = "deadbeef"
+
+    result = _scrape_with(_run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_raw_results=True)
+
+    results = [{"keyword": KEYWORD, "site": SITE, "payload": FILTERED_PAYLOAD}]
+    assert result["mongo_id"] == "deadbeef"
+    assert result["raw_results"] == [{"keyword": KEYWORD, "site": SITE, "payload": RAW_PAYLOAD}]
+    assert result["results"] == results
+    doc = mock_mongo.insert_run.call_args.args[0]
+    assert "raw_results" not in doc
+    assert "filtered_results" not in doc
+    assert doc["results"] == results
+    assert doc["run_metadata"]["keywords"] == [KEYWORD]
+    assert doc["run_metadata"]["per_site_counts"] == {SITE: {KEYWORD: 1}}
+
+
+@patch("mcp_server.server.mongo")
+def test_scrape_jobs_includes_raw_results_when_run_is_not_saved(mock_mongo):
     result = _scrape_with(
-        _run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_payloads=True, save_run=False
+        _run_result(FILTERED_PAYLOAD, RAW_PAYLOAD), include_raw_results=True, save_run=False
     )
 
     assert result["mongo_id"] is None
     assert len(result["raw_results"]) == 1
-    assert len(result["filtered_results"]) == 1
+    assert len(result["results"]) == 1
+
+
+def test_scrape_jobs_has_no_include_payloads_parameter():
+    import inspect
+
+    from mcp_server.server import scrape_jobs
+
+    parameters = inspect.signature(scrape_jobs).parameters
+
+    assert "include_payloads" not in parameters
+    assert parameters["include_raw_results"].default is False
 
 
 @pytest.mark.parametrize("keywords", [None, [], ["", "   "]])
 @patch("mcp_server.server._write_scrape_status_file")
 @patch("mcp_server.server.scrape_all_sites", autospec=True)
-@patch("mcp_server.server._load_config")
+@patch("mcp_server.server._load_app_config")
 @patch("mcp_server.server.mongo")
 def test_scrape_jobs_without_keywords_is_refused_without_running_or_saving(
     mock_mongo, mock_load, mock_run, mock_write_status, keywords
@@ -339,7 +430,7 @@ def test_scrape_jobs_strips_keywords_and_drops_blank_ones(mock_mongo, mock_write
 
     run_result = _run_result(_filtered([]))
     with (
-        patch("mcp_server.server._load_config", return_value=_make_config()),
+        patch("mcp_server.server._load_app_config", return_value=_make_config()),
         patch(
             "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
         ) as mock_run,
@@ -358,7 +449,7 @@ def test_scrape_jobs_forwards_requested_sites_to_scrape_all_sites(mock_mongo, mo
     config = _make_config()
     run_result = _run_result(_filtered([]))
     with (
-        patch("mcp_server.server._load_config", return_value=config),
+        patch("mcp_server.server._load_app_config", return_value=config),
         patch(
             "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
         ) as mock_scrape_all_sites,
@@ -380,7 +471,7 @@ def test_scrape_jobs_without_sites_forwards_the_enabled_sites_from_config(
     config = _make_config(site="linkedin")
     run_result = _run_result(_filtered([]))
     with (
-        patch("mcp_server.server._load_config", return_value=config),
+        patch("mcp_server.server._load_app_config", return_value=config),
         patch(
             "mcp_server.server.scrape_all_sites", autospec=True, return_value=run_result
         ) as mock_scrape_all_sites,

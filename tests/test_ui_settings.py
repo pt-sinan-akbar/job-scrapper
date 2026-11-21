@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ui_server.settings import Settings
+from backend.settings import Settings
 
 STRONG_SECRET = "s" * 32
 DOMAIN = "ui.example.com"

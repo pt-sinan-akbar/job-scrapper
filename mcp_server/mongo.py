@@ -14,51 +14,39 @@ _SERVER_SELECTION_TIMEOUT_MS = int(os.environ.get("MONGO_SERVER_SELECTION_TIMEOU
 _client: Any = None
 
 
-def _get_client() -> Any:
-    global _client
-    if _client is None:
-        from pymongo import MongoClient  # deferred so import cost is zero when unused
-
-        _client = MongoClient(
-            MONGO_URI,
-            serverSelectionTimeoutMS=_SERVER_SELECTION_TIMEOUT_MS,
-        )
-    return _client
+def read_database() -> Any:
+    return _read_mongo_client()[_DB_NAME]
 
 
-def get_database() -> Any:
-    return _get_client()[_DB_NAME]
+def read_runs_collection() -> Any:
+    return read_database()[_COLLECTION_NAME]
 
 
-def get_collection() -> Any:
-    return get_database()[_COLLECTION_NAME]
-
-
-def ping() -> None:
+def ping_mongo() -> None:
     """Raise if MongoDB is unreachable, else return None.
 
     Uses the unauthenticated ``ping`` admin command: it verifies connectivity
     only, not credentials/authorization (matches the Mongo container's own
     healthcheck). A bad password still pings ok but would fail real queries.
     """
-    _get_client().admin.command("ping")
+    _read_mongo_client().admin.command("ping")
 
 
-def insert_run(data: dict[str, Any]) -> str:
+def insert_run(run_document: dict[str, Any]) -> str:
     """Insert a scrape run document. Returns the inserted _id as a string."""
-    collection = get_collection()
-    doc = {**data, "_created_at": datetime.now(UTC).isoformat()}
-    result = collection.insert_one(doc)
-    return str(result.inserted_id)
+    collection = read_runs_collection()
+    stamped_document = {**run_document, "_created_at": datetime.now(UTC).isoformat()}
+    insert_response = collection.insert_one(stamped_document)
+    return str(insert_response.inserted_id)
 
 
-def get_latest_run() -> dict[str, Any] | None:
+def read_latest_run() -> dict[str, Any] | None:
     """Return the most recent scrape run document, or None if none exist."""
-    collection = get_collection()
-    doc = collection.find_one(sort=[("_created_at", -1)])
-    if doc is None:
+    collection = read_runs_collection()
+    latest_document = collection.find_one(sort=[("_created_at", -1)])
+    if latest_document is None:
         return None
-    return {**doc, "_id": str(doc["_id"])}
+    return {**latest_document, "_id": str(latest_document["_id"])}
 
 
 def update_run(run_id: str, patch: dict[str, Any]) -> bool:
@@ -69,7 +57,19 @@ def update_run(run_id: str, patch: dict[str, Any]) -> bool:
     """
     from bson import ObjectId
 
-    collection = get_collection()
+    collection = read_runs_collection()
     set_doc = {**patch, "_updated_at": datetime.now(UTC).isoformat()}
-    result = collection.update_one({"_id": ObjectId(run_id)}, {"$set": set_doc})
-    return result.matched_count > 0
+    update_response = collection.update_one({"_id": ObjectId(run_id)}, {"$set": set_doc})
+    return update_response.matched_count > 0
+
+
+def _read_mongo_client() -> Any:
+    global _client
+    if _client is None:
+        from pymongo import MongoClient  # deferred so import cost is zero when unused
+
+        _client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=_SERVER_SELECTION_TIMEOUT_MS,
+        )
+    return _client

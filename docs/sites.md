@@ -76,11 +76,16 @@ on Glints' search URL.
 
 ### Indeed API
 
-Indeed jobs are not parsed from the search page. `IndeedScraper.parse` takes
+Indeed jobs are not parsed from the search page, and the search page is not
+downloaded. `IndeedScraper.parse` takes
 the keyword (`q`) and location (`l`) from the URL, calls Indeed's GraphQL API
 (`apis.indeed.com/graphql`) and reads `datePublished` (epoch ms) from each job.
 Both `posted_date` and `posted_at` hold that value as ISO UTC. The job
 description comes from the same call.
+
+A failed Indeed request is reported in `errors` as `api failed: <code>`
+(`http_403`, `runtime_error`, `non_json`, `graphql_error`, `not_installed`),
+and the run reports `ok: false`. It is no longer shown as zero jobs.
 
 ## Location coverage examples
 
@@ -139,15 +144,14 @@ Playwright. A stage runs only when the one before it gave no usable page
 | jobstreet | API first, search page when the API fails                 | the search page fallback and job pages                      |
 | glints    | API first, search page when the API fails                 | the search page fallback and job pages                      |
 | linkedin  | API first, search page when the API fails                 | the search page fallback and every job page (no detail API) |
-| indeed    | Indeed's GraphQL API, called inside `IndeedScraper.parse` | the search URL is still requested, its HTML is not used     |
+| indeed    | Indeed's GraphQL API, called inside `IndeedScraper.parse` | nothing (the search URL is not requested)                   |
 | upwork    | API only                                                  | nothing                                                     |
 
-Indeed does not need the search page: `IndeedScraper.parse` ignores the HTML and
-reads jobs from `apis.indeed.com/graphql` with curl_cffi. The runner still
-requests Indeed's search URL through the chain first, so Playwright starts on
-every Indeed run where curl_cffi and cloudscraper are both blocked. A failed
-download does not fail the pair (`requires_search_html = False`). RAM cost
-matters when scaling `SCRAPER_CONCURRENCY`.
+Indeed does not need the search page: `IndeedScraper.parse` reads jobs from
+`apis.indeed.com/graphql` with curl_cffi. Because the site makes its own
+request (`requires_search_html = False`), the runner does not request Indeed's
+search URL, so the chain and Playwright never start for an Indeed search. RAM
+cost matters when scaling `SCRAPER_CONCURRENCY`.
 
 ## Adding new sites
 

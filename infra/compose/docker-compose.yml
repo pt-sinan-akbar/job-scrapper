@@ -1,0 +1,101 @@
+name: scraper
+
+services:
+  # SERVICE: mongo — persistent MongoDB store for scrape run history
+  mongo:
+    image: mongo:7
+    container_name: job-scraper-mongo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - default
+      - job-net # lets the job-agent backend reach Mongo as job-scraper-mongo:27017
+
+  # SERVICE: scraper-mcp — long-running MCP HTTP server
+  scraper-mcp:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: app
+    image: job-scraper:latest
+    container_name: job-scraper-mcp
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docs:/app/docs:ro
+      - scraper-logs:/app/logs
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
+      - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
+      - PROXY_URL # no default on purpose: unset stops scrapes, empty means direct connection
+      - SCRAPER_CONCURRENCY
+    networks:
+      - default
+      - job-net # lets the job-agent backend reach MCP as http://job-scraper-mcp:8080/mcp
+
+  # SERVICE: scraper-ui — FastAPI + Vue control panel
+  scraper-ui:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: app
+    image: job-scraper:latest
+    container_name: job-scraper-ui
+    command: ["python", "-m", "backend"]
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
+      - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
+      - PROXY_URL
+      - SCRAPER_CONCURRENCY
+
+networks:
+  # shared with the job-agent backend; create once with: docker network create job-net
+  job-net:
+    external: true
+
+volumes:
+  mongo-data:
+    # pinned to the pre-rename project volume so existing Mongo data is kept
+    name: job-scrapper_mongo-data
+    external: true
+  scraper-logs:

@@ -40,7 +40,7 @@ with `not a job setting: <key>`.
 The job settings hold no keywords. Every run names its own, and there is no
 fallback:
 
-- UI: the keyword box in "Start a run" (`POST /api/runs` needs `keywords`)
+- UI: the keyword box in "Start a run" (`POST /api/scrapes` needs `keywords`)
 - MCP: the `keywords` argument of `scrape_jobs` (required, passed by name)
 
 Each keyword is run against every selected site, producing a
@@ -241,7 +241,7 @@ whole number in that range logs a warning and uses `2`. `1` runs pairs one by
 one without a thread pool. Each Playwright fallback uses ~250-300MB RAM, so
 tune it for the memory you have. It is read at the start of every run, in
 `scraper/config_loader.py::read_concurrency_from_env`, and passed through to the
-`scraper-mcp` and `scraper-ui` containers by `docker-compose.yml`. Change it in
+`scraper-mcp` and `scraper-ui` containers by `infra/compose/docker-compose.yml`. Change it in
 `.env` and recreate the containers.
 
 ## Migration from global values

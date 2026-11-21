@@ -147,7 +147,7 @@ stdout only, so read them with `docker logs job-scraper-mcp` (MCP calls) or
 [jobstreet:software-engineer] filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 4)
 ```
 
-Each site payload (`filtered_results[*].payload` in Mongo, and the `scrape_jobs` response with `include_payloads=true`) also records the filter that was applied:
+Each site payload (`results[*].payload` in the `scrape_jobs` response and in Mongo) also records the filter that was applied:
 
 ```json
 {

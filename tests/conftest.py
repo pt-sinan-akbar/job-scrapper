@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
 import pymongo
 import pytest
 
+from backend.services import scrape_report_repository
 from mcp_server import server as mcp_server_module
 from scraper import job_settings
 from scraper.sites import _location
-from ui_server.services import run_repository
 
-_MODULES_HOLDING_THE_MONGO_CLIENT_CLASS = (pymongo, job_settings, _location, run_repository)
+_MODULES_HOLDING_THE_MONGO_CLIENT_CLASS = (
+    pymongo,
+    job_settings,
+    _location,
+    scrape_report_repository,
+)
 _REAL_MONGO_REFUSED_MESSAGE = "a test tried to open a real Mongo connection"
 
 
@@ -44,6 +50,14 @@ def _status_file_is_written_only_inside_tmp_path(
 ) -> None:
     isolated_status_path = tmp_path / "isolated_status" / "status.json"
     monkeypatch.setattr(mcp_server_module, "_STATUS_PATH", isolated_status_path)
+
+
+@pytest.fixture
+def scraper_log_records(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
+    scraper_logger = logging.getLogger("job-scraper")
+    scraper_logger.addHandler(caplog.handler)
+    yield caplog
+    scraper_logger.removeHandler(caplog.handler)
 
 
 def _describe_connection_target(args: tuple[object, ...], kwargs: dict[str, object]) -> str:

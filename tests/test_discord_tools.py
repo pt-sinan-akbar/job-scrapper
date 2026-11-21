@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -8,7 +9,8 @@ import mongomock
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
-from mcp_server import discord_sender, discord_tools, server
+from mcp_server import discord_messages, discord_sender, discord_tools, server
+from mcp_server.discord_messages import MessageAttachment
 from mcp_server.discord_sender import BotIdentity, DiscordFailure
 
 CHANNEL_ID = "123456789012345678"
@@ -38,6 +40,7 @@ class FakeClient:
         self._channels = channels or []
         self.sent: list[tuple[str, str]] = []
         self.mentions: list[str | None] = []
+        self.attachments: list[MessageAttachment | None] = []
         self.tokens: list[str] = []
 
     async def __aenter__(self) -> FakeClient:
@@ -48,30 +51,42 @@ class FakeClient:
     async def __aexit__(self, *exc_info: object) -> None:
         return None
 
-    async def identity(self) -> BotIdentity:
+    async def fetch_bot_identity(self) -> BotIdentity:
         return BotIdentity(name="JobBot", id="555")
 
-    async def channels(self) -> list[dict[str, Any]]:
+    async def fetch_text_channels(self) -> list[dict[str, Any]]:
         return self._channels
 
     async def check_channel(self, channel_id: str) -> None:
         if self._channel_error:
             raise self._channel_error
 
-    async def send(self, channel_id: str, content: str, mention_user_id: str | None = None) -> str:
+    async def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        mention_user_id: str | None = None,
+        attachment: MessageAttachment | None = None,
+    ) -> str:
         self.sent.append((channel_id, content))
         self.mentions.append(mention_user_id)
+        self.attachments.append(attachment)
         return f"msg-{len(self.sent)}"
 
 
 @pytest.fixture
 def database(monkeypatch: pytest.MonkeyPatch) -> Any:
     db: Any = mongomock.MongoClient()["job_scraper"]
-    monkeypatch.setattr(server.mongo, "get_database", lambda: db)
+    monkeypatch.setattr(server.mongo, "read_database", lambda: db)
     db["discord_settings"].insert_one(
         {"_id": "discord", "message_template": "{title} at {company}\n", "max_chars": 1500}
     )
     return db
+
+
+@pytest.fixture(autouse=True)
+def fixed_jakarta_today(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(discord_messages, "read_jakarta_today", lambda: date(2026, 11, 21))
 
 
 @pytest.fixture
@@ -102,6 +117,8 @@ def configured(database: Any) -> Any:
 
 def job(index: int = 1) -> dict[str, Any]:
     return {
+        "site": "upwork",
+        "matched_keyword": "django",
         "title": f"Job {index}",
         "company": "Acme",
         "location": "Jakarta",
@@ -115,7 +132,7 @@ def unreachable_database(monkeypatch: pytest.MonkeyPatch) -> None:
         getattr(broken.__getitem__.return_value, method).side_effect = ServerSelectionTimeoutError(
             "secret-host:27017"
         )
-    monkeypatch.setattr(server.mongo, "get_database", lambda: broken)
+    monkeypatch.setattr(server.mongo, "read_database", lambda: broken)
 
 
 @pytest.mark.parametrize("name", TOOL_NAMES)
@@ -279,14 +296,40 @@ def test_preview_works_without_a_token_and_uses_config_defaults(database: Any):
 
     assert result == {
         "ok": True,
-        "messages": ["Job 1 at Acme\n", "Total: 1 job(s)"],
+        "messages": [
+            "**Job digest — Saturday, 21 November 2026**\n\n"
+            "*Scraped 1 job across 1 keyword(s) and 1 site(s). Errors: 0.*"
+        ],
+        "files": [{"file_name": "jobs-2026-11-21.md", "file_text": "Job 1 at Acme\n"}],
     }
+
+
+def test_preview_jobs_uses_the_given_counts_and_joins_jobs(configured: Any):
+    result = discord_tools.preview_discord_message(
+        True, jobs=[job(1), job(2)], keyword_count=11, site_count=4, error_count=3
+    )
+
+    assert result["messages"] == [
+        f"<@{USER_ID}>\n**Job digest — Saturday, 21 November 2026**\n\n"
+        "*Scraped 2 jobs across 11 keyword(s) and 4 site(s). Errors: 3.*"
+    ]
+    assert result["files"][0]["file_text"] == (
+        "## Job 1  \nAcme | Jakarta  \nhttps://example.com/1\n\n---\n\n"
+        "## Job 2  \nAcme | Jakarta  \nhttps://example.com/2\n"
+    )
+
+
+def test_preview_accepts_more_than_fifty_jobs(configured: Any):
+    result = discord_tools.preview_discord_message(False, jobs=[job(index) for index in range(51)])
+
+    assert result["ok"] is True
+    assert len(result["messages"]) == 1
 
 
 def test_preview_text_with_mention(configured: Any):
     result = discord_tools.preview_discord_message(True, text="hello")
 
-    assert result == {"ok": True, "messages": [f"<@{USER_ID}>\nhello"]}
+    assert result == {"ok": True, "messages": [f"<@{USER_ID}>\nhello"], "files": []}
 
 
 @pytest.mark.parametrize(
@@ -295,7 +338,7 @@ def test_preview_text_with_mention(configured: Any):
         {"text": ""},
         {"text": "a" * 2001},
         {"jobs": []},
-        {"jobs": [{"title": "t"}] * 51},
+        {"jobs": [{"title": "t"}], "error_count": -1},
         {"text": "hi", "jobs": [{"title": "t"}]},
         {},
     ],
@@ -305,6 +348,15 @@ def test_preview_invalid_input(configured: Any, arguments: dict[str, Any]):
 
     assert (result["ok"], result["reason"]) == (False, "invalid")
     assert result["message"]
+
+
+def test_preview_refuses_a_jobs_file_over_the_upload_limit(configured: Any, monkeypatch):
+    monkeypatch.setattr(discord_messages, "FILE_BYTE_LIMIT", 50)
+
+    result = discord_tools.preview_discord_message(False, jobs=[job(1), job(2)])
+
+    assert (result["ok"], result["reason"]) == (False, "invalid")
+    assert "upload limit" in result["message"]
 
 
 def test_preview_text_over_limit_only_because_of_mention(configured: Any):
@@ -326,10 +378,15 @@ def test_preview_matches_what_send_posts(configured: Any, use_client):
     client = use_client(FakeClient())
     jobs = [job(1), job(2)]
 
-    preview = discord_tools.preview_discord_message(True, jobs=jobs)
-    asyncio.run(discord_tools.send_discord_message(CHANNEL_ID, True, jobs=jobs))
+    preview = discord_tools.preview_discord_message(True, jobs=jobs, error_count=1)
+    asyncio.run(discord_tools.send_discord_message(CHANNEL_ID, True, jobs=jobs, error_count=1))
 
     assert [content for _, content in client.sent] == preview["messages"]
+    assert [
+        {"file_name": attachment.file_name, "file_text": attachment.file_text}
+        for attachment in client.attachments
+        if attachment is not None
+    ] == preview["files"]
 
 
 def test_send_text(configured: Any, use_client):
@@ -344,6 +401,7 @@ def test_send_text(configured: Any, use_client):
             "index": 0,
             "kind": "text",
             "title": None,
+            "job_count": 0,
             "status": "sent",
             "message_id": "msg-1",
             "error": None,
@@ -352,18 +410,41 @@ def test_send_text(configured: Any, use_client):
     assert client.sent == [(CHANNEL_ID, "hello")]
 
 
-def test_send_jobs_posts_one_message_per_job_then_a_summary(configured: Any, use_client):
+def test_send_jobs_posts_one_message_with_the_jobs_file(configured: Any, use_client):
     client = use_client(FakeClient())
 
     result = asyncio.run(
         discord_tools.send_discord_message(CHANNEL_ID, True, jobs=[job(1), job(2)])
     )
 
-    assert [entry["kind"] for entry in result["results"]] == ["job", "job", "summary"]
-    assert [entry["title"] for entry in result["results"]] == ["Job 1", "Job 2", None]
-    assert client.sent[0][1].startswith(f"<@{USER_ID}>\n## Job 1")
-    assert client.sent[2][1] == "Total: 2 job(s)"
-    assert result["sent"] == 3
+    assert result["ok"] is True
+    assert (result["sent"], result["failed"]) == (1, 0)
+    assert result["results"] == [
+        {
+            "index": 0,
+            "kind": "file",
+            "title": "jobs-2026-11-21.md",
+            "job_count": 2,
+            "status": "sent",
+            "message_id": "msg-1",
+            "error": None,
+        }
+    ]
+    assert len(client.sent) == 1
+    assert client.sent[0][1].startswith(f"<@{USER_ID}>\n**Job digest — Saturday")
+    assert client.attachments[0] is not None
+    assert client.attachments[0].file_name == "jobs-2026-11-21.md"
+
+
+def test_send_refuses_a_jobs_file_over_the_upload_limit(configured: Any, use_client, monkeypatch):
+    client = use_client(FakeClient())
+    monkeypatch.setattr(discord_messages, "FILE_BYTE_LIMIT", 50)
+
+    result = asyncio.run(discord_tools.send_discord_message(CHANNEL_ID, False, jobs=[job(1)] * 3))
+
+    assert (result["ok"], result["reason"]) == (False, "invalid")
+    assert "upload limit" in result["message"]
+    assert client.sent == []
 
 
 def test_send_not_configured(database: Any, use_client):
@@ -431,7 +512,7 @@ def test_send_never_allows_a_mention_from_job_text(configured: Any, use_client):
     asyncio.run(discord_tools.send_discord_message(CHANNEL_ID, True, jobs=jobs))
     asyncio.run(discord_tools.send_discord_message(CHANNEL_ID, False, jobs=jobs))
 
-    assert client.mentions == [USER_ID, None, None, None, None, None]
+    assert client.mentions == [USER_ID, None]
 
 
 @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyError("x"), ValueError(TOKEN)])

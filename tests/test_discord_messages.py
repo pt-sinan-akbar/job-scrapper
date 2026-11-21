@@ -1,22 +1,26 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
 
+from mcp_server import discord_messages
 from mcp_server.discord_messages import (
-    MAX_JOBS,
+    FILE_BYTE_LIMIT,
     TEXT_LIMIT,
+    DigestCounts,
     MessageInvalidError,
+    build_jobs_file_name,
     build_messages,
-    render_job,
-    summary_text,
-    truncate,
+    fill_job_template,
+    read_jakarta_today,
 )
 from mcp_server.discord_settings import StoredDiscordSettings
 
 USER_ID = "98765432109876543"
 TEMPLATE = "## {title}\n{company} | {location}\n{url}"
+DIGEST_DATE = date(2026, 11, 21)
 
 
 def make_settings(**overrides: Any) -> StoredDiscordSettings:
@@ -41,37 +45,32 @@ def make_job(index: int = 1, **overrides: Any) -> dict[str, Any]:
     }
 
 
-def test_render_job_fills_placeholders():
-    assert render_job(TEMPLATE, make_job()) == ("## Job 1\nAcme | Jakarta\nhttps://example.com/1")
+def test_fill_job_template_fills_placeholders():
+    assert fill_job_template(TEMPLATE, make_job()) == (
+        "## Job 1\nAcme | Jakarta\nhttps://example.com/1"
+    )
 
 
-def test_render_job_turns_missing_and_null_fields_into_empty_text():
-    job = {"title": "Only title", "company": None}
+def test_fill_job_template_turns_missing_null_and_blank_fields_into_a_dash():
+    job = {"title": "Only title", "company": None, "location": "  "}
 
-    assert render_job(TEMPLATE, job) == "## Only title\n | \n"
-
-
-def test_render_job_leaves_unknown_braces_alone():
-    assert render_job("{title} {x y} {0} } { {", {"title": "T"}) == "T {x y} {0} } { {"
+    assert fill_job_template(TEMPLATE, job) == "## Only title\n- | -\n-"
 
 
-def test_render_job_stringifies_numbers():
-    assert render_job("{salary_min}", {"salary_min": 5000}) == "5000"
+def test_fill_job_template_keeps_zero_as_a_value():
+    assert fill_job_template("{salary_min}", {"salary_min": 0}) == "0"
 
 
-def test_render_job_does_not_expand_placeholders_inside_values():
-    assert render_job("{title}", {"title": "{company}", "company": "Acme"}) == "{company}"
+def test_fill_job_template_leaves_unknown_braces_alone():
+    assert fill_job_template("{title} {x y} {0} } { {", {"title": "T"}) == "T {x y} {0} } { {"
 
 
-def test_truncate_keeps_short_content():
-    assert truncate("abc", 3) == "abc"
+def test_fill_job_template_stringifies_numbers():
+    assert fill_job_template("{salary_min}", {"salary_min": 5000}) == "5000"
 
 
-def test_truncate_cuts_to_the_limit_with_an_ellipsis():
-    cut = truncate("a" * 50, 10)
-
-    assert len(cut) == 10
-    assert cut.endswith("…")
+def test_fill_job_template_does_not_expand_placeholders_inside_values():
+    assert fill_job_template("{title}", {"title": "{company}", "company": "Acme"}) == "{company}"
 
 
 def test_build_text_message():
@@ -133,24 +132,26 @@ def test_neither_text_nor_jobs_is_invalid():
         build_messages(make_settings(), mention=False, text=None, jobs=None)
 
 
+def build_jobs_message(
+    jobs: list[dict[str, Any]],
+    mention: bool = False,
+    settings: StoredDiscordSettings | None = None,
+    digest_counts: DigestCounts | None = None,
+) -> discord_messages.OutgoingMessage:
+    [message] = build_messages(
+        settings or make_settings(),
+        mention=mention,
+        text=None,
+        jobs=jobs,
+        digest_counts=digest_counts,
+        digest_date=DIGEST_DATE,
+    )
+    return message
+
+
 def test_empty_jobs_list_is_invalid():
-    with pytest.raises(MessageInvalidError, match="1"):
+    with pytest.raises(MessageInvalidError, match="at least 1 job"):
         build_messages(make_settings(), mention=False, text=None, jobs=[])
-
-
-def test_too_many_jobs_is_invalid():
-    jobs = [make_job(index) for index in range(MAX_JOBS + 1)]
-
-    with pytest.raises(MessageInvalidError, match="50"):
-        build_messages(make_settings(), mention=False, text=None, jobs=jobs)
-
-
-def test_exactly_the_max_jobs_is_fine():
-    jobs = [make_job(index) for index in range(MAX_JOBS)]
-
-    messages = build_messages(make_settings(), mention=False, text=None, jobs=jobs)
-
-    assert len(messages) == MAX_JOBS + 1
 
 
 def test_jobs_that_are_not_mappings_are_invalid():
@@ -158,119 +159,196 @@ def test_jobs_that_are_not_mappings_are_invalid():
         build_messages(make_settings(), mention=False, text=None, jobs=["nope"])  # type: ignore[list-item]
 
 
-def test_job_messages_use_the_template_then_a_summary():
-    messages = build_messages(
-        make_settings(), mention=False, text=None, jobs=[make_job(1), make_job(2)]
+def test_jobs_become_one_file_message():
+    message = build_jobs_message([make_job(1), make_job(2)])
+
+    assert message.kind == "file"
+    assert message.title == "jobs-2026-11-21.md"
+    assert message.job_count == 2
+    assert message.attachment is not None
+    assert message.attachment.file_name == "jobs-2026-11-21.md"
+
+
+def test_jobs_file_holds_every_job_split_by_a_rule_line():
+    message = build_jobs_message([make_job(1), make_job(2)])
+
+    assert message.attachment is not None
+    assert message.attachment.file_text == (
+        "## Job 1  \nAcme | Jakarta  \nhttps://example.com/1"
+        "\n\n---\n\n"
+        "## Job 2  \nAcme | Jakarta  \nhttps://example.com/2\n"
     )
 
-    assert [m.kind for m in messages] == ["job", "job", "summary"]
-    assert [m.title for m in messages] == ["Job 1", "Job 2", None]
-    assert messages[0].content == "## Job 1\nAcme | Jakarta\nhttps://example.com/1"
-    assert messages[2].content == summary_text(2)
+
+def test_jobs_file_keeps_each_template_line_on_its_own_row():
+    settings = make_settings(message_template="**Details**\nLink: {url}\nSource: {site}\n\nNext")
+
+    message = build_jobs_message([{"url": "u", "site": "jobstreet"}], settings=settings)
+
+    assert message.attachment is not None
+    assert message.attachment.file_text == ("**Details**  \nLink: u  \nSource: jobstreet\n\nNext\n")
 
 
-def test_job_title_is_none_when_the_job_has_no_title():
-    messages = build_messages(make_settings(), mention=False, text=None, jobs=[{"company": "A"}])
+def test_jobs_file_leaves_code_blocks_alone():
+    settings = make_settings(message_template="Intro\n```\na\nb\n```\nOutro")
 
-    assert messages[0].title is None
+    message = build_jobs_message([{}], settings=settings)
 
-
-def test_job_messages_are_truncated_to_max_chars():
-    settings = make_settings(max_chars=40, message_template="{title}")
-
-    messages = build_messages(settings, mention=False, text=None, jobs=[make_job(title="x" * 200)])
-
-    assert len(messages[0].content) == 40
-    assert messages[0].content.endswith("…")
+    assert message.attachment is not None
+    assert message.attachment.file_text == "Intro  \n```\na\nb\n```\nOutro\n"
 
 
-def test_mention_only_prefixes_the_first_message():
-    messages = build_messages(
-        make_settings(), mention=True, text=None, jobs=[make_job(1), make_job(2)]
-    )
+def test_jobs_file_trims_blank_lines_around_each_job():
+    settings = make_settings(message_template="\n{title}\n\n")
 
-    assert messages[0].content.startswith(f"<@{USER_ID}>\n## Job 1")
-    assert not messages[1].content.startswith("<@")
-    assert "<@" not in messages[2].content
+    message = build_jobs_message([make_job(1), make_job(2)], settings=settings)
 
-
-def test_first_job_message_with_mention_still_fits_max_chars():
-    settings = make_settings(max_chars=60, message_template="{title}")
-
-    messages = build_messages(
-        settings, mention=True, text=None, jobs=[make_job(title="x" * 200), make_job(2)]
-    )
-
-    assert len(messages[0].content) == 60
-    assert messages[0].content.startswith(f"<@{USER_ID}>\n")
+    assert message.attachment is not None
+    assert message.attachment.file_text == "Job 1\n\n---\n\nJob 2\n"
 
 
-def test_summary_text_is_short_and_counts_jobs():
-    assert summary_text(3) == "Total: 3 job(s)"
+def test_jobs_file_fills_empty_values_with_a_dash():
+    message = build_jobs_message([{"title": "Only title", "company": None}])
+
+    assert message.attachment is not None
+    assert message.attachment.file_text == "## Only title  \n- | -  \n-\n"
 
 
-def test_mention_is_never_cut_when_max_chars_is_small():
+def test_jobs_file_never_cuts_a_long_job_and_ignores_max_chars():
     settings = make_settings(max_chars=10, message_template="{title}")
 
-    messages = build_messages(
-        settings, mention=True, text=None, jobs=[make_job(title="x" * 200), make_job(2)]
+    message = build_jobs_message([make_job(title="x" * 5000)], settings=settings)
+
+    assert message.attachment is not None
+    assert message.attachment.file_text == "x" * 5000 + "\n"
+
+
+def test_more_than_fifty_jobs_still_make_one_message():
+    jobs = [make_job(index) for index in range(120)]
+
+    message = build_jobs_message(jobs)
+
+    assert message.job_count == 120
+    assert message.attachment is not None
+    assert message.attachment.file_text.count("\n---\n") == 119
+
+
+def test_jobs_file_over_the_upload_limit_is_invalid():
+    settings = make_settings(message_template="{title}")
+    jobs = [make_job(title="x" * (FILE_BYTE_LIMIT // 2)), make_job(title="y" * 10)]
+    jobs.append(make_job(title="z" * (FILE_BYTE_LIMIT // 2)))
+
+    with pytest.raises(MessageInvalidError, match="10000000"):
+        build_jobs_message(jobs, settings=settings)
+
+
+def test_jobs_file_size_counts_bytes_not_characters():
+    settings = make_settings(message_template="{title}")
+    job = make_job(title="é" * (FILE_BYTE_LIMIT // 2 + 1))
+
+    with pytest.raises(MessageInvalidError, match="upload limit"):
+        build_jobs_message([job], settings=settings)
+
+
+def test_digest_text_uses_the_given_counts():
+    counts = DigestCounts(keyword_count=11, site_count=4, error_count=2)
+
+    message = build_jobs_message([make_job(1), make_job(2)], digest_counts=counts)
+
+    assert message.content == (
+        "**Job digest — Saturday, 21 November 2026**\n"
+        "\n"
+        "*Scraped 2 jobs across 11 keyword(s) and 4 site(s). Errors: 2.*"
     )
 
-    assert messages[0].content == f"<@{USER_ID}>\n"
-    assert messages[1].content.startswith("Job 2")
 
+def test_digest_counts_default_to_distinct_keywords_and_sites_and_no_errors():
+    jobs = [
+        make_job(1, matched_keyword="django", site="upwork"),
+        make_job(2, matched_keyword="django", site="glints"),
+        make_job(3, matched_keyword="flask", site="glints"),
+        make_job(4, matched_keyword=None, site=" "),
+    ]
 
-def test_job_body_is_cut_so_the_mention_and_body_fit_max_chars():
-    prefix = f"<@{USER_ID}>\n"
-    settings = make_settings(max_chars=len(prefix) + 5, message_template="{title}")
+    message = build_jobs_message(jobs)
 
-    messages = build_messages(settings, mention=True, text=None, jobs=[make_job(title="x" * 200)])
-
-    assert messages[0].content == prefix + "xxxx…"
-
-
-def test_first_job_message_never_exceeds_the_discord_limit():
-    settings = make_settings(max_chars=TEXT_LIMIT, message_template="{title}")
-
-    messages = build_messages(settings, mention=True, text=None, jobs=[make_job(title="x" * 5000)])
-
-    assert len(messages[0].content) <= TEXT_LIMIT
-    assert messages[0].content.startswith(f"<@{USER_ID}>\n")
-
-
-def test_only_the_prefixed_message_carries_the_mention_user_id():
-    messages = build_messages(
-        make_settings(), mention=True, text=None, jobs=[make_job(1), make_job(2)]
+    assert message.content.endswith(
+        "*Scraped 4 jobs across 2 keyword(s) and 2 site(s). Errors: 0.*"
     )
 
-    assert [message.mention_user_id for message in messages] == [USER_ID, None, None]
+
+def test_digest_text_says_one_job_for_a_single_job():
+    message = build_jobs_message([make_job(1, matched_keyword="go", site="upwork")])
+
+    assert "*Scraped 1 job across 1 keyword(s) and 1 site(s). Errors: 0.*" in message.content
+
+
+@pytest.mark.parametrize("bad_count", [-1, 1.5, "3", True])
+def test_digest_count_that_is_not_a_whole_number_is_invalid(bad_count: Any):
+    counts = DigestCounts(keyword_count=bad_count)
+
+    with pytest.raises(MessageInvalidError, match="keyword_count"):
+        build_jobs_message([make_job(1)], digest_counts=counts)
+
+
+def test_digest_message_starts_with_the_mention_when_mention_is_on():
+    message = build_jobs_message([make_job(1)], mention=True)
+
+    assert message.content.startswith(f"<@{USER_ID}>\n**Job digest — Saturday")
+    assert message.mention_user_id == USER_ID
+
+
+def test_digest_message_has_no_mention_when_mention_is_off():
+    message = build_jobs_message([make_job(1)], mention=False)
+
+    assert message.content.startswith("**Job digest")
+    assert message.mention_user_id is None
+
+
+def test_digest_message_has_no_mention_when_no_user_is_saved():
+    settings = make_settings(mention_user_id=None)
+
+    message = build_jobs_message([make_job(1)], mention=True, settings=settings)
+
+    assert message.content.startswith("**Job digest")
+    assert message.mention_user_id is None
+
+
+def test_a_job_title_with_a_mention_never_sets_the_mention_user_id():
+    job = make_job(1, title="<@123456789012345678>")
+
+    message = build_jobs_message([job], mention=False)
+
+    assert message.mention_user_id is None
 
 
 def test_text_message_carries_the_mention_user_id():
     messages = build_messages(make_settings(), mention=True, text="hi", jobs=None)
 
     assert messages[0].mention_user_id == USER_ID
+    assert messages[0].attachment is None
+    assert messages[0].job_count == 0
 
 
-def test_no_message_carries_a_mention_user_id_when_mention_is_off():
-    messages = build_messages(
-        make_settings(), mention=False, text=None, jobs=[make_job(1), make_job(2)]
-    )
-
-    assert [message.mention_user_id for message in messages] == [None, None, None]
+def test_jobs_file_name_uses_the_iso_date():
+    assert build_jobs_file_name(date(2026, 1, 5)) == "jobs-2026-01-05.md"
 
 
-def test_no_message_carries_a_mention_user_id_when_no_user_is_saved():
-    messages = build_messages(
-        make_settings(mention_user_id=None), mention=True, text=None, jobs=[make_job(1)]
-    )
+def test_jobs_message_uses_today_in_jakarta_when_no_date_is_given(monkeypatch):
+    monkeypatch.setattr(discord_messages, "read_jakarta_today", lambda: date(2026, 12, 31))
 
-    assert [message.mention_user_id for message in messages] == [None, None]
+    [message] = build_messages(make_settings(), mention=False, text=None, jobs=[make_job(1)])
+
+    assert message.title == "jobs-2026-12-31.md"
+    assert "Thursday, 31 December 2026" in message.content
 
 
-def test_a_job_title_with_a_mention_never_sets_the_mention_user_id():
-    job = make_job(1, title="<@123456789012345678>")
+def test_jakarta_today_rolls_over_seven_hours_before_utc(monkeypatch):
+    class LateUtcDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 20, 18, 30, tzinfo=UTC).astimezone(tz)
 
-    messages = build_messages(make_settings(), mention=False, text=None, jobs=[job])
+    monkeypatch.setattr(discord_messages, "datetime", LateUtcDatetime)
 
-    assert messages[0].mention_user_id is None
+    assert read_jakarta_today() == date(2026, 11, 21)

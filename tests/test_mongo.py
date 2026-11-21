@@ -14,14 +14,14 @@ def _make_mock_collection() -> MagicMock:
 
 def test_insert_run_returns_inserted_id():
     mock_col = _make_mock_collection()
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         result = mongo_module.insert_run({"foo": "bar"})
     assert result == "507f1f77bcf86cd799439011"  # pragma: allowlist secret
 
 
 def test_insert_run_injects_created_at():
     mock_col = _make_mock_collection()
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         mongo_module.insert_run({"run_metadata": {"ok": True}})
     doc = mock_col.insert_one.call_args[0][0]
     assert "_created_at" in doc
@@ -31,28 +31,28 @@ def test_insert_run_injects_created_at():
 def test_insert_run_does_not_mutate_input():
     mock_col = _make_mock_collection()
     original = {"foo": "bar"}
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         mongo_module.insert_run(original)
     assert "_created_at" not in original  # input dict must not be mutated
 
 
-def test_get_latest_run_returns_none_when_empty():
+def test_read_latest_run_returns_none_when_empty():
     mock_col = MagicMock()
     mock_col.find_one.return_value = None
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
-        result = mongo_module.get_latest_run()
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
+        result = mongo_module.read_latest_run()
     assert result is None
 
 
-def test_get_latest_run_sorts_by_created_at_descending():
+def test_read_latest_run_sorts_by_created_at_descending():
     mock_col = MagicMock()
     mock_col.find_one.return_value = None
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
-        mongo_module.get_latest_run()
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
+        mongo_module.read_latest_run()
     mock_col.find_one.assert_called_once_with(sort=[("_created_at", -1)])
 
 
-def test_get_latest_run_converts_object_id_to_string():
+def test_read_latest_run_converts_object_id_to_string():
     from bson import ObjectId
 
     oid = ObjectId("507f1f77bcf86cd799439011")  # pragma: allowlist secret
@@ -62,30 +62,30 @@ def test_get_latest_run_converts_object_id_to_string():
         "foo": "bar",
         "_created_at": "2026-05-28T00:00:00+00:00",
     }
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
-        result = mongo_module.get_latest_run()
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
+        result = mongo_module.read_latest_run()
     assert result is not None
     assert result["_id"] == "507f1f77bcf86cd799439011"
     assert result["foo"] == "bar"
 
 
-def test_ping_issues_admin_ping_command():
+def test_ping_mongo_issues_admin_ping_command():
     mock_client = MagicMock()
-    with patch.object(mongo_module, "_get_client", return_value=mock_client):
-        mongo_module.ping()
+    with patch.object(mongo_module, "_read_mongo_client", return_value=mock_client):
+        mongo_module.ping_mongo()
     mock_client.admin.command.assert_called_once_with("ping")
 
 
-def test_ping_propagates_failure():
+def test_ping_mongo_propagates_failure():
     import pytest
 
     mock_client = MagicMock()
     mock_client.admin.command.side_effect = RuntimeError("no server")
     with (
-        patch.object(mongo_module, "_get_client", return_value=mock_client),
+        patch.object(mongo_module, "_read_mongo_client", return_value=mock_client),
         pytest.raises(RuntimeError),
     ):
-        mongo_module.ping()
+        mongo_module.ping_mongo()
 
 
 def test_update_run_sets_patch_and_returns_matched():
@@ -93,7 +93,7 @@ def test_update_run_sets_patch_and_returns_matched():
 
     mock_col = MagicMock()
     mock_col.update_one.return_value.matched_count = 1
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         matched = mongo_module.update_run(
             "507f1f77bcf86cd799439011",  # pragma: allowlist secret
             {"discord_sent_status": "success"},
@@ -109,7 +109,7 @@ def test_update_run_sets_patch_and_returns_matched():
 def test_update_run_returns_false_when_no_match():
     mock_col = MagicMock()
     mock_col.update_one.return_value.matched_count = 0
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         matched = mongo_module.update_run(
             "507f1f77bcf86cd799439011",  # pragma: allowlist secret
             {"x": 1},
@@ -121,7 +121,7 @@ def test_update_run_does_not_mutate_input():
     mock_col = MagicMock()
     mock_col.update_one.return_value.matched_count = 1
     original = {"channel_id": "123"}
-    with patch.object(mongo_module, "get_collection", return_value=mock_col):
+    with patch.object(mongo_module, "read_runs_collection", return_value=mock_col):
         mongo_module.update_run(
             "507f1f77bcf86cd799439011",  # pragma: allowlist secret
             original,
@@ -129,9 +129,9 @@ def test_update_run_does_not_mutate_input():
     assert "_updated_at" not in original  # input patch must stay untouched
 
 
-def test_get_database_uses_configured_name():
+def test_read_database_uses_configured_name():
     client = MagicMock()
-    with patch.object(mongo_module, "_get_client", return_value=client):
-        database = mongo_module.get_database()
+    with patch.object(mongo_module, "_read_mongo_client", return_value=client):
+        database = mongo_module.read_database()
     assert database is client.__getitem__.return_value
     client.__getitem__.assert_called_once_with(mongo_module._DB_NAME)

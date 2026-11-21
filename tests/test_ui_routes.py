@@ -10,14 +10,14 @@ import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
-from ui_server.app import create_app
-from ui_server.errors import McpUnavailableError
-from ui_server.services.run_repository import (
-    UI_RUNS_COLLECTION,
-    MongoRunRepository,
-    RunStoreUnavailableError,
+from backend.app import create_app
+from backend.errors import McpUnavailableError
+from backend.services.scrape_report_repository import (
+    SCRAPE_REPORTS_COLLECTION,
+    MongoScrapeReportRepository,
+    ScrapeStoreUnavailableError,
 )
-from ui_server.settings import Settings
+from backend.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
 DEV_LOGIN_KEY = "dev-login-key-for-tests"
@@ -60,12 +60,10 @@ DISCORD_SETTINGS = {
 }
 SCRAPE_RESULT = {
     "ok": True,
-    "results": [{"keyword": "devops", "sites": [{"site": "upwork", "jobs": [{"title": "A"}]}]}],
+    "results": [{"keyword": "devops", "site": "upwork", "payload": {"jobs": [{"title": "A"}]}}],
     "errors": [],
-    "raw_results": [{"keyword": "devops", "site": "upwork", "payload": {"jobs": [{"t": "A"}]}}],
-    "filtered_results": [{"keyword": "devops", "site": "upwork", "payload": {"jobs": []}}],
 }
-STORED_RUN = {
+STORED_SCRAPE: dict[str, Any] = {
     "_id": "20261118T010000Z-abcdef",
     "saved_at": "2026-11-18T01:01:00+00:00",
     "record": {
@@ -127,12 +125,9 @@ class FakeGateway:
             "get_discord_settings": self.discord_settings,
             "send_discord_message": {
                 "ok": True,
-                "sent": 2,
+                "sent": 1,
                 "failed": 0,
-                "results": [
-                    {"kind": "job", "status": "sent"},
-                    {"kind": "summary", "status": "sent"},
-                ],
+                "results": [{"kind": "file", "job_count": 1, "status": "sent"}],
             },
         }
         return responses[tool]
@@ -169,7 +164,7 @@ def database() -> Any:
 
 @pytest.fixture
 def guest_client(tmp_path: Path, gateway: FakeGateway, database: Any):
-    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
+    app = create_app(_settings(tmp_path), gateway, MongoScrapeReportRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         yield test_client
 
@@ -182,13 +177,13 @@ def client(guest_client: TestClient):
 
 @pytest.fixture
 def prod_client(tmp_path: Path, gateway: FakeGateway, database: Any):
-    app = create_app(_prod_settings(tmp_path), gateway, MongoRunRepository(database))
+    app = create_app(_prod_settings(tmp_path), gateway, MongoScrapeReportRepository(database))
     with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
 
 
-def _run(client: TestClient) -> dict:
-    response = client.post("/api/runs", json={"keywords": ["devops"], "sites": ["upwork"]})
+def _scrape(client: TestClient) -> dict:
+    response = client.post("/api/scrapes", json={"keywords": ["devops"], "sites": ["upwork"]})
     assert response.status_code == 202
     return response.json()["data"]
 
@@ -256,7 +251,7 @@ def test_sites_returns_503_when_mcp_is_down(client: TestClient, gateway: FakeGat
     assert response.json()["success"] is False
 
 
-RECORD_FIELDS = {
+SUMMARY_FIELDS = {
     "id",
     "status",
     "keywords",
@@ -273,178 +268,198 @@ RECORD_FIELDS = {
 }
 
 
-DETAIL_FIELDS = {"record", "jobs", "failures"}
+REPORT_FIELDS = {"record", "jobs", "failures"}
 JOB_FIELDS = {"site", "matched_keyword", "title", "company", "location", "url", "posted_at"}
 
 
-def _read_detail(client: TestClient, run_id: str) -> dict:
-    return client.get(f"/api/runs/{run_id}").json()["data"]
+def _read_scrape_report(client: TestClient, scrape_id: str) -> dict:
+    return client.get(f"/api/scrapes/{scrape_id}").json()["data"]
 
 
-def _read_record(client: TestClient, run_id: str) -> dict:
-    return _read_detail(client, run_id)["record"]
+def _read_scrape_summary(client: TestClient, scrape_id: str) -> dict:
+    return _read_scrape_report(client, scrape_id)["record"]
 
 
-def _wait_for(client: TestClient, run_id: str, is_pending: Any) -> dict:
+def _wait_for(client: TestClient, scrape_id: str, is_pending: Any) -> dict:
     deadline = time.monotonic() + 2
-    record = _read_record(client, run_id)
-    while is_pending(record) and time.monotonic() < deadline:
+    scrape_summary = _read_scrape_summary(client, scrape_id)
+    while is_pending(scrape_summary) and time.monotonic() < deadline:
         time.sleep(0.01)
-        record = _read_record(client, run_id)
-    return record
+        scrape_summary = _read_scrape_summary(client, scrape_id)
+    return scrape_summary
 
 
-def _wait_for_finish(client: TestClient, run_id: str) -> dict:
-    return _wait_for(client, run_id, lambda record: record["status"] == "running")
+def _wait_for_finish(client: TestClient, scrape_id: str) -> dict:
+    return _wait_for(
+        client, scrape_id, lambda scrape_summary: scrape_summary["status"] == "running"
+    )
 
 
-def _wait_for_discord(client: TestClient, run_id: str) -> dict:
-    return _wait_for(client, run_id, lambda record: record["discord_status"] == "sending")
+def _wait_for_discord(client: TestClient, scrape_id: str) -> dict:
+    return _wait_for(
+        client, scrape_id, lambda scrape_summary: scrape_summary["discord_status"] == "sending"
+    )
 
 
-def test_start_run_then_read_record(client: TestClient):
-    run = _run(client)
+def test_start_scrape_then_read_record(client: TestClient):
+    scrape = _scrape(client)
 
-    record = _wait_for_finish(client, run["id"])
+    scrape_summary = _wait_for_finish(client, scrape["id"])
 
-    assert set(record) == RECORD_FIELDS
-    assert record["id"] == run["id"]
-    assert record["status"] == "succeeded"
-    assert record["job_count"] == 1
-    assert record["keywords"] == ["devops"]
-    assert record["sites"] == ["upwork"]
-    assert record["finished_at"] is not None
+    assert set(scrape_summary) == SUMMARY_FIELDS
+    assert scrape_summary["id"] == scrape["id"]
+    assert scrape_summary["status"] == "succeeded"
+    assert scrape_summary["job_count"] == 1
+    assert scrape_summary["keywords"] == ["devops"]
+    assert scrape_summary["sites"] == ["upwork"]
+    assert scrape_summary["finished_at"] is not None
 
 
-def test_read_run_keeps_record_after_finish(client: TestClient):
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+def test_read_scrape_keeps_record_after_finish(client: TestClient):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    response = client.get(f"/api/runs/{run['id']}")
+    response = client.get(f"/api/scrapes/{scrape['id']}")
 
     assert response.status_code == 200
     assert response.json()["data"]["record"]["status"] == "succeeded"
 
 
-def test_new_run_replaces_previous_record(client: TestClient):
-    first = _run(client)
+def test_new_scrape_replaces_previous_record(client: TestClient):
+    first = _scrape(client)
     _wait_for_finish(client, first["id"])
-    second = _run(client)
+    second = _scrape(client)
 
     assert _wait_for_finish(client, second["id"])["id"] == second["id"]
-    assert client.get(f"/api/runs/{first['id']}").status_code == 404
+    assert client.get(f"/api/scrapes/{first['id']}").status_code == 404
 
 
-def test_read_run_reports_failed_scrape(client: TestClient, gateway: FakeGateway):
+def test_read_scrape_reports_failed_scrape(client: TestClient, gateway: FakeGateway):
     gateway.scrape_result = {"ok": False, "results": [], "errors": [{"site": "upwork"}]}
-    run = _run(client)
+    scrape = _scrape(client)
 
-    record = _wait_for_finish(client, run["id"])
+    scrape_summary = _wait_for_finish(client, scrape["id"])
 
-    assert record["status"] == "failed"
-    assert record["error_count"] == 1
+    assert scrape_summary["status"] == "failed"
+    assert scrape_summary["error_count"] == 1
 
 
-def test_scrape_asks_for_payloads_without_saving_the_run(client: TestClient, gateway: FakeGateway):
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+def test_scrape_asks_for_results_without_saving_the_scrape(
+    client: TestClient, gateway: FakeGateway
+):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
     assert gateway.arguments["scrape_jobs"] == {
         "sites": ["upwork"],
         "keywords": ["devops"],
         "save_run": False,
-        "include_payloads": True,
     }
 
 
-def test_start_run_without_notify_has_no_discord_status(client: TestClient, gateway: FakeGateway):
-    run = _run(client)
+def test_start_scrape_without_notify_has_no_discord_status(
+    client: TestClient, gateway: FakeGateway
+):
+    scrape = _scrape(client)
 
-    record = _wait_for_finish(client, run["id"])
+    scrape_summary = _wait_for_finish(client, scrape["id"])
 
-    assert record["discord_status"] is None
+    assert scrape_summary["discord_status"] is None
     assert "send_discord_message" not in gateway.calls
 
 
-def test_start_run_with_notify_sends_to_discord(client: TestClient, gateway: FakeGateway):
+def test_start_scrape_with_notify_sends_to_discord(client: TestClient, gateway: FakeGateway):
     response = client.post(
-        "/api/runs",
+        "/api/scrapes",
         json={"keywords": ["devops"], "sites": ["upwork"], "notify_discord": True},
     )
     assert response.status_code == 202
 
-    run_id = response.json()["data"]["id"]
-    _wait_for_finish(client, run_id)
-    record = _wait_for_discord(client, run_id)
+    scrape_id = response.json()["data"]["id"]
+    _wait_for_finish(client, scrape_id)
+    scrape_summary = _wait_for_discord(client, scrape_id)
 
-    assert record["status"] == "succeeded"
-    assert record["discord_status"] == "sent"
-    assert (record["discord_sent"], record["discord_failed"]) == (1, 0)
+    assert scrape_summary["status"] == "succeeded"
+    assert scrape_summary["discord_status"] == "sent"
+    assert (scrape_summary["discord_sent"], scrape_summary["discord_failed"]) == (1, 0)
     assert gateway.arguments["send_discord_message"] == {
         "channel_id": "123456789012345678",
         "mention": False,
-        "jobs": [{"title": "A"}],
+        "jobs": [
+            {
+                "site": "upwork",
+                "matched_keyword": "devops",
+                "title": "A",
+                "company": None,
+                "location": None,
+                "url": None,
+                "posted_at": None,
+            }
+        ],
+        "keyword_count": 1,
+        "site_count": 1,
+        "error_count": 0,
     }
 
 
-def test_start_run_rejects_non_boolean_notify(client: TestClient):
+def test_start_scrape_rejects_non_boolean_notify(client: TestClient):
     response = client.post(
-        "/api/runs",
+        "/api/scrapes",
         json={"keywords": ["devops"], "sites": ["upwork"], "notify_discord": "maybe"},
     )
 
     assert response.status_code == 422
 
 
-def test_run_list_endpoint_is_gone(client: TestClient):
-    assert client.get("/api/runs").status_code in (404, 405)
+def test_scrape_list_endpoint_is_gone(client: TestClient):
+    assert client.get("/api/scrapes").status_code in (404, 405)
 
 
 def test_log_stream_endpoint_is_gone(client: TestClient):
     assert client.get("/api/logs/stream").status_code == 404
 
 
-def test_second_run_is_refused_before_reading_sites(client: TestClient, gateway: FakeGateway):
+def test_second_scrape_is_refused_before_reading_sites(client: TestClient, gateway: FakeGateway):
     gateway.scrape_delay = 0.2
-    run = _run(client)
+    scrape = _scrape(client)
     gateway.calls.clear()
 
-    response = client.post("/api/runs", json={"keywords": ["devops"], "sites": ["upwork"]})
+    response = client.post("/api/scrapes", json={"keywords": ["devops"], "sites": ["upwork"]})
 
     assert response.status_code == 409
     assert "list_sites" not in gateway.calls
-    _wait_for_finish(client, run["id"])
+    _wait_for_finish(client, scrape["id"])
 
 
-def test_start_run_rejects_unknown_site(client: TestClient):
-    response = client.post("/api/runs", json={"keywords": ["devops"], "sites": ["ghost"]})
-
-    assert response.status_code == 422
-
-
-def test_start_run_needs_keywords(client: TestClient):
-    response = client.post("/api/runs", json={"keywords": [], "sites": ["upwork"]})
+def test_start_scrape_rejects_unknown_site(client: TestClient):
+    response = client.post("/api/scrapes", json={"keywords": ["devops"], "sites": ["ghost"]})
 
     assert response.status_code == 422
 
 
-def test_unknown_run_returns_404(client: TestClient):
-    assert client.get("/api/runs/nope").status_code == 404
+def test_start_scrape_needs_keywords(client: TestClient):
+    response = client.post("/api/scrapes", json={"keywords": [], "sites": ["upwork"]})
+
+    assert response.status_code == 422
 
 
-class _UnavailableRepository(MongoRunRepository):
-    def find(self, run_id: str) -> Any:
-        raise RunStoreUnavailableError("down")
+def test_unknown_scrape_returns_404(client: TestClient):
+    assert client.get("/api/scrapes/nope").status_code == 404
 
 
-def test_unknown_run_returns_503_when_run_storage_is_down(
+class _UnavailableRepository(MongoScrapeReportRepository):
+    def find(self, scrape_id: str) -> Any:
+        raise ScrapeStoreUnavailableError("down")
+
+
+def test_unknown_scrape_returns_503_when_scrape_storage_is_down(
     tmp_path: Path, gateway: FakeGateway, database: Any
 ):
     app = create_app(_settings(tmp_path), gateway, _UnavailableRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         test_client.post("/api/auth/login", json={"password": DEV_LOGIN_KEY})
-        response = test_client.get("/api/runs/nope")
-        latest = test_client.get("/api/runs/latest")
+        response = test_client.get("/api/scrapes/nope")
+        latest = test_client.get("/api/scrapes/latest")
 
     assert response.status_code == 503
     assert response.json()["error"] == "Run storage is unavailable."
@@ -452,18 +467,18 @@ def test_unknown_run_returns_503_when_run_storage_is_down(
     assert latest.json()["data"] is None
 
 
-def test_app_without_a_repository_uses_the_short_timeout_run_store(
+def test_app_without_a_repository_uses_the_short_timeout_scrape_store(
     tmp_path: Path, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch
 ):
-    from ui_server import app as app_module
+    from backend import app as app_module
 
     opened: list[bool] = []
 
-    def fake_open() -> MongoRunRepository:
+    def fake_open() -> MongoScrapeReportRepository:
         opened.append(True)
-        return MongoRunRepository(mongomock.MongoClient()["job_scraper"])
+        return MongoScrapeReportRepository(mongomock.MongoClient()["job_scraper"])
 
-    monkeypatch.setattr(app_module, "open_run_repository", fake_open)
+    monkeypatch.setattr(app_module, "open_scrape_report_repository", fake_open)
 
     create_app(_settings(tmp_path), gateway)
 
@@ -548,6 +563,7 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "max_age_hours": None,
         "filter": {},
         "api": {"locations": ["Remote"]},
+        "url_template": "x",
     }
     assert sites[1] == {
         "name": "indeed",
@@ -556,6 +572,7 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "max_age_hours": 72,
         "filter": {"location": ["jakarta"]},
         "api": None,
+        "url_template": "x",
     }
 
 
@@ -571,6 +588,21 @@ def test_config_read_gives_an_empty_filter_when_a_site_has_none(
 
     assert site["filter"] == {}
     assert site["max_age_hours"] is None
+
+
+def test_config_read_returns_each_site_url_template(client: TestClient, gateway: FakeGateway):
+    config_settings = CONFIG["settings"]
+    assert isinstance(config_settings, dict)
+    stored_sites = {
+        "upwork": {"limit": 30, "url_template": "https://upwork.test/search?q={keyword}"},
+        "indeed": {"limit": 3},
+    }
+    gateway.config = {**CONFIG, "settings": {**config_settings, "sites": stored_sites}}
+
+    sites = client.get("/api/config").json()["data"]["values"]["sites"]
+
+    assert sites[0]["url_template"] == "https://upwork.test/search?q={keyword}"
+    assert sites[1]["url_template"] is None
 
 
 def test_config_read_marks_stale_values_when_mcp_is_down(client: TestClient, gateway: FakeGateway):
@@ -747,7 +779,7 @@ def test_prod_logout_clears_session(prod_client: TestClient):
 def test_spa_paths_fall_back_to_index(tmp_path: Path, gateway: FakeGateway, database: Any):
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist" / "index.html").write_text("<html>app</html>")
-    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
+    app = create_app(_settings(tmp_path), gateway, MongoScrapeReportRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         assert "app" in test_client.get("/config").text
         assert test_client.get("/api/missing").status_code == 404
@@ -758,7 +790,7 @@ def test_ui_files_carry_security_headers(tmp_path: Path, gateway: FakeGateway, d
     dist.mkdir()
     (dist / "index.html").write_text("<html>app</html>")
     (dist / "favicon.svg").write_text("<svg></svg>")
-    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
+    app = create_app(_settings(tmp_path), gateway, MongoScrapeReportRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         responses = [
             test_client.get("/"),
@@ -788,7 +820,7 @@ def test_favicon_files_are_served_instead_of_index(
     (dist / "index.html").write_text("<html>app</html>")
     (dist / "favicon.svg").write_text("<svg></svg>")
     (dist / "favicon.ico").write_bytes(b"\x00\x00\x01\x00")
-    app = create_app(_settings(tmp_path), gateway, MongoRunRepository(database))
+    app = create_app(_settings(tmp_path), gateway, MongoScrapeReportRepository(database))
     with TestClient(app, base_url=LOCAL_URL) as test_client:
         svg = test_client.get("/favicon.svg")
         ico = test_client.get("/favicon.ico")
@@ -798,22 +830,22 @@ def test_favicon_files_are_served_instead_of_index(
     assert ico.content == b"\x00\x00\x01\x00"
 
 
-def test_read_run_returns_detail_shape(client: TestClient):
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+def test_read_scrape_returns_detail_shape(client: TestClient):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    detail = _read_detail(client, run["id"])
+    scrape_report = _read_scrape_report(client, scrape["id"])
 
-    assert set(detail) == DETAIL_FIELDS
-    assert set(detail["record"]) == RECORD_FIELDS
-    assert [set(job) for job in detail["jobs"]] == [JOB_FIELDS]
-    assert detail["jobs"][0]["title"] == "A"
-    assert detail["jobs"][0]["site"] == "upwork"
-    assert detail["jobs"][0]["matched_keyword"] == "devops"
-    assert detail["failures"] == []
+    assert set(scrape_report) == REPORT_FIELDS
+    assert set(scrape_report["record"]) == SUMMARY_FIELDS
+    assert [set(job) for job in scrape_report["jobs"]] == [JOB_FIELDS]
+    assert scrape_report["jobs"][0]["title"] == "A"
+    assert scrape_report["jobs"][0]["site"] == "upwork"
+    assert scrape_report["jobs"][0]["matched_keyword"] == "devops"
+    assert scrape_report["failures"] == []
 
 
-def test_read_run_returns_the_full_job_object(client: TestClient, gateway: FakeGateway):
+def test_read_scrape_returns_the_full_job_object(client: TestClient, gateway: FakeGateway):
     job = {
         "site": "upwork",
         "matched_keyword": "devops",
@@ -831,118 +863,115 @@ def test_read_run_returns_the_full_job_object(client: TestClient, gateway: FakeG
         "experience_level": None,
         "requirements": "Python",
     }
-    sites = [{"site": "upwork", "jobs": [job]}]
-    gateway.scrape_result = {**SCRAPE_RESULT, "results": [{"keyword": "devops", "sites": sites}]}
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+    results = [{"keyword": "devops", "site": "upwork", "payload": {"jobs": [job]}}]
+    gateway.scrape_result = {**SCRAPE_RESULT, "results": results}
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    stored = _read_detail(client, run["id"])["jobs"]
-    latest = client.get("/api/runs/latest").json()["data"]["jobs"]
+    stored = _read_scrape_report(client, scrape["id"])["jobs"]
+    latest = client.get("/api/scrapes/latest").json()["data"]["jobs"]
 
     assert stored == [job]
     assert latest == [job]
 
 
-def test_read_run_lists_failures(client: TestClient, gateway: FakeGateway):
+def test_read_scrape_lists_failures(client: TestClient, gateway: FakeGateway):
     gateway.scrape_result = {
         "ok": False,
         "results": [],
         "errors": [{"keyword": "devops", "site": "upwork", "reason": "timeout", "attempts": []}],
     }
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    detail = _read_detail(client, run["id"])
+    scrape_report = _read_scrape_report(client, scrape["id"])
 
-    assert detail["failures"] == [{"keyword": "devops", "site": "upwork", "reason": "timeout"}]
-    assert detail["jobs"] == []
-    assert "payloads" not in detail
+    assert scrape_report["failures"] == [
+        {"keyword": "devops", "site": "upwork", "reason": "timeout"}
+    ]
+    assert scrape_report["jobs"] == []
+    assert "payloads" not in scrape_report
 
 
-def test_running_run_detail_has_empty_lists(client: TestClient, gateway: FakeGateway):
+def test_running_scrape_report_has_empty_lists(client: TestClient, gateway: FakeGateway):
     gateway.scrape_delay = 0.2
-    run = _run(client)
+    scrape = _scrape(client)
 
-    detail = _read_detail(client, run["id"])
+    scrape_report = _read_scrape_report(client, scrape["id"])
 
-    assert detail["record"]["status"] == "running"
-    assert set(detail) == DETAIL_FIELDS
-    assert (detail["jobs"], detail["failures"]) == ([], [])
-    _wait_for_finish(client, run["id"])
+    assert scrape_report["record"]["status"] == "running"
+    assert set(scrape_report) == REPORT_FIELDS
+    assert (scrape_report["jobs"], scrape_report["failures"]) == ([], [])
+    _wait_for_finish(client, scrape["id"])
 
 
-def test_finished_run_is_stored_in_ui_runs(client: TestClient, database: Any):
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+def test_finished_scrape_is_stored_in_ui_runs(client: TestClient, database: Any):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    documents = list(database[UI_RUNS_COLLECTION].find())
+    documents = list(database[SCRAPE_REPORTS_COLLECTION].find())
 
-    assert [document["_id"] for document in documents] == [run["id"]]
+    assert [document["_id"] for document in documents] == [scrape["id"]]
     assert documents[0]["record"]["status"] == "succeeded"
     assert documents[0]["payloads"] == [
-        {
-            "keyword": "devops",
-            "site": "upwork",
-            "raw": {"jobs": [{"t": "A"}]},
-            "filtered": {"jobs": []},
-        }
+        {"keyword": "devops", "site": "upwork", "filtered": {"jobs": [{"title": "A"}]}}
     ]
 
 
-def test_latest_without_any_run_is_null(client: TestClient):
-    response = client.get("/api/runs/latest")
+def test_latest_without_any_scrape_is_null(client: TestClient):
+    response = client.get("/api/scrapes/latest")
 
     assert response.status_code == 200
     assert response.json()["data"] is None
 
 
-def test_latest_returns_the_stored_run(client: TestClient, database: Any):
-    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+def test_latest_returns_the_stored_scrape(client: TestClient, database: Any):
+    database[SCRAPE_REPORTS_COLLECTION].insert_one(STORED_SCRAPE)
 
-    data = client.get("/api/runs/latest").json()["data"]
+    data = client.get("/api/scrapes/latest").json()["data"]
 
-    assert set(data) == DETAIL_FIELDS
-    assert data == {key: STORED_RUN[key] for key in DETAIL_FIELDS}
+    assert set(data) == REPORT_FIELDS
+    assert data == {key: STORED_SCRAPE[key] for key in REPORT_FIELDS}
 
 
-def test_read_stored_run_by_id(client: TestClient, database: Any):
-    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+def test_read_stored_scrape_by_id(client: TestClient, database: Any):
+    database[SCRAPE_REPORTS_COLLECTION].insert_one(STORED_SCRAPE)
 
-    response = client.get(f"/api/runs/{STORED_RUN['_id']}")
+    response = client.get(f"/api/scrapes/{STORED_SCRAPE['_id']}")
 
     assert response.status_code == 200
-    assert set(response.json()["data"]) == DETAIL_FIELDS
+    assert set(response.json()["data"]) == REPORT_FIELDS
     assert response.json()["data"]["jobs"][0]["title"] == "Stored"
 
 
 def test_latest_returns_the_current_running_run(
     client: TestClient, gateway: FakeGateway, database: Any
 ):
-    database[UI_RUNS_COLLECTION].insert_one(STORED_RUN)
+    database[SCRAPE_REPORTS_COLLECTION].insert_one(STORED_SCRAPE)
     gateway.scrape_delay = 0.2
-    run = _run(client)
+    scrape = _scrape(client)
 
-    data = client.get("/api/runs/latest").json()["data"]
+    data = client.get("/api/scrapes/latest").json()["data"]
 
-    assert data["record"]["id"] == run["id"]
+    assert data["record"]["id"] == scrape["id"]
     assert data["record"]["status"] == "running"
-    assert set(data) == DETAIL_FIELDS
+    assert set(data) == REPORT_FIELDS
     assert (data["jobs"], data["failures"]) == ([], [])
-    _wait_for_finish(client, run["id"])
+    _wait_for_finish(client, scrape["id"])
 
 
-def test_latest_returns_the_finished_current_run(client: TestClient):
-    run = _run(client)
-    _wait_for_finish(client, run["id"])
+def test_latest_returns_the_finished_current_scrape(client: TestClient):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
 
-    data = client.get("/api/runs/latest").json()["data"]
+    data = client.get("/api/scrapes/latest").json()["data"]
 
-    assert data["record"]["id"] == run["id"]
+    assert data["record"]["id"] == scrape["id"]
     assert data["jobs"][0]["title"] == "A"
 
 
 def test_latest_needs_login(guest_client: TestClient):
-    assert guest_client.get("/api/runs/latest").status_code == 401
+    assert guest_client.get("/api/scrapes/latest").status_code == 401
 
 
 def test_config_read_gives_empty_fields_when_none_are_stored(
@@ -973,3 +1002,115 @@ def test_config_update_refuses_default_fields_and_site_fields(
 ):
     assert client.put("/api/config", json=body).status_code == 422
     assert "update_config" not in gateway.calls
+
+
+def _send_latest(client: TestClient):
+    return client.post("/api/scrapes/latest/discord")
+
+
+def test_send_latest_scrape_starts_sending_and_keeps_the_jobs(client: TestClient):
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
+
+    response = _send_latest(client)
+
+    assert response.status_code == 202
+    assert set(response.json()["data"]) == SUMMARY_FIELDS
+    assert response.json()["data"]["id"] == scrape["id"]
+    assert response.json()["data"]["discord_status"] == "sending"
+    scrape_summary = _wait_for_discord(client, scrape["id"])
+    assert scrape_summary["discord_status"] == "sent"
+    assert (scrape_summary["discord_sent"], scrape_summary["discord_failed"]) == (1, 0)
+    latest = client.get("/api/scrapes/latest").json()["data"]
+    assert latest["record"]["discord_status"] == "sent"
+    assert latest["jobs"][0]["title"] == "A"
+
+
+def test_send_latest_scrape_sends_the_stored_scrape_after_a_restart(
+    client: TestClient, gateway: FakeGateway, database: Any
+):
+    database[SCRAPE_REPORTS_COLLECTION].insert_one(STORED_SCRAPE)
+
+    response = _send_latest(client)
+
+    assert response.status_code == 202
+    assert response.json()["data"]["id"] == STORED_SCRAPE["_id"]
+    scrape_summary = _wait_for_discord(client, STORED_SCRAPE["_id"])
+    assert scrape_summary["discord_status"] == "sent"
+    assert gateway.arguments["send_discord_message"] == {
+        "channel_id": "123456789012345678",
+        "mention": False,
+        "jobs": STORED_SCRAPE["jobs"],
+        "keyword_count": 1,
+        "site_count": 1,
+        "error_count": 0,
+    }
+    latest = client.get("/api/scrapes/latest").json()["data"]
+    assert latest["jobs"] == STORED_SCRAPE["jobs"]
+    assert latest["failures"] == STORED_SCRAPE["failures"]
+    stored = database[SCRAPE_REPORTS_COLLECTION].find_one({"_id": STORED_SCRAPE["_id"]})
+    assert stored["jobs"] == STORED_SCRAPE["jobs"]
+    assert stored["payloads"] == STORED_SCRAPE["payloads"]
+
+
+def test_send_latest_scrape_without_any_scrape_returns_404(
+    client: TestClient, gateway: FakeGateway
+):
+    response = _send_latest(client)
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "There is no run to send yet."
+    assert "send_discord_message" not in gateway.calls
+
+
+def test_send_latest_scrape_is_refused_while_a_scrape_is_in_progress(
+    client: TestClient, gateway: FakeGateway
+):
+    gateway.scrape_delay = 0.2
+    scrape = _scrape(client)
+
+    response = _send_latest(client)
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "A scrape is already running."
+    _wait_for_finish(client, scrape["id"])
+    assert "send_discord_message" not in gateway.calls
+
+
+def test_send_latest_scrape_of_a_failed_scrape_returns_409(
+    client: TestClient, gateway: FakeGateway, database: Any
+):
+    failed_scrape = {**STORED_SCRAPE, "record": {**STORED_SCRAPE["record"], "status": "failed"}}
+    database[SCRAPE_REPORTS_COLLECTION].insert_one(failed_scrape)
+
+    response = _send_latest(client)
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "Only a finished run can be sent to Discord."
+    assert "send_discord_message" not in gateway.calls
+
+
+def test_send_latest_scrape_ends_as_failed_when_discord_is_not_configured(
+    client: TestClient, gateway: FakeGateway
+):
+    gateway.discord_settings = {**DISCORD_SETTINGS, "configured": False}
+    scrape = _scrape(client)
+    _wait_for_finish(client, scrape["id"])
+
+    response = _send_latest(client)
+
+    assert response.status_code == 202
+    scrape_summary = _wait_for_discord(client, scrape["id"])
+    assert scrape_summary["discord_status"] == "failed"
+    assert scrape_summary["discord_error"] == "Discord token is not configured."
+    assert "send_discord_message" not in gateway.calls
+
+
+def test_send_latest_scrape_needs_login(guest_client: TestClient):
+    assert _send_latest(guest_client).status_code == 401
+
+
+def test_send_latest_scrape_refuses_a_cross_site_request(client: TestClient):
+    response = client.post("/api/scrapes/latest/discord", headers={"sec-fetch-site": "cross-site"})
+
+    assert response.status_code == 403

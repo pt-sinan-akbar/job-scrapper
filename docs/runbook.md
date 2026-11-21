@@ -148,13 +148,11 @@ User: "scrape faster" or "running too hot, slow it down"
 Not a job setting, so `update_config` cannot change it (a `concurrency` patch
 is refused). Concurrency is the `SCRAPER_CONCURRENCY` env var: how many
 `(keyword, site)` pairs run at once. Default 2, valid 1 to 10; an invalid value
-logs a warning and uses 2. In prod it is the `SCRAPER_CONCURRENCY` GitHub
-variable, applied on the next deploy (see [`deploy.md`](deploy.md)). Locally,
-set it in `.env` and recreate the containers:
+logs a warning and uses 2. Set it in `.env` and recreate the containers:
 
 ```bash
 SCRAPER_CONCURRENCY=4
-docker compose up -d scraper-mcp scraper-ui
+docker compose --project-directory . -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.dev.yml up -d scraper-mcp scraper-ui
 ```
 
 Each Playwright fallback consumes ~250-300MB RAM. On a 2GB host, stay at

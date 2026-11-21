@@ -15,7 +15,7 @@ def _call_health():
 
 
 def test_health_ok_when_mongo_reachable():
-    with patch.object(mongo_module, "ping", MagicMock()):
+    with patch.object(mongo_module, "ping_mongo", MagicMock()):
         resp = _call_health()
     assert resp.status_code == 200
     assert json.loads(resp.body) == {"status": "ok", "mongo": "ok"}
@@ -23,7 +23,7 @@ def test_health_ok_when_mongo_reachable():
 
 def test_health_degraded_when_mongo_unreachable():
     failing = MagicMock(side_effect=RuntimeError("connection refused"))
-    with patch.object(mongo_module, "ping", failing):
+    with patch.object(mongo_module, "ping_mongo", failing):
         resp = _call_health()
     assert resp.status_code == 503
     body = json.loads(resp.body)

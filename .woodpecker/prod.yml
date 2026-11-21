@@ -11,7 +11,7 @@ steps:
     settings:
       registry: ghcr.io
       repo: ghcr.io/pt-sinan-akbar/job-scraper/prod
-      dockerfile: Dockerfile
+      dockerfile: infra/docker/Dockerfile
       target: app
       platforms: linux/amd64
       tags:

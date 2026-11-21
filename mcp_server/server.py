@@ -54,6 +54,7 @@ PLAIN_IP_MAX_CHARS = 64
 MILLISECONDS_PER_SECOND = 1000
 ALLOWED_TEST_URL_SCHEMES = ("http", "https")
 NO_PROXY_MESSAGE = "no proxy set in PROXY_URL and proxy_url not passed — set it or pass proxy_url"
+SAMPLE_MONGO_ID = "665f1c2e9b1d4a0012345678"
 
 _STATUS_PATH = Path("logs/status.json")
 
@@ -65,22 +66,10 @@ for discord_tool in DISCORD_TOOLS:
 SaveSource = Literal["ui", "mcp"]
 
 
-class _ProxyTestError(Exception):
-    pass
-
-
-@dataclass(frozen=True)
-class _ScrapeResponseParts:
-    results: list[dict[str, Any]]
-    errors: list[dict[str, Any]]
-    filtered_results: list[dict[str, Any]]
-    raw_results: list[dict[str, Any]]
-
-
 @mcp.custom_route("/health", methods=["GET"])
 async def check_health(request: Request) -> Response:
     try:
-        await run_in_threadpool(mongo.ping)
+        await run_in_threadpool(mongo.ping_mongo)
     except Exception as exc:
         _get_scraper_logger().warning("health check: mongo ping failed: %s", exc)
         return JSONResponse({"status": "degraded", "mongo": "error"}, status_code=503)
@@ -96,7 +85,7 @@ def list_sites() -> dict[str, Any]:
     keywords: every scrape_jobs call names its own.
     """
     try:
-        config = _load_config()
+        config = _load_app_config()
     except ConfigError as exc:
         return {"error": str(exc)}
     return {"sites": [_build_site_listing_entry(site) for site in config.sites]}
@@ -129,7 +118,7 @@ def get_scrape_response_structure() -> dict[str, Any]:
     """Return canonical schema and example payload for scrape_jobs response."""
     return {
         "tool": "scrape_jobs",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "job_fields": list(JOB_FIELD_ORDER),
         "top_level_fields": [
             "ok",
@@ -140,15 +129,17 @@ def get_scrape_response_structure() -> dict[str, Any]:
             "errors",
             "mongo_id",
         ],
-        "optional_top_level_fields": ["raw_results", "filtered_results"],
-        "site_result_fields": [
-            "site",
+        "optional_top_level_fields": ["raw_results"],
+        "result_fields": ["keyword", "site", "payload"],
+        "payload_fields": [
             "keyword",
             "fields",
             "max_age_hours",
             "filter",
             "count",
             "jobs",
+            "source",
+            "fallback_reason",
         ],
         "error_fields": ["keyword", "site", "reason", "attempts"],
         "sample": _build_sample_response(),
@@ -225,11 +216,14 @@ def insert_scrape_run(run_data: dict[str, Any]) -> dict[str, Any]:
             run_metadata: {ok, exit_code, keywords, requested_sites, errors,
                            per_site_counts, per_site_sources,
                            bot_post_status}
-            filtered_results: per-site filtered/projected jobs
-            raw_results: per-site unfiltered jobs (only the site's query params)
+            results: [{keyword, site, payload}], the same list scrape_jobs
+                     returns
             note: failure summary string, or null
             channel_id: Discord channel id (never the bot token)
             discord_sent_status: "success" | "failed"
+            filtered_results and raw_results are no longer recommended keys:
+            scrape_jobs saves the filtered payloads as results and never saves
+            raw results.
 
     Returns:
         On success: {ok: true, inserted_id: <str>}
@@ -249,11 +243,15 @@ def get_latest_scrape_run() -> dict[str, Any]:
     Returns:
         {available: false, message: str} when no runs have been recorded
         {available: false, error: str} when MongoDB is unreachable
-        {available: true, _id, _created_at, run_metadata, filtered_results,
-         raw_results, note, channel_id, discord_sent_status, ...} on success
+        {available: true, _id, _created_at, run_metadata, results, note,
+         channel_id, discord_sent_status, ...} on success. results is
+         [{keyword, site, payload}]. The run is returned as stored: a run saved
+         before results replaced filtered_results has filtered_results (the
+         same list under the old name) instead of results, and may also carry
+         raw_results. Newer runs have neither.
     """
     try:
-        latest_run = mongo.get_latest_run()
+        latest_run = mongo.read_latest_run()
     except Exception as exc:
         return {"available": False, "error": str(exc)}
     if latest_run is None:
@@ -336,7 +334,7 @@ def scrape_jobs(
     *,
     keywords: list[str] | None,
     save_run: bool = True,
-    include_payloads: bool = False,
+    include_raw_results: bool = False,
 ) -> dict[str, Any]:
     """Run the job scraper and return aggregated results.
 
@@ -351,10 +349,12 @@ def scrape_jobs(
             errors=[{keyword: null, site: null, reason: "keywords are required"}].
         save_run: when false, return the results without storing the run in
             Mongo, so it never reaches the scrape history. mongo_id is then null.
-        include_payloads: when true, the response also carries raw_results (each
-            site's payload before max-age, filter and limit) and filtered_results
-            (each site's final payload), both lists of {keyword, site, payload}.
-            Off by default to keep the response small.
+            A stored run keeps run_metadata, results and note. raw_results
+            is never stored.
+        include_raw_results: when true, the response also carries raw_results,
+            a list of {keyword, site, payload} with each site's payload before
+            max-age, filter and limit. Off by default to keep the response
+            small. raw_results exists only in this response.
 
     Returns:
         dict with keys:
@@ -366,25 +366,38 @@ def scrape_jobs(
             requested_sites: list of site names attempted (per keyword)
             exit_code: scraper exit code (0 = ran without fatal error;
                 does NOT reflect per-site fetch success — use ok for that)
-            results: list grouped by keyword, each entry:
-                {keyword, sites: [{site, fields, count, jobs, ...}]}.
-                A site entry is absent from this list when its fetch failed
-                (see errors). Each job is projected to the fields configured
-                for that site and normalized to canonical schema. Canonical
-                fields: site, matched_keyword, title, company, company_id, url, location,
-                salary, salary_min, salary_max, posted_date, posted_at, work_type,
-                employment_type, experience_level, job_id, requirements. Fields a site cannot
-                extract are returned as null.
+            results: flat list with one entry per keyword and site pair that
+                gave a payload, ordered by keyword then site:
+                {keyword, site, payload}. A successful payload is
+                {keyword, fields, max_age_hours, filter, count, jobs, source,
+                fallback_reason}. A failed pair is listed too: its payload has
+                an error key instead of the job fields, and the pair is also in
+                errors. Each job holds only the fields named in the payload's
+                fields. Canonical fields: site, matched_keyword, title, company,
+                company_id, url, location, salary, salary_min, salary_max,
+                posted_date, posted_at, work_type, employment_type,
+                experience_level, job_id, requirements. A value the site cannot
+                extract is null.
             errors: list of {keyword, site, reason, attempts?} for any pair
                 that failed. Presence of entries here means ok=false.
+                reason values include "fetch failed" (the search page
+                download failed; attempts is present) and
+                "api failed: <code>" (the request of an API-only site or of
+                Indeed failed; no attempts; <code> is for example http_403,
+                runtime_error, non_json, graphql_error, not_installed or
+                api_disabled).
                 `attempts` (when present) lists per-downloader outcomes:
                 [{downloader, code, detail}]. Codes:
                   - http_<status>     site rejected request (e.g. http_403)
                   - challenge         anti-bot wall (detail = matched title/marker)
                   - timeout           network or page-load timeout
                   - runtime_error     unexpected exception (detail = class+msg)
-                  - not_installed     HTML downloader dependency missing
-            raw_results, filtered_results: only when include_payloads is true.
+                  - not_installed     a dependency is missing: an HTML
+                                      downloader's here, a site's own request's
+                                      in "api failed: not_installed"
+            mongo_id: id of the stored run, or null when the run was not
+                stored.
+            raw_results: only when include_raw_results is true.
     """
     logger = _get_scraper_logger()
     logger.info("scrape_jobs called sites=%s keywords=%s", sites, keywords)
@@ -395,7 +408,7 @@ def scrape_jobs(
     started_at = time.monotonic()
 
     try:
-        config = _load_config()
+        config = _load_app_config()
     except ConfigError as exc:
         logger.error("scrape_jobs config error: %s", exc)
         return {"ok": False, "error": str(exc)}
@@ -411,27 +424,47 @@ def scrape_jobs(
     _log_run_done(scrape_response, duration_seconds)
     _write_scrape_status_file(scrape_response, duration_seconds)
 
-    payload_results = _build_optional_payload_results(
-        include_payloads, response_parts.raw_results, response_parts.filtered_results
+    optional_raw_results = _build_optional_raw_results(
+        include_raw_results, response_parts.raw_results
     )
     mongo_id: str | None = None
     if save_run:
-        mongo_id = _save_run(scrape_response, response_parts)
+        mongo_id = _save_scrape_run(scrape_response)
     else:
         logger.info("scrape_jobs: save_run is off, skipping mongo insert")
-    return {**scrape_response, "mongo_id": mongo_id, **payload_results}
+    return {**scrape_response, "mongo_id": mongo_id, **optional_raw_results}
 
 
 def main() -> None:
     mcp.run(transport="streamable-http")
 
 
-def _load_config() -> AppConfig:
+def list_successful_result_entries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    successful_result_entries: list[dict[str, Any]] = []
+    for result_entry in results:
+        if _payload_has_error(result_entry["payload"]):
+            continue
+        successful_result_entries.append(result_entry)
+    return successful_result_entries
+
+
+class _ProxyTestError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _ScrapeResponseParts:
+    results: list[dict[str, Any]]
+    errors: list[dict[str, Any]]
+    raw_results: list[dict[str, Any]]
+
+
+def _load_app_config() -> AppConfig:
     return load_app_config(_build_job_settings_store())
 
 
 def _build_job_settings_store() -> JobSettingsStore:
-    return JobSettingsStore(mongo.get_database())
+    return JobSettingsStore(mongo.read_database())
 
 
 def _build_site_listing_entry(site: Any) -> dict[str, Any]:
@@ -466,20 +499,30 @@ def _build_sample_response() -> dict[str, Any]:
         "keywords": ["data analyst"],
         "requested_sites": ["jobstreet"],
         "exit_code": 0,
-        "results": [{"keyword": "data analyst", "sites": [_build_sample_site_entry()]}],
+        "results": [_build_sample_result_entry()],
         "errors": [],
+        "mongo_id": SAMPLE_MONGO_ID,
     }
 
 
-def _build_sample_site_entry() -> dict[str, Any]:
+def _build_sample_result_entry() -> dict[str, Any]:
     return {
+        "keyword": "data analyst",
         "site": "jobstreet",
+        "payload": _build_sample_site_payload(),
+    }
+
+
+def _build_sample_site_payload() -> dict[str, Any]:
+    return {
         "keyword": "data analyst",
         "fields": list(JOB_FIELD_ORDER),
         "max_age_hours": 24,
         "filter": {"location": ["jakarta"]},
         "count": 1,
         "jobs": [_build_sample_job()],
+        "source": "api",
+        "fallback_reason": None,
     }
 
 
@@ -510,7 +553,9 @@ def _save_settings_and_build_response(
 
 
 def _choose_passed_or_default_test_url(passed_url: str | None) -> str:
-    test_url = (passed_url or "").strip() or DEFAULT_PROXY_TEST_URL
+    test_url = DEFAULT_PROXY_TEST_URL
+    if passed_url and passed_url.strip():
+        test_url = passed_url.strip()
     scheme = urlparse(test_url).scheme
     if scheme not in ALLOWED_TEST_URL_SCHEMES:
         raise _ProxyTestError(f"url must be http(s), got scheme={scheme!r}")
@@ -523,7 +568,7 @@ def _choose_passed_or_config_proxy_url(passed_proxy_url: str | None) -> tuple[st
         return stripped_proxy_url, False
 
     try:
-        config = _load_config()
+        config = _load_app_config()
     except ConfigError as exc:
         _get_scraper_logger().warning("test_proxy_connection config error: %s", exc)
         raise _ProxyTestError(str(exc)) from exc
@@ -649,124 +694,30 @@ def _build_scrape_response_parts(
     scrape_output: RunResult, keywords: list[str], sites: list[str]
 ) -> _ScrapeResponseParts:
     keyword_site_pairs = list(product(keywords, sites))
-    filtered_results, raw_results = _build_filtered_and_raw_results(
-        scrape_output, keyword_site_pairs
-    )
+    results, raw_results = _build_results_and_raw_results(scrape_output, keyword_site_pairs)
     return _ScrapeResponseParts(
-        results=_build_keyword_groups(scrape_output, keywords, sites),
+        results=results,
         errors=_build_keyword_site_errors(scrape_output, keyword_site_pairs),
-        filtered_results=filtered_results,
         raw_results=raw_results,
     )
 
 
-def _build_filtered_and_raw_results(
+def _build_results_and_raw_results(
     scrape_output: RunResult, keyword_site_pairs: list[tuple[str, str]]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    filtered_results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     raw_results: list[dict[str, Any]] = []
     for keyword, site in keyword_site_pairs:
         filtered_and_raw_payloads = scrape_output.get_payloads_for_keyword_and_site(keyword, site)
         if filtered_and_raw_payloads is None:
             continue
-        filtered_results.append(
-            _build_payload_entry(keyword, site, filtered_and_raw_payloads.filtered)
-        )
+        results.append(_build_payload_entry(keyword, site, filtered_and_raw_payloads.filtered))
         raw_results.append(_build_payload_entry(keyword, site, filtered_and_raw_payloads.raw))
-    return filtered_results, raw_results
+    return results, raw_results
 
 
 def _build_payload_entry(keyword: str, site: str, site_payload: dict[str, Any]) -> dict[str, Any]:
     return {"keyword": keyword, "site": site, "payload": site_payload}
-
-
-def _build_keyword_groups(
-    scrape_output: RunResult, keywords: list[str], sites: list[str]
-) -> list[dict[str, Any]]:
-    keyword_groups: list[dict[str, Any]] = []
-    for keyword in keywords:
-        site_entries = _build_site_entries(scrape_output, keyword, sites)
-        keyword_groups.append({"keyword": keyword, "sites": site_entries})
-    return keyword_groups
-
-
-def _build_site_entries(
-    scrape_output: RunResult, keyword: str, sites: list[str]
-) -> list[dict[str, Any]]:
-    site_entries: list[dict[str, Any]] = []
-    for site in sites:
-        filtered_and_raw_payloads = scrape_output.get_payloads_for_keyword_and_site(keyword, site)
-        if filtered_and_raw_payloads is None:
-            continue
-        if _has_error(filtered_and_raw_payloads.filtered):
-            continue
-        site_entry = _build_site_entry(
-            site_payload=filtered_and_raw_payloads.filtered, site_name=site, keyword=keyword
-        )
-        site_entries.append(site_entry)
-    return site_entries
-
-
-def _build_site_entry(site_payload: dict[str, Any], site_name: str, keyword: str) -> dict[str, Any]:
-    jobs = _build_canonical_jobs(site_payload, site_name, keyword)
-    return {
-        "site": site_name,
-        "keyword": keyword,
-        "fields": _read_fields(site_payload),
-        "max_age_hours": _read_int_or_none(site_payload, "max_age_hours"),
-        "filter": _read_dict_or_none(site_payload, "filter"),
-        "count": len(jobs),
-        "jobs": jobs,
-    }
-
-
-def _build_canonical_jobs(
-    site_payload: dict[str, Any], site_name: str, keyword: str
-) -> list[dict[str, Any]]:
-    raw_jobs = site_payload.get("jobs")
-    if not isinstance(raw_jobs, list):
-        return []
-    return [
-        _build_canonical_job(raw_job, site_name=site_name, keyword=keyword) for raw_job in raw_jobs
-    ]
-
-
-def _build_canonical_job(raw_job: Any, site_name: str, keyword: str) -> dict[str, Any]:
-    raw_job_fields: dict[str, Any] = {}
-    if isinstance(raw_job, dict):
-        raw_job_fields = raw_job
-    canonical_job = {field: raw_job_fields.get(field) for field in JOB_FIELD_ORDER}
-    canonical_job["site"] = raw_job_fields.get("site") or site_name
-    canonical_job["matched_keyword"] = raw_job_fields.get("matched_keyword") or keyword
-    return canonical_job
-
-
-def _read_fields(site_payload: dict[str, Any]) -> list[str]:
-    raw_fields = site_payload.get("fields")
-    if not isinstance(raw_fields, list):
-        return list(JOB_FIELD_ORDER)
-
-    fields: list[str] = []
-    for field in raw_fields:
-        if isinstance(field, str) and field in JOB_FIELD_ORDER:
-            fields.append(field)
-    if not fields:
-        return list(JOB_FIELD_ORDER)
-    return fields
-
-
-def _read_int_or_none(site_payload: dict[str, Any], key: str) -> int | None:
-    payload_value = site_payload.get(key)
-    if isinstance(payload_value, int):
-        return payload_value
-    return None
-
-
-def _read_dict_or_none(site_payload: dict[str, Any], key: str) -> dict[str, Any] | None:
-    payload_value = site_payload.get(key)
-    if isinstance(payload_value, dict):
-        return payload_value
-    return None
 
 
 def _build_keyword_site_errors(
@@ -778,7 +729,7 @@ def _build_keyword_site_errors(
         if filtered_and_raw_payloads is None:
             errors.append(_build_missing_result_error(keyword, site, scrape_output))
             continue
-        if _has_error(filtered_and_raw_payloads.filtered):
+        if _payload_has_error(filtered_and_raw_payloads.filtered):
             errors.append(
                 _build_site_payload_error(keyword, site, filtered_and_raw_payloads.filtered)
             )
@@ -794,22 +745,22 @@ def _build_missing_result_error(
     return {"keyword": keyword, "site": site, "reason": scrape_output.error or no_result_reason}
 
 
-def _has_error(site_payload: dict[str, Any]) -> bool:
+def _payload_has_error(site_payload: dict[str, Any]) -> bool:
     return "error" in site_payload
 
 
 def _build_site_payload_error(
     keyword: str, site: str, site_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    error: dict[str, Any] = {
+    payload_error: dict[str, Any] = {
         "keyword": keyword,
         "site": site,
         "reason": str(site_payload.get("error")),
     }
     attempts = site_payload.get("attempts")
     if not isinstance(attempts, list):
-        return error
-    return {**error, "attempts": attempts}
+        return payload_error
+    return {**payload_error, "attempts": attempts}
 
 
 def _build_scrape_response(
@@ -838,10 +789,10 @@ def _log_run_done(scrape_response: dict[str, Any], duration_seconds: float) -> N
 def _write_scrape_status_file(scrape_response: dict[str, Any], duration_seconds: float) -> None:
     now = datetime.now(UTC).isoformat()
     errors: list[dict[str, Any]] = scrape_response.get("errors", [])
-    keyword_groups: list[dict[str, Any]] = scrape_response.get("results", [])
+    results: list[dict[str, Any]] = scrape_response.get("results", [])
     site_statuses = {
         **_read_saved_site_statuses(),
-        **_build_ok_site_statuses(keyword_groups, now),
+        **_build_ok_site_statuses(results, now),
         **_build_failed_site_statuses(errors, now),
     }
     scrape_status = {
@@ -862,17 +813,26 @@ def _read_saved_site_statuses() -> dict[str, Any]:
     return saved_scrape_status.get("per_site", {})
 
 
-def _build_ok_site_statuses(keyword_groups: list[dict[str, Any]], now: str) -> dict[str, Any]:
+def _build_ok_site_statuses(results: list[dict[str, Any]], now: str) -> dict[str, Any]:
     site_statuses: dict[str, Any] = {}
-    for keyword_group in keyword_groups:
-        for site_entry in keyword_group.get("sites", []):
-            site_name = site_entry.get("site")
-            if not site_name:
-                continue
-            site_statuses[site_name] = _build_site_status(
-                now=now, last_status="ok", job_count=site_entry.get("count", 0), last_error=None
-            )
+    for result_entry in list_successful_result_entries(results):
+        site_name = result_entry.get("site")
+        if not site_name:
+            continue
+        site_statuses[site_name] = _build_site_status(
+            now=now,
+            last_status="ok",
+            job_count=_count_payload_jobs(result_entry["payload"]),
+            last_error=None,
+        )
     return site_statuses
+
+
+def _count_payload_jobs(site_payload: dict[str, Any]) -> int:
+    jobs = site_payload.get("jobs")
+    if not isinstance(jobs, list):
+        return 0
+    return len(jobs)
 
 
 def _build_failed_site_statuses(errors: list[dict[str, Any]], now: str) -> dict[str, Any]:
@@ -916,11 +876,10 @@ def _build_last_run(
     }
 
 
-def _count_jobs(keyword_groups: list[dict[str, Any]]) -> int:
+def _count_jobs(results: list[dict[str, Any]]) -> int:
     total_jobs = 0
-    for keyword_group in keyword_groups:
-        for site_entry in keyword_group.get("sites", []):
-            total_jobs += site_entry.get("count", 0)
+    for result_entry in list_successful_result_entries(results):
+        total_jobs += _count_payload_jobs(result_entry["payload"])
     return total_jobs
 
 
@@ -937,20 +896,18 @@ def _write_json_atomically(target_path: Path, json_content: dict[str, Any]) -> N
     os.replace(temporary_path, target_path)
 
 
-def _build_optional_payload_results(
-    include_payloads: bool,
-    raw_results: list[dict[str, Any]],
-    filtered_results: list[dict[str, Any]],
+def _build_optional_raw_results(
+    include_raw_results: bool, raw_results: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    if not include_payloads:
+    if not include_raw_results:
         return {}
-    return {"raw_results": raw_results, "filtered_results": filtered_results}
+    return {"raw_results": raw_results}
 
 
-def _save_run(scrape_response: dict[str, Any], response_parts: _ScrapeResponseParts) -> str | None:
+def _save_scrape_run(scrape_response: dict[str, Any]) -> str | None:
     logger = _get_scraper_logger()
     try:
-        mongo_id = mongo.insert_run(_build_run_document(scrape_response, response_parts))
+        mongo_id = mongo.insert_run(_build_run_document(scrape_response))
     except Exception as exc:
         logger.error("scrape_jobs: mongo insert failed: %s", exc)
         return None
@@ -958,9 +915,8 @@ def _save_run(scrape_response: dict[str, Any], response_parts: _ScrapeResponsePa
     return mongo_id
 
 
-def _build_run_document(
-    scrape_response: dict[str, Any], response_parts: _ScrapeResponseParts
-) -> dict[str, Any]:
+def _build_run_document(scrape_response: dict[str, Any]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = scrape_response["results"]
     return {
         "run_metadata": {
             "ok": scrape_response["ok"],
@@ -968,41 +924,38 @@ def _build_run_document(
             "keywords": scrape_response["keywords"],
             "requested_sites": scrape_response["requested_sites"],
             "errors": scrape_response["errors"],
-            "per_site_counts": _build_per_site_counts(scrape_response["results"]),
-            "per_site_sources": _build_per_site_sources(response_parts.filtered_results),
+            "per_site_counts": _build_per_site_counts(results),
+            "per_site_sources": _build_per_site_sources(results),
         },
-        "filtered_results": response_parts.filtered_results,
-        "raw_results": response_parts.raw_results,
+        "results": results,
         "note": _build_failure_note(scrape_response["errors"]),
     }
 
 
-def _build_per_site_counts(keyword_groups: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+def _build_per_site_counts(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     per_site_counts: dict[str, dict[str, int]] = {}
-    for keyword_group in keyword_groups:
-        keyword = keyword_group["keyword"]
-        for site_entry in keyword_group.get("sites", []):
-            site_counts = per_site_counts.setdefault(site_entry["site"], {})
-            site_counts[keyword] = site_entry.get("count", 0)
+    for result_entry in list_successful_result_entries(results):
+        site_counts = per_site_counts.setdefault(result_entry["site"], {})
+        site_counts[result_entry["keyword"]] = _count_payload_jobs(result_entry["payload"])
     return per_site_counts
 
 
-def _build_per_site_sources(filtered_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_per_site_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     per_site_sources: list[dict[str, Any]] = []
-    for filtered_entry in filtered_results:
-        site_payload = filtered_entry.get("payload")
+    for result_entry in results:
+        site_payload = result_entry.get("payload")
         if not isinstance(site_payload, dict):
             continue
-        per_site_sources.append(_build_site_source(filtered_entry, site_payload))
+        per_site_sources.append(_build_site_source(result_entry, site_payload))
     return per_site_sources
 
 
 def _build_site_source(
-    filtered_entry: dict[str, Any], site_payload: dict[str, Any]
+    result_entry: dict[str, Any], site_payload: dict[str, Any]
 ) -> dict[str, Any]:
     return {
-        "site": filtered_entry.get("site"),
-        "keyword": filtered_entry.get("keyword"),
+        "site": result_entry.get("site"),
+        "keyword": result_entry.get("keyword"),
         "source": site_payload.get("source", "html"),
         "fallback_reason": site_payload.get("fallback_reason"),
     }
