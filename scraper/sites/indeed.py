@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
+from ..api.client import ApiError
 from ..log import get_scraper_logger
 from ..types import Job, empty_job
 from ._markdown import html_to_markdown
@@ -123,7 +124,7 @@ def _fetch_jobs_from_api(keyword: str, where: str, limit: int) -> list[dict]:
         from curl_cffi import requests as cffi_requests  # type: ignore[attr-defined]
     except Exception as exc:
         _LOG.error("[indeed-api] curl_cffi missing: %s", exc)
-        return []
+        raise ApiError("not_installed", f"{type(exc).__name__}: {exc}") from exc
 
     query = _GRAPHQL_QUERY_TEMPLATE.format(
         what=keyword.replace('"', '\\"'),
@@ -141,25 +142,26 @@ def _fetch_jobs_from_api(keyword: str, where: str, limit: int) -> list[dict]:
             timeout=30,
         )
     except Exception as exc:
-        _LOG.error("[indeed-api] POST error: %s: %s", type(exc).__name__, exc)
-        return []
+        _LOG.error("[indeed-api] POST error: %s", type(exc).__name__)
+        _LOG.debug("[indeed-api] POST error detail: %s", exc)
+        raise ApiError("runtime_error", f"{type(exc).__name__}: {exc}") from exc
 
     if response.status_code != 200:
-        _LOG.warning(
-            "[indeed-api] status=%d body=%s",
-            response.status_code,
-            response.text[:200],
-        )
-        return []
+        _LOG.warning("[indeed-api] status=%d", response.status_code)
+        _LOG.debug("[indeed-api] response body: %s", response.text[:200])
+        raise ApiError(f"http_{response.status_code}", response.text[:200])
     try:
         payload = response.json()
     except ValueError as exc:
         _LOG.error("[indeed-api] non-JSON response: %s", exc)
-        return []
-    errors = payload.get("errors")
-    if errors:
-        _LOG.warning("[indeed-api] graphql errors: %s", errors)
+        raise ApiError("non_json", str(exc)) from exc
+    graphql_errors = payload.get("errors")
+    if graphql_errors:
+        _LOG.warning("[indeed-api] response has graphql errors")
+        _LOG.debug("[indeed-api] graphql errors: %s", graphql_errors)
     results = (payload.get("data") or {}).get("jobSearch", {}).get("results") or []
+    if graphql_errors and not results:
+        raise ApiError("graphql_error", str(graphql_errors)[:200])
     jobs: list[dict] = []
     for item in results:
         if not isinstance(item, dict):

@@ -420,20 +420,34 @@ def _scrape_jobs_from_html(
     label: str,
     fallback_reason: str | None,
 ) -> list[Job] | FilteredAndRawPayloads:
+    if not scraper.requires_search_html:
+        _LOG.info("[%s] site makes its own request, search page not downloaded", label)
+        return _parse_jobs_from_site_own_request(scraper, keyword, label)
+
     _LOG.info("[%s] fetching %s", label, scraper.url)
     search_html_download = html_downloader.download_html(scraper.url)
     search_html = search_html_download.html
-    if not search_html and scraper.requires_search_html:
+    if not search_html:
         _LOG.error("[%s] FAILED: no html", label)
         attempts = [attempt.to_dict() for attempt in search_html_download.attempts]
         return _build_html_download_failure_payloads(scraper, keyword, attempts, fallback_reason)
 
-    if not search_html:
-        _LOG.info("[%s] no search html (scraper handles fetch internally)", label)
-        return scraper.parse("")
-
     _LOG.info("[%s] fetched search html (%d bytes)", label, len(search_html))
-    return scraper.parse(search_html)
+    jobs_from_search_page = scraper.parse(search_html)
+    if not jobs_from_search_page:
+        _LOG.warning("[%s] html source returned 0 jobs; the page layout may have changed", label)
+    return jobs_from_search_page
+
+
+def _parse_jobs_from_site_own_request(
+    scraper: Scraper, keyword: str, label: str
+) -> list[Job] | FilteredAndRawPayloads:
+    try:
+        return scraper.parse("")
+    except ApiError as exc:
+        _LOG.warning("[%s] site request failed (%s)", label, exc.code)
+        _LOG.debug("[%s] site request failure detail: %s", label, exc.detail)
+        return _build_api_failure_payloads(keyword, exc.code)
 
 
 def _build_html_download_failure_payloads(
@@ -583,7 +597,7 @@ def _fill_requirements_for_jobs(
         for finished_requirements_read in as_completed(job_index_by_running_requirements_read):
             finished_job_index = job_index_by_running_requirements_read[finished_requirements_read]
             jobs[finished_job_index]["requirements"] = _read_future_result_or_none(
-                finished_requirements_read
+                finished_requirements_read, scraper.name
             )
 
 
@@ -616,7 +630,15 @@ def _read_requirements_from_api(
     try:
         return read_requirements_via_api(job)
     except Exception as exc:
-        _LOG.debug("[%s] detail api failed for %s: %s", scraper.name, job.get("url"), exc)
+        _LOG.warning(
+            "[%s] requirements api failed for %s (%s)",
+            scraper.name,
+            job.get("url"),
+            _read_short_failure_reason(exc),
+        )
+        _LOG.debug(
+            "[%s] requirements api failure detail: %s", scraper.name, _read_failure_detail(exc)
+        )
         return None
 
 
@@ -644,11 +666,27 @@ def _is_allowed_host(url: str) -> bool:
     return hostname.lower() in ALLOWED_URL_HOSTS
 
 
-def _read_future_result_or_none(future: Future[str | None]) -> str | None:
+def _read_future_result_or_none(future: Future[str | None], site_name: str) -> str | None:
     try:
         return future.result()
-    except Exception:
+    except Exception as exc:
+        _LOG.warning(
+            "[%s] requirements read crashed (%s)", site_name, _read_short_failure_reason(exc)
+        )
+        _LOG.debug("[%s] requirements read crash detail: %s", site_name, _read_failure_detail(exc))
         return None
+
+
+def _read_short_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, ApiError):
+        return exc.code
+    return type(exc).__name__
+
+
+def _read_failure_detail(exc: Exception) -> str:
+    if isinstance(exc, ApiError):
+        return exc.detail
+    return str(exc)
 
 
 def _build_filtered_payload(
