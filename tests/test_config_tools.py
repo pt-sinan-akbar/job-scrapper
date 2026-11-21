@@ -28,7 +28,7 @@ SETTINGS: dict[str, Any] = {
 @pytest.fixture
 def database(monkeypatch: pytest.MonkeyPatch) -> Any:
     db = mongomock.MongoClient()["job_scraper"]
-    monkeypatch.setattr(server.mongo, "get_database", lambda: db)
+    monkeypatch.setattr(server.mongo, "read_database", lambda: db)
     JobSettingsStore(db).seed(deepcopy(SETTINGS))
     return db
 
@@ -59,7 +59,7 @@ def test_get_config_lists_city_options_for_sites_with_a_picker(database: Any):
 
 def test_get_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch):
     db = mongomock.MongoClient()["job_scraper"]
-    monkeypatch.setattr(server.mongo, "get_database", lambda: db)
+    monkeypatch.setattr(server.mongo, "read_database", lambda: db)
 
     assert "seed.sh" in server.get_config()["error"]
 
@@ -201,7 +201,7 @@ def test_update_config_refuses_proxy(database: Any):
 
 def test_update_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch):
     db = mongomock.MongoClient()["job_scraper"]
-    monkeypatch.setattr(server.mongo, "get_database", lambda: db)
+    monkeypatch.setattr(server.mongo, "read_database", lambda: db)
 
     result = server.update_config(UPWORK_LIMIT_9)
 

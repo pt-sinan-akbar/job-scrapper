@@ -3,14 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ui_server.schema.discord import (
+from backend.schemas.discord import (
     DiscordMessageRequest,
     DiscordSendRequest,
     DiscordSettingsRequest,
 )
 
 CHANNEL_ID = "123456789012345678"
-RUN_ID = "20261101T010000Z-abc123"
+SCRAPE_ID = "20261101T010000Z-abc123"
 
 
 def test_message_request_accepts_text():
@@ -23,10 +23,10 @@ def test_message_request_accepts_text():
     "body",
     [
         {"mention": True},
-        {"mention": True, "text": "hi", "run_id": RUN_ID, "job_indexes": [0]},
+        {"mention": True, "text": "hi", "run_id": SCRAPE_ID, "job_indexes": [0]},
         {"mention": True, "text": "hi", "job_indexes": [0]},
-        {"mention": True, "text": "hi", "run_id": RUN_ID},
-        {"mention": True, "run_id": RUN_ID, "job_indexes": [0]},
+        {"mention": True, "text": "hi", "run_id": SCRAPE_ID},
+        {"mention": True, "run_id": SCRAPE_ID, "job_indexes": [0]},
         {"mention": True, "text": ""},
         {"mention": True, "text": "x" * 2001},
         {"text": "hi"},

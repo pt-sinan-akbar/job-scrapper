@@ -9,11 +9,11 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.app import create_app
+from backend.errors import McpUnavailableError
+from backend.services.scrape_report_repository import MongoScrapeReportRepository
+from backend.settings import Settings
 from tests.test_ui_routes import PASSWORD
-from ui_server.app import create_app
-from ui_server.errors import McpUnavailableError
-from ui_server.services.run_repository import MongoRunRepository
-from ui_server.settings import Settings
 
 LOCAL_URL = "http://127.0.0.1:8090"
 DEV_LOGIN_KEY = "dev-login-key-for-tests"
@@ -83,13 +83,15 @@ def gateway() -> FakeGateway:
 
 
 @pytest.fixture
-def run_repository() -> MongoRunRepository:
-    return MongoRunRepository(mongomock.MongoClient()["job_scraper"])
+def scrape_report_repository() -> MongoScrapeReportRepository:
+    return MongoScrapeReportRepository(mongomock.MongoClient()["job_scraper"])
 
 
 @pytest.fixture
-def app(tmp_path: Path, gateway: FakeGateway, run_repository: MongoRunRepository) -> FastAPI:
-    return create_app(_settings(tmp_path), gateway, run_repository)
+def app(
+    tmp_path: Path, gateway: FakeGateway, scrape_report_repository: MongoScrapeReportRepository
+) -> FastAPI:
+    return create_app(_settings(tmp_path), gateway, scrape_report_repository)
 
 
 @pytest.fixture
@@ -100,7 +102,9 @@ def client(app: FastAPI):
 
 
 @pytest.fixture
-def prod_client(tmp_path: Path, gateway: FakeGateway, run_repository: MongoRunRepository):
+def prod_client(
+    tmp_path: Path, gateway: FakeGateway, scrape_report_repository: MongoScrapeReportRepository
+):
     settings = _settings(
         tmp_path,
         env="prod",
@@ -108,7 +112,7 @@ def prod_client(tmp_path: Path, gateway: FakeGateway, run_repository: MongoRunRe
         session_secret="s" * 32,
         domain="testserver",
     )
-    app = create_app(settings, gateway, run_repository)
+    app = create_app(settings, gateway, scrape_report_repository)
     with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
 
@@ -271,7 +275,7 @@ def test_send_text_returns_counts_and_results(client: TestClient, gateway: FakeG
     }
 
 
-def test_send_rejects_run_id_as_extra_field(client: TestClient, gateway: FakeGateway):
+def test_send_rejects_legacy_scrape_id_key_as_extra_field(client: TestClient, gateway: FakeGateway):
     response = client.post(
         "/api/discord/send",
         json={"channel_id": CHANNEL_ID, "mention": False, "text": "hi", "run_id": "x"},

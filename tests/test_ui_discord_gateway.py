@@ -5,14 +5,14 @@ from typing import Any
 
 import pytest
 
-from ui_server.errors import (
+from backend.errors import (
     ConfigInvalidError,
     DiscordForbiddenError,
     DiscordNotConfiguredError,
     DiscordUnauthorizedError,
     McpUnavailableError,
 )
-from ui_server.services.mcp_gateway import (
+from backend.services.scraper_client import (
     DISCORD_CALL_TIMEOUT_SECONDS,
     DISCORD_SEND_TIMEOUT_SECONDS,
     READ_TIMEOUT_SECONDS,
@@ -185,6 +185,42 @@ def test_send_discord_message_jobs_sends_jobs_only():
     )
 
     assert gateway.calls[0][1] == {"channel_id": "1" * 18, "mention": False, "jobs": jobs}
+
+
+def test_send_discord_message_jobs_passes_the_digest_counts():
+    gateway = FakeGateway()
+    gateway.responses = [{"ok": True, "sent": 1, "failed": 0, "results": []}]
+    jobs = [{"title": "A"}]
+    counts = {"keyword_count": 11, "site_count": 4, "error_count": 0}
+
+    asyncio.run(
+        ScraperClient(gateway).send_discord_message(
+            channel_id="1" * 18, mention=True, text=None, jobs=jobs, digest_counts=counts
+        )
+    )
+
+    assert gateway.calls[0][1] == {
+        "channel_id": "1" * 18,
+        "mention": True,
+        "jobs": jobs,
+        "keyword_count": 11,
+        "site_count": 4,
+        "error_count": 0,
+    }
+
+
+def test_send_discord_message_text_never_passes_digest_counts():
+    gateway = FakeGateway()
+    gateway.responses = [{"ok": True, "sent": 1, "failed": 0, "results": []}]
+    counts = {"keyword_count": 11, "site_count": 4, "error_count": 0}
+
+    asyncio.run(
+        ScraperClient(gateway).send_discord_message(
+            channel_id="1" * 18, mention=False, text="hi", jobs=None, digest_counts=counts
+        )
+    )
+
+    assert gateway.calls[0][1] == {"channel_id": "1" * 18, "mention": False, "text": "hi"}
 
 
 @pytest.mark.parametrize(

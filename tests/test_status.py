@@ -16,7 +16,13 @@ def _ok_result(keyword: str = "engineer", site: str = "glints", count: int = 3) 
         "keywords": [keyword],
         "requested_sites": [site],
         "exit_code": 0,
-        "results": [{"keyword": keyword, "sites": [{"site": site, "count": count}]}],
+        "results": [
+            {
+                "keyword": keyword,
+                "site": site,
+                "payload": {"keyword": keyword, "count": count, "jobs": [{"title": "A"}] * count},
+            }
+        ],
         "errors": [],
     }
 
@@ -27,7 +33,13 @@ def _err_result(keyword: str = "engineer", site: str = "glints") -> dict:
         "keywords": [keyword],
         "requested_sites": [site],
         "exit_code": 0,
-        "results": [{"keyword": keyword, "sites": []}],
+        "results": [
+            {
+                "keyword": keyword,
+                "site": site,
+                "payload": {"keyword": keyword, "error": "fetch failed", "jobs": [{"title": "A"}]},
+            }
+        ],
         "errors": [{"keyword": keyword, "site": site, "reason": "fetch failed"}],
     }
 
@@ -67,6 +79,7 @@ def test_write_status_records_error(tmp_path):
     data = json.loads(status_path.read_text())
     assert data["last_run"]["ok"] is False
     assert data["last_run"]["error_count"] == 1
+    assert data["last_run"]["total_jobs"] == 0
     assert data["last_error"] is not None
     assert data["last_error"]["reason"] == "fetch failed"
     assert data["per_site"]["glints"]["last_status"] == "error"

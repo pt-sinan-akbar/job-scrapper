@@ -7,7 +7,7 @@ import mongomock
 import pytest
 from pymongo.errors import ServerSelectionTimeoutError
 
-from mcp_server.discord_messages import render_job
+from mcp_server.discord_messages import fill_job_template
 from mcp_server.discord_settings import (
     DEFAULT_MAX_CHARS,
     DEFAULT_MESSAGE_TEMPLATE,
@@ -16,8 +16,8 @@ from mcp_server.discord_settings import (
     DiscordSettingsInvalidError,
     DiscordSettingsStore,
     DiscordSettingsUnavailableError,
+    build_settings_payload,
     is_snowflake,
-    to_payload,
 )
 
 CHANNEL_ID = "123456789012345678"
@@ -217,7 +217,7 @@ def test_mongo_failure_on_save_is_unavailable():
 
 
 def test_payload_when_nothing_is_saved(store: DiscordSettingsStore):
-    assert to_payload(store.read()) == {
+    assert build_settings_payload(store.read()) == {
         "configured": False,
         "token_hint": None,
         "default_channel_id": None,
@@ -231,7 +231,7 @@ def test_payload_when_nothing_is_saved(store: DiscordSettingsStore):
 def test_payload_masks_the_token(store: DiscordSettingsStore):
     store.save({"token": TOKEN, "default_channel_id": CHANNEL_ID})
 
-    payload = to_payload(store.read())
+    payload = build_settings_payload(store.read())
 
     assert payload["configured"] is True
     assert payload["token_hint"] == "••••1234"
@@ -243,7 +243,7 @@ def test_payload_masks_the_token(store: DiscordSettingsStore):
 def test_payload_masks_a_short_token_without_revealing_it(store: DiscordSettingsStore):
     store.save({"token": "ab"})
 
-    assert to_payload(store.read())["token_hint"] == "••••"
+    assert build_settings_payload(store.read())["token_hint"] == "••••"
 
 
 @pytest.mark.parametrize(
@@ -277,7 +277,7 @@ def test_default_template_renders_every_placeholder():
         "posted_date": "2026-11-16",
     }
 
-    rendered = render_job(DEFAULT_MESSAGE_TEMPLATE, job)
+    rendered = fill_job_template(DEFAULT_MESSAGE_TEMPLATE, job)
 
     assert "{" not in rendered
     assert "## Backend Engineer" in rendered

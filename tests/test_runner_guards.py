@@ -13,6 +13,7 @@ from scraper.runner import (
 )
 from scraper.sites.linkedin import LinkedinScraper
 from scraper.types import Job, empty_job
+from tests.log_lines import list_log_lines_containing, list_warning_or_above_log_lines
 from tests.runner_fakes import build_html_downloader_returning
 
 JOB_PAGE_HTML = "<div class='show-more-less-html__markup'>Five years of Python</div>"
@@ -107,20 +108,25 @@ def test_job_page_that_downloads_no_html_gives_no_requirements():
     assert requirements is None
 
 
-def test_future_that_raised_reads_as_none():
+def test_future_that_raised_reads_as_none_and_logs_a_warning(
+    scraper_log_records: pytest.LogCaptureFixture,
+):
     failed_future: Future[str | None] = Future()
     failed_future.set_exception(RuntimeError("job page download crashed"))
 
-    requirements = _read_future_result_or_none(failed_future)
+    requirements = _read_future_result_or_none(failed_future, "linkedin")
 
     assert requirements is None
+    assert "[linkedin] requirements read crashed (RuntimeError)" in scraper_log_records.messages
+    warning_or_above_log_lines = list_warning_or_above_log_lines(scraper_log_records)
+    assert list_log_lines_containing(warning_or_above_log_lines, "job page download crashed") == []
 
 
 def test_future_that_finished_reads_as_its_value():
     finished_future: Future[str | None] = Future()
     finished_future.set_result("Five years of Python")
 
-    requirements = _read_future_result_or_none(finished_future)
+    requirements = _read_future_result_or_none(finished_future, "linkedin")
 
     assert requirements == "Five years of Python"
 

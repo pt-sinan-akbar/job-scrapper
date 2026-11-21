@@ -21,7 +21,7 @@ def test_insert_scrape_run_error():
 
 
 def test_get_latest_scrape_run_no_data():
-    with patch("mcp_server.mongo.get_latest_run", return_value=None):
+    with patch("mcp_server.mongo.read_latest_run", return_value=None):
         result = get_latest_scrape_run()
     assert result["available"] is False
     assert "message" in result
@@ -34,7 +34,7 @@ def test_get_latest_scrape_run_returns_data():
         "run_metadata": {"ok": True, "bot_post_status": {"total_posted": 5, "failed": 0}},
         "discord_sent_status": "success",
     }
-    with patch("mcp_server.mongo.get_latest_run", return_value=doc):
+    with patch("mcp_server.mongo.read_latest_run", return_value=doc):
         result = get_latest_scrape_run()
     assert result["available"] is True
     assert result["run_metadata"]["ok"] is True
@@ -42,8 +42,38 @@ def test_get_latest_scrape_run_returns_data():
     assert result["discord_sent_status"] == "success"
 
 
+def test_get_latest_scrape_run_returns_an_older_run_as_stored():
+    payload_entry = {"keyword": "devops", "site": "glints", "payload": {"count": 0, "jobs": []}}
+    older_run = {
+        "_id": "abc123",
+        "run_metadata": {"ok": True},
+        "filtered_results": [payload_entry],
+        "raw_results": [payload_entry],
+        "note": None,
+    }
+    with patch("mcp_server.mongo.read_latest_run", return_value=older_run):
+        result = get_latest_scrape_run()
+
+    assert result == {"available": True, **older_run}
+    assert "results" not in result
+
+
+def test_get_latest_scrape_run_returns_a_newer_run_as_stored():
+    payload_entry = {"keyword": "devops", "site": "glints", "payload": {"count": 0, "jobs": []}}
+    newer_run = {
+        "_id": "abc124",
+        "run_metadata": {"ok": True},
+        "results": [payload_entry],
+        "note": None,
+    }
+    with patch("mcp_server.mongo.read_latest_run", return_value=newer_run):
+        result = get_latest_scrape_run()
+
+    assert result == {"available": True, **newer_run}
+
+
 def test_get_latest_scrape_run_error():
-    with patch("mcp_server.mongo.get_latest_run", side_effect=Exception("timeout")):
+    with patch("mcp_server.mongo.read_latest_run", side_effect=Exception("timeout")):
         result = get_latest_scrape_run()
     assert result["available"] is False
     assert "timeout" in result["error"]

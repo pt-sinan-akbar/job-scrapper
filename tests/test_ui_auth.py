@@ -4,15 +4,15 @@ import pytest
 from argon2 import PasswordHasher
 from itsdangerous import TimestampSigner
 
-from ui_server.errors import InvalidPasswordError, TooManyAttemptsError
-from ui_server.services.auth_service import (
+from backend.errors import InvalidPasswordError, TooManyAttemptsError
+from backend.services.auth_service import (
     MAX_FAILED_ATTEMPTS,
     SESSION_SALT,
     SESSION_SUBJECT,
     AuthService,
     LoginLimiter,
 )
-from ui_server.settings import Settings
+from backend.settings import Settings
 
 PASSWORD = "correct horse battery"  # pragma: allowlist secret
 DEV_LOGIN_KEY = "dev-login-key-for-tests"

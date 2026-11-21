@@ -4,8 +4,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from ui_server.errors import RunInProgressError, install_error_handlers
-from ui_server.schema.response import ok
+from backend.errors import ScrapeInProgressError, install_error_handlers
+from backend.schemas.response import build_ok_response
 
 
 class Body(BaseModel):
@@ -18,7 +18,7 @@ def _client() -> TestClient:
 
     @app.get("/busy")
     def busy() -> None:
-        raise RunInProgressError()
+        raise ScrapeInProgressError()
 
     @app.get("/crash")
     def crash() -> None:
@@ -26,17 +26,17 @@ def _client() -> TestClient:
 
     @app.post("/validate")
     def validate(body: Body) -> dict:
-        return ok(body.limit)
+        return build_ok_response(body.limit)
 
     return TestClient(app, raise_server_exceptions=False)
 
 
 def test_ok_wraps_data():
-    assert ok({"a": 1}) == {"success": True, "data": {"a": 1}, "error": None}
+    assert build_ok_response({"a": 1}) == {"success": True, "data": {"a": 1}, "error": None}
 
 
 def test_ok_adds_meta_when_given():
-    assert ok([], meta={"total": 0})["meta"] == {"total": 0}
+    assert build_ok_response([], meta={"total": 0})["meta"] == {"total": 0}
 
 
 def test_app_error_uses_error_envelope():
@@ -57,7 +57,7 @@ def test_validation_error_lists_fields():
     assert list(response.json()["error"]) == ["limit"]
 
 
-def test_unexpected_error_hides_detail():
+def test_unexpected_error_hides_the_error_text():
     response = _client().get("/crash")
 
     assert response.status_code == 500
