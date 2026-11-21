@@ -16,7 +16,10 @@ const headingId = useId()
   >
     <div class="flex items-center justify-between gap-3">
       <div class="flex min-w-0 flex-col">
-        <h3 :id="headingId" class="text-heading text-ink">{{ title }}</h3>
+        <div class="flex min-w-0 items-center gap-2">
+          <h3 :id="headingId" class="text-heading text-ink">{{ title }}</h3>
+          <slot name="badge" />
+        </div>
         <p v-if="description" class="text-body-sm text-ink-muted">{{ description }}</p>
       </div>
       <div v-if="$slots.actions" class="flex shrink-0 items-center gap-2">

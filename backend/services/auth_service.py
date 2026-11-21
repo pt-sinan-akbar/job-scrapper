@@ -55,7 +55,7 @@ class AuthService:
     def __init__(self, settings: Settings) -> None:
         self._is_dev = settings.env == "dev"
         self._password_hash = settings.password_hash
-        self._dev_login_key = settings.dev_login_key
+        self._auth_token = settings.auth_token
         self._signer = TimestampSigner(
             settings.session_secret or secrets.token_urlsafe(SESSION_SECRET_BYTES),
             salt=SESSION_SALT,
@@ -80,11 +80,14 @@ class AuthService:
             return False
         return True
 
+    def is_auth_token(self, token: str | None) -> bool:
+        if token is None or not self._auth_token:
+            return False
+        return hmac.compare_digest(token.encode(), self._auth_token.encode())
+
     def _is_right_password(self, password: str) -> bool:
         if self._is_dev:
-            return bool(self._dev_login_key) and hmac.compare_digest(
-                password.encode(), self._dev_login_key.encode()
-            )
+            return self.is_auth_token(password)
         try:
             return self._hasher.verify(self._password_hash, password)
         except (VerificationError, InvalidHashError):

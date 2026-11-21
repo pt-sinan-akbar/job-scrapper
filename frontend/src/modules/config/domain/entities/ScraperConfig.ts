@@ -71,6 +71,14 @@ export interface SiteIssue {
 
 export type ApiStatus = 'on' | 'off' | 'none'
 
+export type SiteToggleField = 'isEnabled' | 'apiEnabled' | 'apiCountryWide'
+
+export interface SiteToggle {
+  siteName: string
+  field: SiteToggleField
+  isOn: boolean
+}
+
 const API_STATUS_LABELS: Record<ApiStatus, string> = {
   on: 'API on',
   off: 'API off',
@@ -78,6 +86,44 @@ const API_STATUS_LABELS: Record<ApiStatus, string> = {
 }
 
 const SITE_FIELDS = ['isEnabled', 'limit', 'maxAgeHours', 'filter', 'api'] as const
+
+export function readSiteToggle(site: SiteSetting, field: SiteToggleField): boolean {
+  if (field === 'isEnabled') {
+    return site.isEnabled
+  }
+  if (site.api === null) {
+    return false
+  }
+  if (field === 'apiEnabled') {
+    return site.api.isEnabled
+  }
+  return site.api.isCountryWide
+}
+
+export function setSiteToggle(
+  site: SiteSetting,
+  field: SiteToggleField,
+  isOn: boolean,
+): SiteSetting {
+  if (field === 'isEnabled') {
+    return { ...site, isEnabled: isOn }
+  }
+  if (site.api === null) {
+    return site
+  }
+  if (field === 'apiEnabled') {
+    return { ...site, api: { ...site.api, isEnabled: isOn } }
+  }
+  return { ...site, api: { ...site.api, isCountryWide: isOn } }
+}
+
+export function toSiteToggleChanges(savedSite: SiteSetting, toggle: SiteToggle): ConfigChanges {
+  const toggledSite = setSiteToggle(savedSite, toggle.field, toggle.isOn)
+  if (toggle.field === 'isEnabled') {
+    return { sites: { [toggle.siteName]: { isEnabled: toggle.isOn } } }
+  }
+  return { sites: { [toggle.siteName]: { api: toggledSite.api } } }
+}
 
 export function toApiStatus(site: SiteSetting): ApiStatus {
   if (site.api === null) {

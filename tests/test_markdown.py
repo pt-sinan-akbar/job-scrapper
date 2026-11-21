@@ -82,3 +82,44 @@ def test_html_escapes_only_word_edge_underscores():
 
 def test_html_keeps_inline_hyphens_readable():
     assert html_to_markdown("<p>Jakarta-Bandung, full-time</p>") == "Jakarta-Bandung, full-time"
+
+
+def test_break_at_end_of_bold_text_keeps_heading_apart_from_next_text():
+    html = (
+        "<div><strong>About Us<br><br></strong><strong>GoTyme</strong> is a bank."
+        "<br><br><strong>About The Role<br><br></strong>We are hiring</div>"
+    )
+    assert html_to_markdown(html) == (
+        "**About Us**\n\n**GoTyme** is a bank.\n\n**About The Role**\n\nWe are hiring"
+    )
+
+
+def test_break_at_start_of_bold_text_stays_before_the_bold_text():
+    html = "<div>Intro<strong><br>Requirements</strong> below</div>"
+    assert html_to_markdown(html) == "Intro\n**Requirements** below"
+
+
+def test_break_at_end_of_nested_inline_tags_moves_out_of_every_tag():
+    html = "<div><strong><u>Your role<br><br></u></strong>Build models</div>"
+    assert html_to_markdown(html) == "**Your role**\n\nBuild models"
+
+
+def test_break_in_the_middle_of_bold_text_stays_inside():
+    html = "<div><strong>Line one<br>Line two</strong></div>"
+    assert html_to_markdown(html) == "**Line one\nLine two**"
+
+
+def test_bold_text_nested_in_bold_text_is_marked_bold_once():
+    html = "<div><strong><strong>Who are we looking for</strong><br></strong>Engineers</div>"
+    assert html_to_markdown(html) == "**Who are we looking for**\nEngineers"
+
+
+def test_break_before_trailing_whitespace_in_bold_text_still_moves_out():
+    assert html_to_markdown("<p><strong>Title<br>\n</strong>Text</p>") == "**Title**\nText"
+    assert html_to_markdown("<p><strong>Title<br> </strong>Text</p>") == "**Title**\nText"
+
+
+def test_break_after_leading_whitespace_in_bold_text_still_moves_out():
+    assert (
+        html_to_markdown("<p>Intro<strong> <br>Title</strong> text</p>") == "Intro\n **Title** text"
+    )

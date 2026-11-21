@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_SESSION_SECRET_LENGTH = 32
-MIN_DEV_LOGIN_KEY_LENGTH = 16
+MIN_AUTH_TOKEN_LENGTH = 16
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 
@@ -19,19 +19,17 @@ class Settings(BaseSettings):
     port: int = 8090
     static_dir: Path = Path("frontend/dist")
     password_hash: str = ""
-    dev_login_key: str = ""
+    auth_token: str = Field(default="", validation_alias=AliasChoices("AUTH_TOKEN", "auth_token"))
     session_secret: str = ""
     domain: str = ""
 
     @model_validator(mode="after")
     def require_prod_secrets(self) -> Self:
+        if self.auth_token and len(self.auth_token) < MIN_AUTH_TOKEN_LENGTH:
+            raise ValueError(f"AUTH_TOKEN must have at least {MIN_AUTH_TOKEN_LENGTH} characters")
         if self.env != "prod":
-            if not self.dev_login_key:
-                raise ValueError("UI_DEV_LOGIN_KEY is required in dev")
-            if len(self.dev_login_key) < MIN_DEV_LOGIN_KEY_LENGTH:
-                raise ValueError(
-                    f"UI_DEV_LOGIN_KEY must have at least {MIN_DEV_LOGIN_KEY_LENGTH} characters"
-                )
+            if not self.auth_token:
+                raise ValueError("AUTH_TOKEN is required in dev")
             return self
         if not self.password_hash:
             raise ValueError("UI_PASSWORD_HASH is required in prod")

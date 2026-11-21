@@ -6,6 +6,8 @@ import {
   type LocationOption,
   type SiteField,
   type SiteSetting,
+  type SiteToggle,
+  type SiteToggleField,
 } from '@/modules/config/domain/entities/ScraperConfig'
 import FilterFields from '@/modules/config/presentation/components/FilterFields.vue'
 import NumberInput from '@/modules/config/presentation/components/NumberInput.vue'
@@ -25,9 +27,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   update: [site: SiteSetting]
+  toggle: [toggle: SiteToggle]
 }>()
 
 const idPrefix = computed(() => toSiteIdPrefix(props.site.name))
+
+function emitToggle(field: SiteToggleField, isOn: boolean): void {
+  emit('toggle', { siteName: props.site.name, field, isOn })
+}
 
 function change(changes: Partial<Omit<SiteSetting, 'name'>>): void {
   emit('update', { ...props.site, ...changes })
@@ -76,6 +83,7 @@ function change(changes: Partial<Omit<SiteSetting, 'name'>>): void {
       :invalid-field="invalidField"
       :location-options="locationOptions"
       @update="change({ api: $event })"
+      @toggle="emitToggle"
     />
   </div>
 </template>

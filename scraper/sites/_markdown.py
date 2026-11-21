@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, PageElement, Tag
 from markdownify import ATX, MarkdownConverter
 
 _DROPPED_TAGS = ("img", "script", "style", "noscript", "iframe", "svg")
+_BOLD_TAGS = ("b", "strong")
+_INLINE_TAGS = (*_BOLD_TAGS, "i", "em", "u", "a", "span", "font")
+_LINE_BREAK_TAG = "br"
 _HTML_TAG_RE = re.compile(
     r"</?(?:p|div|br|hr|ul|ol|li|h[1-6]|b|strong|i|em|u|a|span|font|small|sub|sup"
     r"|table|thead|tbody|tr|td|th|section|article|blockquote|pre|code)(?=[\s/>])[^>]*>",
@@ -53,4 +57,55 @@ def html_to_markdown(html: str | None) -> str | None:
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(_DROPPED_TAGS):
         tag.decompose()
+    _unwrap_bold_tags_nested_in_bold_tags(soup)
+    _move_edge_line_breaks_out_of_inline_tags(soup)
     return _tidy(_CONVERTER.convert_soup(soup))
+
+
+def _unwrap_bold_tags_nested_in_bold_tags(soup: BeautifulSoup) -> None:
+    for bold_tag in soup.find_all(_BOLD_TAGS):
+        if bold_tag.find_parent(_BOLD_TAGS) is not None:
+            bold_tag.unwrap()
+
+
+def _move_edge_line_breaks_out_of_inline_tags(soup: BeautifulSoup) -> None:
+    inline_tags = soup.find_all(_INLINE_TAGS)
+    for inline_tag in reversed(inline_tags):
+        _move_trailing_line_breaks_after_tag(inline_tag)
+        _move_leading_line_breaks_before_tag(inline_tag)
+
+
+def _move_trailing_line_breaks_after_tag(inline_tag: Tag) -> None:
+    while True:
+        trailing_line_break = _find_first_line_break_past_blank_text(reversed(inline_tag.contents))
+        if trailing_line_break is None:
+            return
+        inline_tag.insert_after(trailing_line_break.extract())
+
+
+def _move_leading_line_breaks_before_tag(inline_tag: Tag) -> None:
+    while True:
+        leading_line_break = _find_first_line_break_past_blank_text(inline_tag.contents)
+        if leading_line_break is None:
+            return
+        inline_tag.insert_before(leading_line_break.extract())
+
+
+def _find_first_line_break_past_blank_text(
+    children_from_edge: Iterable[PageElement],
+) -> PageElement | None:
+    for child in children_from_edge:
+        if _is_blank_text(child):
+            continue
+        if _is_line_break(child):
+            return child
+        return None
+    return None
+
+
+def _is_blank_text(page_element: PageElement) -> bool:
+    return isinstance(page_element, NavigableString) and not page_element.strip()
+
+
+def _is_line_break(page_element: PageElement) -> bool:
+    return isinstance(page_element, Tag) and page_element.name == _LINE_BREAK_TAG

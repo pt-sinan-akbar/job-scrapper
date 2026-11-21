@@ -6,4 +6,4 @@ services:
       - "127.0.0.1:8090:8090"
     environment:
       - UI_ENV=dev
-      - UI_DEV_LOGIN_KEY=${UI_DEV_LOGIN_KEY:-}
+      - AUTH_TOKEN=${AUTH_TOKEN:-}

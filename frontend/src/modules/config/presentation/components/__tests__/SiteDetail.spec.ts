@@ -21,6 +21,13 @@ function mountSite(site: SiteSetting) {
   })
 }
 
+function lastToggle(wrapper: {
+  emitted: (event: string) => unknown[][] | undefined
+}): unknown[] | undefined {
+  const toggles = wrapper.emitted('toggle') ?? []
+  return toggles[toggles.length - 1]
+}
+
 function lastUpdate(wrapper: ReturnType<typeof mountSite>): SiteSetting | undefined {
   const updates = wrapper.emitted('update') ?? []
   return updates[updates.length - 1]?.[0] as SiteSetting | undefined
@@ -358,13 +365,31 @@ describe('SiteDetail source', () => {
     expect(wrapper.get('#glints-api-status').text()).toBe('API on')
   })
 
-  it('switches the API status when Use the API is unchecked', async () => {
+  it('asks to save the API toggle at once when Use the API is unchecked', async () => {
     const wrapper = mountApiSite(API_SITE)
 
     await wrapper.get('#glints-api-enabled').trigger('click')
-    await wrapper.setProps({ site: lastUpdate(wrapper)! })
 
-    expect(lastUpdate(wrapper)?.api?.isEnabled).toBe(false)
+    expect(lastToggle(wrapper)).toEqual([{ siteName: 'glints', field: 'apiEnabled', isOn: false }])
+    expect(wrapper.emitted('update')).toBeUndefined()
+  })
+
+  it('asks to save the whole country toggle at once', async () => {
+    const wrapper = mountApiSite(API_SITE)
+    const isCountryWide = API_SITE.api?.isCountryWide ?? false
+
+    await wrapper.get('#glints-api-country').trigger('click')
+
+    expect(lastToggle(wrapper)).toEqual([
+      { siteName: 'glints', field: 'apiCountryWide', isOn: !isCountryWide },
+    ])
+  })
+
+  it('shows API off once the saved site has the API turned off', async () => {
+    const wrapper = mountApiSite(API_SITE)
+
+    await wrapper.setProps({ site: { ...API_SITE, api: { ...API_SITE.api!, isEnabled: false } } })
+
     expect(wrapper.get('#glints-api-status').text()).toBe('API off')
   })
 })

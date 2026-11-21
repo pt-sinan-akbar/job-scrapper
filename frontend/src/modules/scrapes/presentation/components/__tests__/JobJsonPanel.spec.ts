@@ -45,24 +45,11 @@ describe('JobJsonPanel', () => {
     expect(classes.join(' ')).not.toMatch(/sticky|(^|\s)(w-|max-w-|top-)/)
   })
 
-  it('shows a JSON label and the job title in a small header', () => {
+  it('shows only a JSON label in the header, with no job title', () => {
     const wrapper = mountPanel(jobOf())
     const header = wrapper.get('[data-slot="json-header"]')
 
-    expect(header.get('h4').text()).toBe('JSON')
-    expect(header.get('[data-slot="json-job-title"]').text()).toBe('Django dev')
-  })
-
-  it('cuts a long job title short instead of wrapping it', () => {
-    const wrapper = mountPanel(jobOf({ title: 'Senior '.repeat(40) }))
-
-    expect(wrapper.get('[data-slot="json-job-title"]').classes()).toContain('truncate')
-  })
-
-  it('says Untitled job when the job has no title', () => {
-    const wrapper = mountPanel(jobOf({ title: null }))
-
-    expect(wrapper.get('[data-slot="json-job-title"]').text()).toBe('Untitled job')
+    expect(header.text()).toBe('JSON')
   })
 
   it('shows the full job json, not only the display fields', () => {
@@ -92,7 +79,7 @@ describe('JobJsonPanel', () => {
 
     await wrapper.setProps({ job: jobOf({ title: 'Vue dev', json: { title: 'Vue dev' } }) })
 
-    expect(wrapper.get('[data-slot="json-job-title"]').text()).toBe('Vue dev')
+    expect(wrapper.get('[role="region"]').attributes('aria-label')).toBe('Vue dev JSON')
     expect(JSON.parse(wrapper.get('pre').text())).toEqual({ title: 'Vue dev' })
   })
 

@@ -36,7 +36,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MCP_PORT=8080 \
     UI_HOST=0.0.0.0
 
-RUN mkdir -p /app/logs \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends jq \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /app/logs \
  && chown -R pwuser:pwuser /app
 
 COPY --from=builder /opt/python /opt/python
@@ -47,6 +50,7 @@ COPY --chown=pwuser:pwuser scraper    ./scraper
 COPY --chown=pwuser:pwuser mcp_server ./mcp_server
 COPY --chown=pwuser:pwuser backend    ./backend
 COPY --chown=pwuser:pwuser --from=frontend-build /frontend/dist ./frontend/dist
+COPY --chown=pwuser:pwuser infra/scripts/scrape-to-discord.sh ./scripts/scrape-to-discord.sh
 
 USER pwuser
 

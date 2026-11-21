@@ -287,6 +287,7 @@ http://127.0.0.1:8090 serves the UI baked into the image, so it only changes aft
   API: `GET /api/scrapes/latest` and `GET /api/scrapes/{scrape_id}`, see [`docs/architecture.md`](docs/architecture.md#scraper-ui-api-backend)
 - A run with **Notify Discord** on posts one Discord message, using the Discord settings saved in the UI. The message is a job digest with a `jobs-YYYY-MM-DD.md` file attached that holds every job. A run with 0 jobs or a failed run posts a short text message instead. See [`docs/orchestration.md`](docs/orchestration.md#what-a-job-send-posts)
 - **Send last result** on the Discord page posts the same digest for the latest finished run to the default channel again (`POST /api/scrapes/latest/discord`)
+- `./infra/scripts/scrape-to-discord.sh "<keyword>"` starts a scrape of one keyword on linkedin, glints, jobstreet and indeed with **Notify Discord** on, then waits until the Discord post ends. A named site is scraped even when it is off in the job settings. The keyword, `SCRAPER_UI_URL` (the scraper-ui address, like `http://127.0.0.1:8090` locally) and `AUTH_TOKEN` (sent as `Authorization: Bearer`) are all required, and it reads no `.env`. It exits 1 unless every job was sent
 - Config saves go through `scraper-mcp` into Mongo. Saving is off while a scrape runs, because MCP is busy then
 - Compose needs the external `job-net` network. The scripts in `infra/scripts/` create it.
   With plain `docker compose`, run `docker network create job-net`

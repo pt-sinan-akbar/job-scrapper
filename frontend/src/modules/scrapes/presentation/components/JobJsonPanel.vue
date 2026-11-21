@@ -2,12 +2,11 @@
 import { computed } from 'vue'
 import type { ScrapeJob } from '@/modules/scrapes/domain/entities/Scrape'
 import JsonViewer from '@/modules/scrapes/presentation/components/JsonViewer.vue'
-import { toJobJsonLabel, toJobTitle } from '@/modules/scrapes/presentation/components/jobJsonLabels'
+import { toJobJsonLabel } from '@/modules/scrapes/presentation/components/jobJsonLabels'
 
 const props = defineProps<{ job: ScrapeJob | null }>()
 const emit = defineEmits<{ fullscreen: [] }>()
 
-const title = computed(() => toJobTitle(props.job))
 const label = computed(() => toJobJsonLabel(props.job))
 </script>
 
@@ -16,9 +15,6 @@ const label = computed(() => toJobJsonLabel(props.job))
     <template v-if="job">
       <header data-slot="json-header" class="flex min-w-0 items-baseline gap-2">
         <h4 class="shrink-0 text-caption text-ink">JSON</h4>
-        <p data-slot="json-job-title" class="min-w-0 truncate text-body-sm text-ink-muted">
-          {{ title }}
-        </p>
       </header>
       <JsonViewer :value="job.json" :label="label" @fullscreen="emit('fullscreen')" />
     </template>

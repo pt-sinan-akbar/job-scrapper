@@ -34,6 +34,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
   const status = ref<LoadStatus>('idle')
   const options = ref<ScrapeOptions | null>(null)
   const activeScrapeId = ref<string | null>(null)
+  const runningRecord = ref<ScrapeRecord | null>(null)
   const scrapeOutcome = ref<ScrapeRecord | null>(null)
   const discordOutcome = ref<ScrapeRecord | null>(null)
   const errorMessage = ref<string | null>(null)
@@ -117,6 +118,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
   function stopFollowing(id: string): void {
     clearPollTimer()
     activeScrapeId.value = null
+    runningRecord.value = null
     expectedDiscordIds.delete(id)
   }
 
@@ -155,6 +157,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
     if (detail.record.discordStatus === 'sending') {
       expectedDiscordIds.add(detail.record.id)
     }
+    keepRunningRecord(detail.record)
     followScrape(detail.record.id)
   }
 
@@ -256,6 +259,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
     if (record.discordStatus === 'sending') {
       expectedDiscordIds.add(record.id)
     }
+    keepRunningRecord(record)
     if (record.status !== 'running') {
       recordScrapeEnd(record)
       showDetail(detail)
@@ -266,6 +270,14 @@ export const useScrapeStore = defineStore('scrapes', () => {
     }
     recordDiscordOutcome(record)
     stopFollowing(record.id)
+  }
+
+  function keepRunningRecord(record: ScrapeRecord): void {
+    if (record.status === 'running') {
+      runningRecord.value = record
+      return
+    }
+    runningRecord.value = null
   }
 
   function recordScrapeEnd(record: ScrapeRecord): void {
@@ -302,6 +314,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
       if (notifyDiscord) {
         expectedDiscordIds.add(record.id)
       }
+      keepRunningRecord(record)
       followScrape(record.id)
     } catch (error) {
       if (startedIn === session) {
@@ -375,6 +388,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
     status.value = 'idle'
     options.value = null
     activeScrapeId.value = null
+    runningRecord.value = null
     scrapeOutcome.value = null
     discordOutcome.value = null
     errorMessage.value = null
@@ -400,6 +414,7 @@ export const useScrapeStore = defineStore('scrapes', () => {
     latestStatus,
     latestErrorMessage,
     isScraping,
+    runningRecord,
     isResultsPending,
     isResultsLost,
     isSendingLatest,

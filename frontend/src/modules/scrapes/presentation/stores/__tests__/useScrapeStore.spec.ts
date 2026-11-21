@@ -182,6 +182,36 @@ describe('useScrapeStore', () => {
     expect(getScrape.execute).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps the running record while a scrape runs and clears it when it ends', async () => {
+    startScrape.execute.mockResolvedValue(record('running'))
+    getScrape.execute
+      .mockResolvedValueOnce(detail('running'))
+      .mockResolvedValueOnce(detail('succeeded'))
+    const store = useScrapeStore()
+
+    await store.start(['django'], ['upwork'], false)
+    expect(store.runningRecord?.keywords).toEqual(['django'])
+    expect(store.runningRecord?.sites).toEqual(['upwork'])
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(store.runningRecord?.status).toBe('running')
+
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    expect(store.runningRecord).toBeNull()
+  })
+
+  it('picks up the running record of a scrape found on load', async () => {
+    getOptions.execute.mockResolvedValue(OPTIONS)
+    getLatestScrape.execute.mockResolvedValue(detail('running'))
+    getScrape.execute.mockResolvedValue(detail('running'))
+    const store = useScrapeStore()
+
+    await store.load()
+    await store.loadLatest()
+
+    expect(store.runningRecord?.id).toBe('run-1')
+  })
+
   it('ignores a second start while a scrape is active', async () => {
     startScrape.execute.mockResolvedValue(record('running'))
     getScrape.execute.mockResolvedValue(detail('running'))

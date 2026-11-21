@@ -13,6 +13,7 @@ __pycache__
 *.log
 run.log
 infra
+!infra/scripts/scrape-to-discord.sh
 README.md
 docs
 frontend/node_modules

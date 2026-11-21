@@ -398,6 +398,38 @@ describe('ScrapesPage', () => {
       expect(wrapper.text()).not.toContain('Vue dev')
     })
 
+    it('covers the screen with the scrape progress until Keep browsing is clicked', async () => {
+      getScrape.execute.mockResolvedValue(detailOf({ ...SCRAPE, status: 'running' }))
+      const wrapper = await mountPage()
+      await flushPromises()
+
+      await startWith(wrapper)
+      const overlaySelector = '[data-slot="scrape-progress-overlay"]'
+      expect(document.body.querySelector(overlaySelector)).not.toBeNull()
+
+      document.body.querySelector<HTMLButtonElement>('[data-slot="scrape-overlay-hide"]')!.click()
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+
+      expect(document.body.querySelector(overlaySelector)).toBeNull()
+      expect(wrapper.find('[data-slot="scrape-progress"]').exists()).toBe(true)
+    })
+
+    it('closes the full screen progress once the scrape ends', async () => {
+      getScrape.execute
+        .mockResolvedValueOnce(detailOf({ ...SCRAPE, status: 'running' }))
+        .mockResolvedValue(FINISHED)
+      const wrapper = await mountPage()
+      await flushPromises()
+      await startWith(wrapper)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
+      await flushPromises()
+
+      expect(document.body.querySelector('[data-slot="scrape-progress-overlay"]')).toBeNull()
+      expect(wrapper.text()).toContain('Django dev')
+    })
+
     it('shows the detail of the scrape once it ends', async () => {
       getScrape.execute
         .mockResolvedValueOnce(detailOf({ ...SCRAPE, status: 'running' }))
