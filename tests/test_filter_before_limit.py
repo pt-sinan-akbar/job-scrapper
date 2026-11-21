@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
-from scraper.runner import run_one
+from scraper.runner import scrape_site_for_keyword
 from scraper.sites.glints import GlintsScraper
 from scraper.sites.jobstreet import JobstreetScraper
 from scraper.sites.linkedin import LinkedinScraper
-from scraper.types import empty_job
+from scraper.types import Job, empty_job
+from tests.runner_fakes import FakeScraper, build_html_downloader_returning
 
 
-def _make_fetcher(html: str | None):
-    fetcher = MagicMock()
-    result = MagicMock()
-    result.html = html
-    result.attempts = ()
-    fetcher.fetch.return_value = result
-    return fetcher
+def _linkedin_scraper_parsing(jobs: list[Job]) -> FakeScraper:
+    return FakeScraper(
+        name="linkedin",
+        url="https://www.linkedin.com/jobs/search?keywords=x",
+        limit=2,
+        jobs=jobs,
+    )
 
 
 def _job(title: str, company: str, location: str, posted_at: str | None = None):
@@ -37,17 +37,11 @@ def test_content_filter_runs_before_cap():
         _job("Jakarta Role B", "J2", "Jakarta"),
         _job("Jakarta Role C", "J3", "Jakarta"),
     ]
-    scraper = MagicMock()
-    scraper.name = "linkedin"
-    scraper.url = "https://www.linkedin.com/jobs/search?keywords=x"
-    scraper.requires_search_html = True
-    scraper.api_only = False
-    scraper.limit = 2
-    scraper.parse = MagicMock(return_value=jobs)
+    scraper = _linkedin_scraper_parsing(jobs)
 
-    out = run_one(
+    out = scrape_site_for_keyword(
         scraper=scraper,
-        fetcher=_make_fetcher(html="<html>non-empty</html>"),
+        html_downloader=build_html_downloader_returning("<html>non-empty</html>"),
         keyword="data analyst",
         fields=frozenset({"title", "location"}),  # no "requirements" → no detail fetch
         max_age_hours=None,
@@ -69,17 +63,11 @@ def test_max_age_runs_before_cap():
         _job("Recent B", "R2", "Jakarta", posted_at=recent),
         _job("Recent C", "R3", "Jakarta", posted_at=recent),
     ]
-    scraper = MagicMock()
-    scraper.name = "linkedin"
-    scraper.url = "https://www.linkedin.com/jobs/search?keywords=x"
-    scraper.requires_search_html = True
-    scraper.api_only = False
-    scraper.limit = 2
-    scraper.parse = MagicMock(return_value=jobs)
+    scraper = _linkedin_scraper_parsing(jobs)
 
-    out = run_one(
+    out = scrape_site_for_keyword(
         scraper=scraper,
-        fetcher=_make_fetcher(html="<html>non-empty</html>"),
+        html_downloader=build_html_downloader_returning("<html>non-empty</html>"),
         keyword="data analyst",
         fields=frozenset({"title", "posted_at"}),
         max_age_hours=24,

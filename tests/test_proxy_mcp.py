@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from mcp_server.server import _redact_proxy_url
+from mcp_server.server import _hide_proxy_password
 from mcp_server.server import test_proxy_connection as probe_proxy_connection
 
 
-def test_redact_proxy_url_hides_password():
+def test_hide_proxy_password_replaces_password_with_stars():
     u = "http://user:secret@proxy.example.com:8080/path"  # pragma: allowlist secret
-    r = _redact_proxy_url(u)
+    r = _hide_proxy_password(u)
     assert "secret" not in r
     assert "user:***" in r
     assert "proxy.example.com" in r

@@ -6,12 +6,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 import mcp_server.mongo as mongo_module
-from mcp_server.server import health_check
+from mcp_server.server import check_health
 
 
 def _call_health():
     # /health ignores the request object; a stub is enough.
-    return asyncio.run(health_check(MagicMock()))
+    return asyncio.run(check_health(MagicMock()))
 
 
 def test_health_ok_when_mongo_reachable():

@@ -1,31 +1,16 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-from scraper.runner import run_one
-
-
-def _make_fetcher(html: str | None):
-    fetcher = MagicMock()
-    result = MagicMock()
-    result.html = html
-    result.attempts = ()
-    fetcher.fetch.return_value = result
-    return fetcher
+from scraper.runner import scrape_site_for_keyword
+from tests.runner_fakes import FakeScraper, build_html_downloader_returning
 
 
-def test_run_one_bails_when_html_required_and_missing():
-    scraper = MagicMock()
-    scraper.name = "glints"
-    scraper.url = "https://glints.com/x"
-    scraper.requires_search_html = True
-    scraper.api_only = False
-    scraper.parse = MagicMock(return_value=[])
-    fetcher = _make_fetcher(html=None)
+def test_scrape_site_for_keyword_bails_when_html_required_and_missing():
+    scraper = FakeScraper(name="glints", url="https://glints.com/x", limit=10, jobs=[])
+    html_downloader = build_html_downloader_returning(None)
 
-    result = run_one(
+    result = scrape_site_for_keyword(
         scraper=scraper,
-        fetcher=fetcher,
+        html_downloader=html_downloader,
         keyword="data analyst",
         fields=frozenset({"title"}),
         max_age_hours=None,
@@ -40,16 +25,10 @@ def test_run_one_bails_when_html_required_and_missing():
         "source": "html",
         "fallback_reason": None,
     }
-    scraper.parse.assert_not_called()
+    assert scraper.parsed_html_pages == []
 
 
-def test_run_one_skips_bail_for_indeed_style_scraper():
-    scraper = MagicMock()
-    scraper.name = "indeed"
-    scraper.url = "https://id.indeed.com/jobs?q=x"
-    scraper.requires_search_html = False
-    scraper.api_only = False
-    scraper.limit = 10
+def test_scrape_site_for_keyword_skips_bail_for_indeed_style_scraper():
     fake_job = {
         "site": "indeed",
         "matched_keyword": "data analyst",
@@ -60,19 +39,25 @@ def test_run_one_skips_bail_for_indeed_style_scraper():
         "posted_at": None,
         "posted_date": None,
     }
-    scraper.parse = MagicMock(return_value=[fake_job])
-    fetcher = _make_fetcher(html=None)
+    scraper = FakeScraper(
+        name="indeed",
+        url="https://id.indeed.com/jobs?q=x",
+        limit=10,
+        jobs=[fake_job],
+        requires_search_html=False,
+    )
+    html_downloader = build_html_downloader_returning(None)
 
-    result = run_one(
+    result = scrape_site_for_keyword(
         scraper=scraper,
-        fetcher=fetcher,
+        html_downloader=html_downloader,
         keyword="data analyst",
         fields=frozenset({"title", "url", "requirements"}),
         max_age_hours=None,
         content_filter={},
     )
 
-    scraper.parse.assert_called_once_with("")
+    assert scraper.parsed_html_pages == [""]
     out = result.filtered
     assert out["count"] == 1
     assert out["jobs"][0]["title"] == "API job"
