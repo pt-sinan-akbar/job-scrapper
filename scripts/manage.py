@@ -5,8 +5,8 @@
 
 Lets you start / stop / status / logs the docker compose stack per profile
 (mcp, mongo, ui) across environments (dev, prod), previewing the exact
-command before it runs. Read-only over config: it loads .env, the compose
-files, and the seed file for display, never writing back.
+command before it runs. Read-only over config: it loads .env and the
+compose files for display, never writing back.
 
 Requires the TUI deps (not the repo's runtime deps):
 

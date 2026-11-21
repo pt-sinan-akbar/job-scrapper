@@ -1,23 +1,6 @@
 name: scraper
 
 services:
-  # SERVICE: scraper — one-shot CLI scraper; network_mode:host for SOCKS5 proxy passthrough
-  # Disabled, this is just to test if the scraper works independently
-  # scraper:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #     target: app
-  #   image: job-scraper:latest
-  #   container_name: job-scraper
-  #   command: ["python", "-m", "scraper"]
-  #   restart: "no"
-  #   profiles: ["scraper"]
-  #   network_mode: host
-  #   environment:
-  #     - PROXY_URL
-  #     - MONGO_URI=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongo:27017
-
   # SERVICE: mongo — persistent MongoDB store for scrape run history
   mongo:
     image: mongo:7

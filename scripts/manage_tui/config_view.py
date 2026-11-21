@@ -1,7 +1,7 @@
 """Read-only config display: .env (masked) + machine settings.
 
 Job settings live in Mongo and are edited at /config, so this view does not
-show them. Site names come from the seed file: they only change there.
+show them.
 """
 
 from __future__ import annotations
@@ -9,12 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
 from .model import REPO_ROOT, Environment
 
 ENV_PATH = REPO_ROOT / ".env"
-SEED_PATH = REPO_ROOT / "seeds" / "job_settings.yaml"
 
 PROXY_ENV_KEY = "PROXY_URL"
 MASK_KEYS = {"MONGO_URI", PROXY_ENV_KEY}
@@ -29,7 +26,6 @@ SHOWN_ENV_KEYS = (
 @dataclass(frozen=True)
 class ConfigSummary:
     source_label: str
-    site_names: list[str]
     proxy: str
     mongo_db: str
     mongo_collection: str
@@ -71,10 +67,8 @@ def masked_env(path: Path = ENV_PATH) -> dict[str, str]:
 
 
 def load_config_summary(env: Environment, env_vars: dict[str, str]) -> ConfigSummary:
-    seed = yaml.safe_load(SEED_PATH.read_text()) or {}
     return ConfigSummary(
         source_label=f"{env.name} (job settings in Mongo, edit at /config)",
-        site_names=sorted(seed.get("sites") or {}),
         proxy=_proxy_label(env, env_vars),
         mongo_db=env_vars.get("MONGO_DB_NAME", "job_scraper"),
         mongo_collection=env_vars.get("MONGO_COLLECTION_NAME", "scrape_runs"),
