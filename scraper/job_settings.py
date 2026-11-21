@@ -15,14 +15,14 @@ from .config_loader import (
     AppConfig,
     ConfigError,
     is_valid_max_age,
-    parse,
-    resolve_proxy_url,
+    parse_job_settings_into_app_config,
+    read_proxy_url_from_env,
     validate_job_settings,
 )
-from .log import get_logger
+from .log import get_scraper_logger
 from .types import CANONICAL_FIELDS
 
-_LOG = get_logger()
+_LOG = get_scraper_logger()
 
 SETTINGS_COLLECTION = "job_settings"
 SETTINGS_ID = "active"
@@ -32,7 +32,9 @@ SOURCE_MIGRATION = "migration"
 FIRST_VERSION = 1
 LEGACY_GLOBAL_KEYS: tuple[str, ...] = ("limit", "concurrency", "max_age_hours", "filter")
 LEGACY_DROPPED_KEYS: tuple[str, ...] = ("keywords",)
-LEGACY_KEYS: tuple[str, ...] = LEGACY_GLOBAL_KEYS + LEGACY_DROPPED_KEYS
+LEGACY_FIELDS_KEY = "default_fields"
+FIELDS_KEY = "fields"
+LEGACY_KEYS: tuple[str, ...] = LEGACY_GLOBAL_KEYS + LEGACY_DROPPED_KEYS + (LEGACY_FIELDS_KEY,)
 LEGACY_FALLBACK_LIMIT = 2
 CONFLICT_MESSAGE = "These settings changed somewhere else. Reload and try again"
 
@@ -104,17 +106,7 @@ def _refuse_unknown_fields(patch: dict[str, Any]) -> None:
     Stored settings stay lenient: the loader skips unknown
     names with a warning, so older data keeps working.
     """
-    sites = patch.get("sites")
-    site_fields = (
-        [site.get("fields") for site in sites.values() if isinstance(site, dict)]
-        if isinstance(sites, dict)
-        else []
-    )
-    unknown = [
-        field
-        for fields in [patch.get("default_fields"), *site_fields]
-        for field in _unknown_fields(fields)
-    ]
+    unknown = _unknown_fields(patch.get(FIELDS_KEY))
     if unknown:
         raise ConfigError(f"unknown job fields: {', '.join(sorted(set(unknown)))}")
 
@@ -132,7 +124,20 @@ def merge_settings(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, 
 
 
 def has_legacy_globals(settings: dict[str, Any]) -> bool:
-    return any(key in settings for key in LEGACY_KEYS)
+    if any(key in settings for key in LEGACY_KEYS):
+        return True
+    return bool(list_sites_with_fields_override(settings))
+
+
+def list_sites_with_fields_override(settings: dict[str, Any]) -> tuple[str, ...]:
+    sites = settings.get("sites")
+    if not isinstance(sites, dict):
+        return ()
+    site_names: list[str] = []
+    for name, site in sites.items():
+        if isinstance(site, dict) and FIELDS_KEY in site:
+            site_names.append(name)
+    return tuple(site_names)
 
 
 def _is_whole(value: Any) -> bool:
@@ -161,26 +166,46 @@ def _copied_globals(site: dict[str, Any], legacy: dict[str, Any]) -> dict[str, A
     }
 
 
+def _drop_site_fields_override(site: dict[str, Any]) -> dict[str, Any]:
+    site_without_fields: dict[str, Any] = {}
+    for key, value in site.items():
+        if key == FIELDS_KEY:
+            continue
+        site_without_fields[key] = value
+    return site_without_fields
+
+
 def _migrate_site(site: Any, legacy: dict[str, Any]) -> Any:
     if not isinstance(site, dict):
         return site
     limit = _usable_limit(site.get("limit"))
     return {
-        **site,
+        **_drop_site_fields_override(site),
         "limit": limit if limit is not None else _fallback_limit(legacy),
         **_copied_globals(site, legacy),
     }
+
+
+def _rename_default_fields(kept: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    if FIELDS_KEY in settings:
+        return kept
+    legacy_fields = settings.get(LEGACY_FIELDS_KEY)
+    if legacy_fields is None:
+        return kept
+    return {**kept, FIELDS_KEY: legacy_fields}
 
 
 def migrate_legacy_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if not has_legacy_globals(settings):
         return settings
     kept = {key: value for key, value in settings.items() if key not in LEGACY_KEYS}
+    kept_with_fields = _rename_default_fields(kept, settings)
     sites = settings.get("sites")
     if not isinstance(sites, dict):
-        return kept
+        return kept_with_fields
     legacy = {key: settings.get(key) for key in LEGACY_GLOBAL_KEYS}
-    return {**kept, "sites": {name: _migrate_site(site, legacy) for name, site in sites.items()}}
+    migrated_sites = {name: _migrate_site(site, legacy) for name, site in sites.items()}
+    return {**kept_with_fields, "sites": migrated_sites}
 
 
 def legacy_fallback_sites(settings: dict[str, Any]) -> tuple[str, ...]:
@@ -228,10 +253,20 @@ def _mongo_errors() -> Iterator[None]:
         ) from exc
 
 
+def _list_migrated_keys(settings: dict[str, Any]) -> list[str]:
+    migrated_keys: list[str] = []
+    for key in LEGACY_KEYS:
+        if key in settings:
+            migrated_keys.append(key)
+    for site_name in list_sites_with_fields_override(settings):
+        migrated_keys.append(f"sites.{site_name}.fields")
+    return migrated_keys
+
+
 def _log_migration(legacy: StoredSettings) -> None:
     _LOG.info(
-        "[settings] migrated global %s off the settings (version %d -> %d), backup kept as %s",
-        ", ".join(key for key in LEGACY_KEYS if key in legacy.settings),
+        "[settings] migrated legacy %s off the settings (version %d -> %d), backup kept as %s",
+        ", ".join(_list_migrated_keys(legacy.settings)),
         legacy.version,
         legacy.version + 1,
         BACKUP_ID,
@@ -242,6 +277,13 @@ def _log_migration(legacy: StoredSettings) -> None:
             "[settings] no usable limit on %s, set to the fallback limit %d",
             ", ".join(fallback),
             LEGACY_FALLBACK_LIMIT,
+        )
+    sites_with_override = list_sites_with_fields_override(legacy.settings)
+    if sites_with_override:
+        _LOG.warning(
+            "[settings] dropped the per-site fields override on %s, "
+            "the top-level fields now apply to every site",
+            ", ".join(sites_with_override),
         )
 
 
@@ -341,4 +383,4 @@ def open_store() -> JobSettingsStore:
 
 
 def load_app_config(store: JobSettingsStore) -> AppConfig:
-    return parse(store.read().settings, resolve_proxy_url())
+    return parse_job_settings_into_app_config(store.read().settings, read_proxy_url_from_env())

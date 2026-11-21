@@ -1,4 +1,3 @@
-# scraper/fetchers/base.py
 from __future__ import annotations
 
 import re
@@ -6,9 +5,9 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..config import CHALLENGE_MARKERS
-from ..log import get_logger
+from ..log import get_scraper_logger
 
-_LOG = get_logger()
+_LOG = get_scraper_logger()
 
 _TITLE_RE = re.compile(r"<title[^>]*>([^<]+)</title>", re.IGNORECASE)
 _CHALLENGE_TITLES = (
@@ -41,43 +40,43 @@ def looks_like_challenge(html: str) -> bool:
 
 
 @dataclass(frozen=True)
-class FetchAttempt:
-    fetcher: str
+class HtmlDownloadAttempt:
+    downloader: str
     code: str
     detail: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
-        return {"fetcher": self.fetcher, "code": self.code, "detail": self.detail}
+        return {"downloader": self.downloader, "code": self.code, "detail": self.detail}
 
 
 @dataclass(frozen=True)
-class FetchResult:
+class HtmlDownloadResult:
     html: str | None
-    attempts: tuple[FetchAttempt, ...]
+    attempts: tuple[HtmlDownloadAttempt, ...]
 
 
 @runtime_checkable
-class Fetcher(Protocol):
+class HtmlDownloader(Protocol):
     name: str
 
-    def fetch(self, url: str) -> tuple[str | None, FetchAttempt]: ...
+    def download_html(self, url: str) -> tuple[str | None, HtmlDownloadAttempt]: ...
 
 
-class FetchChain:
-    def __init__(self, fetchers: list[Fetcher]) -> None:
-        self._fetchers = fetchers
+class FallbackHtmlDownloader:
+    def __init__(self, html_downloaders: list[HtmlDownloader]) -> None:
+        self._html_downloaders = html_downloaders
 
-    def fetch(self, url: str) -> FetchResult:
-        attempts: list[FetchAttempt] = []
-        for fetcher in self._fetchers:
-            _LOG.debug("[fetch] trying %s for %s", fetcher.name, url)
-            html, attempt = fetcher.fetch(url)
+    def download_html(self, url: str) -> HtmlDownloadResult:
+        attempts: list[HtmlDownloadAttempt] = []
+        for html_downloader in self._html_downloaders:
+            _LOG.debug("[html_downloader] trying %s for %s", html_downloader.name, url)
+            html, attempt = html_downloader.download_html(url)
             attempts.append(attempt)
             if html and attempt.code == "ok":
-                return FetchResult(html=html, attempts=tuple(attempts))
+                return HtmlDownloadResult(html=html, attempts=tuple(attempts))
             _LOG.debug(
-                "[fetch] %s insufficient (%s), falling through",
-                fetcher.name,
+                "[html_downloader] %s insufficient (%s), falling through",
+                html_downloader.name,
                 attempt.code,
             )
-        return FetchResult(html=None, attempts=tuple(attempts))
+        return HtmlDownloadResult(html=None, attempts=tuple(attempts))

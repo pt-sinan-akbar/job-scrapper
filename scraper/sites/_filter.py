@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..log import get_logger
+from ..log import get_scraper_logger
 from ..types import Job
 from ._location import (
     WilayahIndex,
-    candidate_kodes,
-    get_index,
-    is_under,
-    normalize,
-    segments,
-    term_to_prefixes,
+    find_candidate_region_codes,
+    find_region_code_prefixes_for_term,
+    get_location_index,
+    is_any_region_code_under_prefixes,
+    normalize_location_text,
+    split_location_segments,
 )
 
-_LOG = get_logger()
+_LOG = get_scraper_logger()
 _WARNED_LEGACY = False
 
 
@@ -36,17 +36,14 @@ def _warn_legacy_once() -> None:
 def _partition_terms(
     expected_values: list[str], index: WilayahIndex
 ) -> tuple[frozenset[str], tuple[str, ...]]:
-    # Recomputed per call (no cache): the active index is replaced fresh each run
-    # by refresh_index(), and scanning ~552 province/city entries is cheap. Caching
-    # on id(index) would be unsafe here — a GC'd index's id can be reused.
     prefixes: set[str] = set()
     literals: list[str] = []
     for term in expected_values:
-        found = term_to_prefixes(term, index.entries)
+        found = find_region_code_prefixes_for_term(term, index.province_and_city_entries)
         if found:
             prefixes |= found
         else:
-            literals.append(normalize(term))
+            literals.append(normalize_location_text(term))
     return frozenset(prefixes), tuple(literals)
 
 
@@ -54,7 +51,7 @@ def _location_reason(raw: str, actual_lower: str, expected_values: list[str]) ->
     if not actual_lower:
         return None  # blank location: keep (mirrors null handling)
 
-    index = get_index()
+    index = get_location_index()
     if index is None:  # genuine load failure -> legacy substring
         _warn_legacy_once()
         if any(e in actual_lower for e in expected_values):
@@ -62,12 +59,13 @@ def _location_reason(raw: str, actual_lower: str, expected_values: list[str]) ->
         return f"location={raw!r} not in {expected_values}"
 
     prefixes, literals = _partition_terms(expected_values, index)
-    kodes = candidate_kodes(raw, index)
-    if prefixes and any(is_under(k, prefixes) for k in kodes):
+    candidate_region_codes = find_candidate_region_codes(raw, index)
+    if is_any_region_code_under_prefixes(candidate_region_codes, prefixes):
         return None  # (a) under an in-scope region
-    if kodes:
+    if candidate_region_codes:
         return f"location={raw!r} resolved out of scope, not in {expected_values}"  # (b)
-    if literals and any(lit in set(segments(normalize(raw))) for lit in literals):
+    location_segments = set(split_location_segments(normalize_location_text(raw)))
+    if any(literal_term in location_segments for literal_term in literals):
         return None  # (c) nationwide/remote literal
     return f"location={raw!r} unresolved, not in {expected_values}"
 
