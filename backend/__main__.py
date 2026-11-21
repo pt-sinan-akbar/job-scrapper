@@ -4,8 +4,8 @@ import logging
 
 import uvicorn
 
-from ui_server.app import create_app
-from ui_server.settings import Settings
+from backend.app import create_app
+from backend.settings import Settings
 
 
 def main() -> None:

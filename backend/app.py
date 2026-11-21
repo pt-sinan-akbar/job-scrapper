@@ -8,14 +8,17 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import Scope
 
-from ui_server.dependencies import Services, reject_cross_site
-from ui_server.errors import install_error_handlers
-from ui_server.routes import auth, config, discord, runs, sites
-from ui_server.services.auth_service import AuthService
-from ui_server.services.mcp_gateway import LocalGateway, McpGateway, ScraperClient
-from ui_server.services.run_repository import RunRepository, open_run_repository
-from ui_server.services.run_service import RunService
-from ui_server.settings import Settings
+from backend.api import auth, config, discord, scrapes, sites
+from backend.dependencies import Services, reject_cross_site
+from backend.errors import install_error_handlers
+from backend.services.auth_service import AuthService
+from backend.services.scrape_report_repository import (
+    ScrapeReportRepository,
+    open_scrape_report_repository,
+)
+from backend.services.scrape_service import ScrapeService
+from backend.services.scraper_client import LocalGateway, McpGateway, ScraperClient
+from backend.settings import Settings
 
 NOT_FOUND_STATUS = 404
 API_PREFIX = "api"
@@ -28,7 +31,7 @@ HEALTH_PATH = "/health"
 HEALTH_STATUS_OK = "ok"
 UI_MOUNT_PATH = "/"
 UI_MOUNT_NAME = "ui"
-ROUTE_MODULES = (auth, sites, runs, config, discord)
+API_ROUTER_MODULES = (auth, sites, scrapes, config, discord)
 CONTENT_SECURITY_POLICY = "; ".join(
     (
         "default-src 'self'",
@@ -54,23 +57,23 @@ SECURITY_HEADERS = {
 def create_app(
     settings: Settings | None = None,
     gateway: McpGateway | None = None,
-    run_repository: RunRepository | None = None,
+    scrape_report_repository: ScrapeReportRepository | None = None,
 ) -> FastAPI:
-    resolved_settings = _resolve_settings(settings)
-    resolved_repository = _resolve_run_repository(run_repository)
-    resolved_gateway = _resolve_gateway(gateway)
-    services = _build_services(resolved_settings, resolved_gateway, resolved_repository)
+    app_settings = _pick_settings(settings)
+    app_scrape_report_repository = _pick_scrape_report_repository(scrape_report_repository)
+    app_gateway = _pick_gateway(gateway)
+    services = _build_services(app_settings, app_gateway, app_scrape_report_repository)
 
-    app = _create_fastapi(resolved_settings)
+    app = _create_fastapi_app(app_settings)
     app.state.services = services
-    _add_trusted_host_middleware(app, resolved_settings)
+    _add_trusted_host_middleware(app, app_settings)
     install_error_handlers(app)
-    _register_routes(app)
-    _mount_static_ui(app, resolved_settings)
+    _register_api_routers(app)
+    _mount_static_ui(app, app_settings)
     return app
 
 
-def health() -> dict[str, str]:
+def read_health() -> dict[str, str]:
     return {"status": HEALTH_STATUS_OK}
 
 
@@ -89,45 +92,49 @@ class SpaStaticFiles(StaticFiles):
             return await super().get_response(INDEX_FILE, scope)
 
 
-def _resolve_settings(settings: Settings | None) -> Settings:
+def _pick_settings(settings: Settings | None) -> Settings:
     if settings is None:
         return Settings()
     return settings
 
 
-def _resolve_run_repository(run_repository: RunRepository | None) -> RunRepository:
-    if run_repository is None:
-        return open_run_repository()
-    return run_repository
+def _pick_scrape_report_repository(
+    scrape_report_repository: ScrapeReportRepository | None,
+) -> ScrapeReportRepository:
+    if scrape_report_repository is None:
+        return open_scrape_report_repository()
+    return scrape_report_repository
 
 
-def _resolve_gateway(gateway: McpGateway | None) -> McpGateway:
+def _pick_gateway(gateway: McpGateway | None) -> McpGateway:
     if gateway is None:
         return LocalGateway()
     return gateway
 
 
-def _build_services(settings: Settings, gateway: McpGateway, repository: RunRepository) -> Services:
+def _build_services(
+    settings: Settings, gateway: McpGateway, repository: ScrapeReportRepository
+) -> Services:
     scraper = ScraperClient(gateway)
     return Services(
         settings=settings,
         scraper=scraper,
-        run_service=RunService(scraper, repository),
+        scrape_service=ScrapeService(scraper, repository),
         auth=AuthService(settings),
     )
 
 
-def _create_fastapi(settings: Settings) -> FastAPI:
+def _create_fastapi_app(settings: Settings) -> FastAPI:
     return FastAPI(
         title=APP_TITLE,
         dependencies=[Depends(reject_cross_site)],
-        docs_url=_path_unless_prod(settings, DOCS_PATH),
+        docs_url=_hide_path_in_prod(settings, DOCS_PATH),
         redoc_url=None,
-        openapi_url=_path_unless_prod(settings, OPENAPI_PATH),
+        openapi_url=_hide_path_in_prod(settings, OPENAPI_PATH),
     )
 
 
-def _path_unless_prod(settings: Settings, path: str) -> str | None:
+def _hide_path_in_prod(settings: Settings, path: str) -> str | None:
     if settings.env == PROD_ENV:
         return None
     return path
@@ -138,10 +145,10 @@ def _add_trusted_host_middleware(app: FastAPI, settings: Settings) -> None:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 
-def _register_routes(app: FastAPI) -> None:
-    app.get(HEALTH_PATH)(health)
-    for module in ROUTE_MODULES:
-        app.include_router(module.router)
+def _register_api_routers(app: FastAPI) -> None:
+    app.get(HEALTH_PATH)(read_health)
+    for api_module in API_ROUTER_MODULES:
+        app.include_router(api_module.router)
 
 
 def _mount_static_ui(app: FastAPI, settings: Settings) -> None:

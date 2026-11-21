@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     env: Literal["dev", "prod"]
     host: str = "127.0.0.1"
     port: int = 8090
-    static_dir: Path = Path("ui/dist")
+    static_dir: Path = Path("frontend/dist")
     password_hash: str = ""
     dev_login_key: str = ""
     session_secret: str = ""

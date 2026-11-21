@@ -9,8 +9,8 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from itsdangerous import BadSignature, TimestampSigner
 
-from ui_server.errors import InvalidPasswordError, TooManyAttemptsError
-from ui_server.settings import Settings
+from backend.errors import InvalidPasswordError, TooManyAttemptsError
+from backend.settings import Settings
 
 SESSION_COOKIE = "scraper_ui_session"
 SESSION_MAX_AGE_SECONDS = 12 * 60 * 60
@@ -27,18 +27,28 @@ class LoginLimiter:
         self._failures: dict[str, tuple[float, ...]] = {}
 
     def check(self, client: str) -> None:
-        if len(self._recent(client)) >= MAX_FAILED_ATTEMPTS:
+        if len(self._read_recent_failures(client)) >= MAX_FAILED_ATTEMPTS:
             raise TooManyAttemptsError()
 
     def record_failure(self, client: str) -> None:
-        self._failures = {**self._failures, client: (*self._recent(client), self._clock())}
+        recent_failures = (*self._read_recent_failures(client), self._clock())
+        self._failures = {**self._failures, client: recent_failures}
 
     def clear(self, client: str) -> None:
-        self._failures = {key: value for key, value in self._failures.items() if key != client}
+        remaining_failures: dict[str, tuple[float, ...]] = {}
+        for failed_client, failure_moments in self._failures.items():
+            if failed_client == client:
+                continue
+            remaining_failures[failed_client] = failure_moments
+        self._failures = remaining_failures
 
-    def _recent(self, client: str) -> tuple[float, ...]:
+    def _read_recent_failures(self, client: str) -> tuple[float, ...]:
         cutoff = self._clock() - FAILURE_WINDOW_SECONDS
-        return tuple(moment for moment in self._failures.get(client, ()) if moment > cutoff)
+        recent_failures: list[float] = []
+        for failure_moment in self._failures.get(client, ()):
+            if failure_moment > cutoff:
+                recent_failures.append(failure_moment)
+        return tuple(recent_failures)
 
 
 class AuthService:

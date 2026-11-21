@@ -5,7 +5,6 @@ from typing import Annotated, Any, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 MAX_TEXT_CHARS = 2000
-MAX_JOBS = 50
 SNOWFLAKE_DIGITS = r"[0-9]{17,20}"
 
 Snowflake = Annotated[str, StringConstraints(pattern=rf"^{SNOWFLAKE_DIGITS}$")]

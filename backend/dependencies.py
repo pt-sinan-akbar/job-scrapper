@@ -5,11 +5,11 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from ui_server.errors import CrossSiteRequestError, NotSignedInError
-from ui_server.services.auth_service import SESSION_COOKIE, AuthService
-from ui_server.services.mcp_gateway import ScraperClient
-from ui_server.services.run_service import RunService
-from ui_server.settings import Settings
+from backend.errors import CrossSiteRequestError, NotSignedInError
+from backend.services.auth_service import SESSION_COOKIE, AuthService
+from backend.services.scrape_service import ScrapeService
+from backend.services.scraper_client import ScraperClient
+from backend.settings import Settings
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
@@ -19,7 +19,7 @@ ALLOWED_FETCH_SITES = frozenset({"same-origin", "none"})
 class Services:
     settings: Settings
     scraper: ScraperClient
-    run_service: RunService
+    scrape_service: ScrapeService
     auth: AuthService
 
 
