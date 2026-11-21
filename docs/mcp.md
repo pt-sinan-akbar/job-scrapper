@@ -11,7 +11,7 @@ This page is the canonical reference for what those tools accept and return.
 
 ```bash
 python -m mcp_server.server          # local
-docker compose --profile mcp up -d   # container, image job-scraper
+docker compose --project-directory . -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.dev.yml up -d
 ```
 
 Environment variables:
@@ -135,15 +135,20 @@ Read-only. Returns canonical response contract for `scrape_jobs`.
 ```json
 {
   "tool": "scrape_jobs",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "job_fields": ["site", "matched_keyword", "title", "..."],
-  "top_level_fields": ["ok", "keywords", "requested_sites", "exit_code", "results", "errors"],
-  "optional_top_level_fields": ["raw_results", "filtered_results"],
-  "site_result_fields": ["site", "keyword", "fields", "max_age_hours", "filter", "count", "jobs"],
+  "top_level_fields": ["ok", "keywords", "requested_sites", "exit_code", "results", "errors", "mongo_id"],
+  "optional_top_level_fields": ["raw_results"],
+  "result_fields": ["keyword", "site", "payload"],
+  "payload_fields": ["keyword", "fields", "max_age_hours", "filter", "count", "jobs", "source", "fallback_reason"],
   "error_fields": ["keyword", "site", "reason", "attempts"],
-  "sample": { "...": "example payload" }
+  "sample": { "...": "example response" }
 }
 ```
+
+`result_fields` are the keys of one `results` entry and `payload_fields` the
+keys of a successful `payload`. Version `1.0.0` described the older grouped
+`results` with `site_result_fields`.
 
 Use this when you need strict output formatting in downstream automations.
 The shape of `attempts` is under [`scrape_jobs`](#scrape_jobs).
@@ -281,7 +286,7 @@ deployments where docs aren't expected to change at runtime.
 ### `scrape_jobs`
 
 Run the scraper. Triggers fetches across `(keyword, site)` pairs and returns
-aggregated results.
+one result per pair.
 
 **Args** (`keywords` required, the rest optional):
 
@@ -290,7 +295,7 @@ aggregated results.
   "keywords": ["data analyst"],
   "sites": ["linkedin", "indeed"],
   "save_run": true,
-  "include_payloads": false
+  "include_raw_results": false
 }
 ```
 
@@ -303,46 +308,75 @@ In Python, `sites` is the only positional parameter; `keywords` and the rest
 are keyword-only: `scrape_jobs(["glints"], keywords=["data analyst"])`.
 - `save_run`: store the run in MongoDB. Omitted = `true`. The job-match search
   box and the scraper UI send `false`, so their results are shown once and stay
-  out of the scrape history. `mongo_id` is then `null`.
-- `include_payloads`: add `raw_results` and `filtered_results` to the response.
-  Omitted = `false`. Off by default because both carry every site's full payload,
-  which makes the response much bigger; the job-agent backend keeps the smaller
-  response. The scraper UI sends `true` to show each run's raw and filtered data.
+  out of the scrape history. `mongo_id` is then `null`. A saved run holds
+  `run_metadata`, `results` and `note`. `raw_results` is never saved.
+- `include_raw_results`: add `raw_results` to the response. Omitted = `false`.
+  Off by default because it carries every job each site returned, which makes
+  the response much bigger. The job-agent backend and the scraper UI both leave
+  it off.
 
 **Returns**:
 
 ```json
 {
+  "ok": false,
   "keywords": ["data analyst"],
-  "requested_sites": ["linkedin", "indeed"],
+  "requested_sites": ["linkedin", "indeed", "glints"],
   "exit_code": 0,
   "results": [
     {
       "keyword": "data analyst",
-      "sites": [
-        {
-          "site": "linkedin",
-          "fields": ["title", "company", "url", ...],
-          "max_age_hours": 24,
-          "filter": {"location": ["jakarta"]},
-          "count": 2,
-          "jobs": [...]
-        },
-        {"site": "indeed", ...}
-      ]
+      "site": "linkedin",
+      "payload": {
+        "keyword": "data analyst",
+        "fields": ["company", "matched_keyword", "site", "title", "url", ...],
+        "max_age_hours": 24,
+        "filter": {"location": ["jakarta"]},
+        "count": 2,
+        "jobs": [...],
+        "source": "html",
+        "fallback_reason": null
+      }
+    },
+    {"keyword": "data analyst", "site": "indeed", "payload": {...}},
+    {
+      "keyword": "data analyst",
+      "site": "glints",
+      "payload": {"error": "fetch failed", "url": "...", "keyword": "data analyst", "attempts": [...]}
     }
   ],
   "errors": [
-    {"keyword": "data analyst", "site": "glints", "reason": "fetch failed"}
-  ]
+    {"keyword": "data analyst", "site": "glints", "reason": "fetch failed", "attempts": [...]}
+  ],
+  "mongo_id": "665f1c2e9b1d4a0012345678"
 }
 ```
 
-`results` is always grouped by keyword first, then site. `errors` collects
-any pair whose fetch failed, that was skipped (`skipped: site has no entry in the
+`results` is a flat list with one `{keyword, site, payload}` entry per pair
+that gave a payload, ordered by keyword first, then site. A successful
+`payload` is `{keyword, fields, max_age_hours, filter, count, jobs, source,
+fallback_reason}`, see [Site payload shape](architecture.md#site-payload-shape).
+Each job holds only the fields named in `fields`. A failed pair is in `results`
+too: its `payload` has an `error` key, and the pair is also in `errors`. To
+read jobs, skip every entry whose `payload` has `error`. A pair the runner gave
+no result for is only in `errors`.
+
+The key `filtered_results` and the older `results` grouped by keyword
+(`[{keyword, sites: [{site, fields, count, jobs, ...}]}]`) no longer exist.
+`results` now holds what `filtered_results` held.
+
+`errors` collects
+any pair whose fetch failed (`fetch failed`), whose API request failed
+(`api failed: <code>`), that was skipped (`skipped: site has no entry in the
 job settings`), that crashed (`crashed: <ExceptionType>`), or that the runner gave
 no result for (`scraper returned no result for this pair (exit code 1)`, when the
 site selection was invalid).
+
+`api failed: <code>` comes from the sites that get their jobs from a request of
+their own and have no search page to fall back to: an API-only site (Upwork)
+and Indeed. `<code>` is short, for example `http_403`, `runtime_error`,
+`non_json`, `graphql_error`, `not_installed` or `api_disabled`. The response
+body is never in the reason. Such an error has no `attempts`.
 
 An error whose HTML download failed (`fetch failed`) also has `attempts`: one
 `{downloader, code, detail}` entry per HTML downloader tried, in order.
@@ -372,6 +406,9 @@ An error whose HTML download failed (`fetch failed`) also has `attempts`: one
 | `runtime_error` | unexpected exception (`detail` is the class and message) |
 | `not_installed` | HTML downloader dependency missing                       |
 
+`not_installed` is also a code of `api failed: <code>`: there it means the
+dependency of a site's own request (curl_cffi for Indeed) is missing.
+
 Runs saved before the rename from fetchers to HTML downloaders carry the key
 `fetcher` instead of `downloader`.
 
@@ -396,13 +433,18 @@ the tool runs.
 
 Results come straight back from `scraper.runner.scrape_all_sites`. Nothing is written to disk.
 
-With `include_payloads: true` the response also has two optional lists, each
-entry `{"keyword": "...", "site": "...", "payload": {...}}`:
+With `include_raw_results: true` the response also has `raw_results`, a list
+of `{"keyword": "...", "site": "...", "payload": {...}}` with each site's
+payload before max-age, filter and limit. Without the flag this key is not in
+the response.
 
-- `raw_results`: each site's payload before max-age, filter and limit
-- `filtered_results`: each site's final payload, the same one stored in Mongo
+A saved run in `scrape_runs` is `{run_metadata, results, note, _created_at}`,
+where `results` is the same list as in the response. `raw_results` exists only
+in this response with `include_raw_results: true` and is never saved.
 
-Without the flag these two keys are not in the response.
+Runs saved before this change use `filtered_results` instead of `results` and
+may contain `raw_results`. `get_latest_scrape_run` returns them as stored, and
+the job-agent backend reads both `results` and `filtered_results`.
 
 When the job settings cannot be loaded (Mongo is down, the document is missing, or `PROXY_URL` is not set), `scrape_jobs` returns `{"ok": false, "error": "..."}` and scrapes nothing.
 
