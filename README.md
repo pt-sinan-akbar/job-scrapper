@@ -9,8 +9,9 @@ from a separate service outside this project.
 
 One Docker image, `job-scraper` (`infra/docker/Dockerfile` stage `app`), holds the scraper, the
 MCP server, the UI server, and the built UI. Its default command is
-`python -m mcp_server.server`. The UI runs `python -m backend` from the same
-image. Mongo uses the `mongo:7` image.
+`/app/scripts/start-servers.sh`, which runs the MCP server (`python -m mcp_server.server`, port 8080)
+and the UI server (`python -m backend`, port 8090) together and exits when either one stops. Local
+compose runs them as two containers with explicit commands. Mongo uses the `mongo:7` image.
 Driven by job settings in Mongo (one fields list for every site, and per-site limit, max age and filter), edited at /config. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Keywords are not a setting: every run names its own (the "Start a run" box in the UI, or the required `keywords` argument of the MCP `scrape_jobs` tool), and a run without keywords is refused with `keywords are required`.
 
 Upwork is API-only. It uses the visitor GraphQL endpoint with no login and has no HTML fallback, so a failure shows up in `errors` with 0 jobs.

@@ -14,8 +14,9 @@ Nothing deploys the image automatically.
 
 | Image | Container | Role |
 |---|---|---|
-| `job-scraper` | `job-scraper-mcp` | default command `python -m mcp_server.server`, FastMCP HTTP server on port 8080 |
+| `job-scraper` | `job-scraper-mcp` | `command: ["python", "-m", "mcp_server.server"]`, FastMCP HTTP server on port 8080 |
 | same image | `job-scraper-ui` | `command: ["python", "-m", "backend"]`, UI on port 8090 |
+| same image | one cluster container | default command `/app/scripts/start-servers.sh`, MCP on 8080 and UI on 8090 in one container, exits when either one stops |
 
 ## Changing config
 

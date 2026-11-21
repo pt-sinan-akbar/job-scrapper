@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from argon2 import PasswordHasher
 from itsdangerous import TimestampSigner
 
 from backend.errors import InvalidPasswordError, TooManyAttemptsError
@@ -21,8 +20,7 @@ AUTH_TOKEN = "auth-token-for-tests-1234"
 def _service() -> AuthService:
     settings = Settings(
         env="prod",
-        password_hash=PasswordHasher().hash(PASSWORD),
-        session_secret="s" * 32,
+        auth_token=PASSWORD,
         domain="ui.example.com",
     )
     return AuthService(settings)
@@ -44,23 +42,23 @@ def test_dev_rejects_anything_but_the_auth_token(password: str):
         _dev_service().login(password, "1.1.1.1")
 
 
-def test_dev_ignores_the_prod_password_hash():
-    service = AuthService(
-        Settings(
-            env="dev",
-            auth_token=AUTH_TOKEN,
-            password_hash=PasswordHasher().hash(PASSWORD),
-        )
-    )
-
-    with pytest.raises(InvalidPasswordError):
-        service.login(PASSWORD, "1.1.1.1")
-
-
 def test_dev_session_is_not_signed_with_a_known_secret():
     forged = TimestampSigner("dev", salt=SESSION_SALT).sign(SESSION_SUBJECT).decode()
 
     assert _dev_service().is_signed_in(forged) is False
+
+
+def test_session_survives_a_restart_with_the_same_auth_token():
+    session = _dev_service().login(AUTH_TOKEN, "1.1.1.1")
+
+    assert _dev_service().is_signed_in(session) is True
+
+
+def test_new_auth_token_signs_everyone_out():
+    session = _dev_service().login(AUTH_TOKEN, "1.1.1.1")
+    rotated_service = AuthService(Settings(env="dev", auth_token="rotated-auth-token-5678"))
+
+    assert rotated_service.is_signed_in(session) is False
 
 
 def test_dev_failures_block_client():

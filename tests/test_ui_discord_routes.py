@@ -5,7 +5,6 @@ from typing import Any
 
 import mongomock
 import pytest
-from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -108,8 +107,7 @@ def prod_client(
     settings = _settings(
         tmp_path,
         env="prod",
-        password_hash=PasswordHasher().hash(PASSWORD),
-        session_secret="s" * 32,
+        auth_token=PASSWORD,
         domain="testserver",
     )
     app = create_app(settings, gateway, scrape_report_repository)

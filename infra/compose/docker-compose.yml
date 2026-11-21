@@ -31,6 +31,7 @@ services:
       target: app
     image: job-scraper:latest
     container_name: job-scraper-mcp
+    command: ["python", "-m", "mcp_server.server"]
     restart: unless-stopped
     depends_on:
       mongo:
