@@ -6,7 +6,7 @@ The proxy lives in the `PROXY_URL` env var and scrape concurrency in the
 `SCRAPER_CONCURRENCY` env var. Results are never written to disk:
 the runner returns them and `scrape_jobs` stores them in Mongo.
 
-`scraper/config_loader.py::parse` validates all of them into an `AppConfig`
+`scraper/config_loader.py::parse_job_settings_into_app_config` validates all of them into an `AppConfig`
 dataclass. A malformed value raises `ConfigError`. A save with a malformed value
 changes nothing, and a run with one aborts.
 
@@ -19,14 +19,14 @@ The examples below show the keys as YAML, which is the format of
 `seeds/job_settings.yaml`. All of them are job settings.
 
 ```yaml
-default_fields: [...]
+fields: [...]
 sites: {...}
 ```
 
-| Key              | Required | Default        |
-|------------------|----------|----------------|
-| `default_fields` | no       | 4 fields       |
-| `sites`          | yes      | none, non-empty |
+| Key      | Required | Default         |
+|----------|----------|-----------------|
+| `fields` | no       | 4 fields        |
+| `sites`  | yes      | none, non-empty |
 
 Nothing else is allowed at the top level. `limit`, `max_age_hours` and
 `filter` are per site only (see `sites` below): there are no global values and
@@ -42,23 +42,22 @@ fallback:
 
 - UI: the keyword box in "Start a run" (`POST /api/runs` needs `keywords`)
 - MCP: the `keywords` argument of `scrape_jobs` (required, passed by name)
-- CLI: `python -m scraper --keyword <kw> [--keyword <kw> ...] [sites...]`
 
 Each keyword is run against every selected site, producing a
 `(keyword, site)` cross-product. Each pair gets its own payload in the
-`RunResult` that `scraper.runner.run` returns. Every keyword is trimmed and
-blank ones are dropped, by `scraper.runner.normalize_keywords`, which the
-runner, `scrape_jobs` and the CLI all use. A run with no keywords left is
+`RunResult` that `scraper.runner.scrape_all_sites` returns. Every keyword is trimmed and
+blank ones are dropped, by `scraper.runner.strip_and_drop_blank_keywords`, which the
+runner and `scrape_jobs` both use. The UI starts its runs through `scrape_jobs`. A run with no keywords left is
 refused with `keywords are required`: the runner returns exit code 1 without
-fetching, `scrape_jobs` returns `ok: false` without saving, and the CLI prints
-it to stderr and exits `2`. A save that sends `keywords` is refused with
+fetching, and `scrape_jobs` returns `ok: false` without saving. A save that sends `keywords` is refused with
 `not a job setting: keywords`.
 
-### `default_fields` (optional)
+### `fields` (optional)
 
-List of canonical field names to emit per Job. Default:
+One list of canonical field names to emit per Job, used for every site. Default:
 `[title, company, location, url]`. An empty list (`[]`) keeps only the
-always-included anchors below.
+always-included anchors below. A list whose names are all unknown falls back
+to the default.
 
 Allowed canonical fields:
 
@@ -74,10 +73,11 @@ job_id              requirements
 - Unknown field names log a warning and are silently dropped when settings
   load — they don't abort the load. Saving through `update_config` (and the
   UI) refuses them instead, so new unknown names never get stored.
-- Per-site override: `sites.<name>.fields` replaces this list for that site.
+- There is no per-site list. A `fields` key inside a site is refused with
+  `sites.<name>.fields is no longer supported, use the top-level fields`.
 
 ```yaml
-default_fields:
+fields:
   - title
   - company
   - location
@@ -108,7 +108,6 @@ sites:
     limit: 10
     max_age_hours: 72
     filter: {...}
-    fields: [...]
     api: {...}
 ```
 
@@ -119,13 +118,12 @@ sites:
 | `limit`         | yes      | `ConfigError`                       |
 | `max_age_hours` | no       | no age cut                          |
 | `filter`        | no       | no filter                           |
-| `fields`        | no       | `default_fields`                    |
 | `api`           | no       | HTML only, from `url_template`      |
 
 #### `sites.<name>.enabled`
 
-Boolean. Disabled sites are skipped during default runs. CLI args
-(`python -m scraper jobstreet`) override and run regardless of this flag.
+Boolean. Disabled sites are skipped during default runs. Sites named in the
+`sites` argument of `scrape_jobs` override and run regardless of this flag.
 
 #### `sites.<name>.url_template`
 
@@ -150,11 +148,6 @@ sites:
     url_template: "https://id.indeed.com/jobs?q={keyword_plus}&l=Indonesia&fromage=1"
 ```
 
-#### `sites.<name>.fields`
-
-Optional list of canonical field names. Replaces (does not merge into)
-`default_fields` for this site only. Same validation as `default_fields`.
-
 #### `sites.<name>.limit` (required)
 
 Whole number from 1 to 200. Maximum number of jobs this site emits per
@@ -177,7 +170,8 @@ as their search window.
 
 Optional content filter applied after the age cut, before field projection.
 Keys are `location`, `employment_type`, `work_type`. Each value can be a
-single string or a list. Substring + case-insensitive. Absent, `{}` or only
+single string or a list. Substring + case-insensitive, except `location`,
+which resolves names through the region index. Absent, `{}` or only
 empty lists means no filter for this site. See [`filters.md`](filters.md).
 
 ```yaml
@@ -229,12 +223,13 @@ The loader (`parse`) enforces:
 
 | Key                       | Rule                                             | On failure        |
 |---------------------------|--------------------------------------------------|-------------------|
-| top-level keys            | Only `default_fields`, `sites`                   | `ConfigError` (`not a job setting`) |
+| top-level keys            | Only `fields`, `sites`                           | `ConfigError` (`not a job setting`) |
 | `sites`                   | Non-empty mapping                                | `ConfigError`     |
 | `sites.<name>.limit`      | Required, whole number from 1 to 200             | `ConfigError`     |
 | `sites.<name>.max_age_hours` | Integer >= 1 or null                          | `ConfigError`     |
 | `sites.<name>.url_template` | Non-empty string with valid placeholders only  | `ConfigError`     |
-| `default_fields` entries  | Strings; unknown names → warning, dropped on load, refused on save | `[config] warning` (load continues) |
+| `fields` entries          | Strings; unknown names → warning, dropped on load, refused on save | `[config] warning` (load continues) |
+| `sites.<name>.fields`     | Not allowed                                      | `ConfigError` (`no longer supported`) |
 | `sites.<name>.filter` keys | One of `location`, `employment_type`, `work_type`; unknown → warning, dropped | `[config] warning` |
 | `sites.<name>.filter` values | String or list-of-strings                        | `ConfigError`     |
 
@@ -245,14 +240,15 @@ through a thread pool. Default `2`, valid `1` to `10`. A value that is not a
 whole number in that range logs a warning and uses `2`. `1` runs pairs one by
 one without a thread pool. Each Playwright fallback uses ~250-300MB RAM, so
 tune it for the memory you have. It is read at the start of every run, in
-`scraper/config_loader.py::resolve_concurrency`, and passed through to the
+`scraper/config_loader.py::read_concurrency_from_env`, and passed through to the
 `scraper-mcp` and `scraper-ui` containers by `docker-compose.yml`. Change it in
 `.env` and recreate the containers.
 
 ## Migration from global values
 
 Older settings documents had global `limit`, `concurrency`, `max_age_hours`,
-`filter` and `keywords`. The first time `JobSettingsStore.read` sees such a
+`filter` and `keywords`, a top-level `default_fields`, or per-site `fields`
+overrides. The first time `JobSettingsStore.read` sees such a
 document it migrates it, once, in one pass, and stores the result:
 
 - a site without a usable `limit` (missing, `null` or not a whole number) gets
@@ -267,6 +263,10 @@ document it migrates it, once, in one pass, and stores the result:
 - `keywords` is deleted and not copied anywhere; callers pass keywords on
   every run. A document that only has `keywords` still gets the `limit` fill
   and clamp above, so it always ends valid
+- a top-level `default_fields` is renamed to `fields`. When the document
+  already has `fields`, that value is kept and `default_fields` is dropped
+- every `sites.<name>.fields` override is dropped, and the sites that lost one
+  are named in one WARNING line. The top-level `fields` applies to every site
 
 The result is validated before anything is written. When it is still not
 valid (for example a bad `url_template`), nothing is written, the original
@@ -276,7 +276,10 @@ hand and read again.
 
 Before the migrated document is written, the original document is copied once
 to `_id: "active_pre_migration_backup"` in the same `job_settings` collection.
-A later migration never replaces that copy. Reads, saves and seeding only touch
+A later migration never replaces that copy, so when an earlier migration
+already made a backup, the `default_fields` rename does not make a new one:
+the backup stays the document from before that first migration. Reads, saves
+and seeding only touch
 `_id: "active"`, so the backup never changes them. See
 [`deploy.md`](deploy.md#job-settings-migration-is-one-way) for how to restore it.
 
@@ -338,27 +341,27 @@ from scraper.job_settings import load_app_config, open_store
 
 config = load_app_config(open_store())
 
-config.default_fields
+config.fields
 config.sites
-config.fields_for("glints")
+config.list_saved_fields()
 
-site = config.site("glints")
+site = config.find_site_config("glints")
 site.limit
 site.max_age_hours
 site.filter
 ```
 
-| Expression                    | Type                       |
-|-------------------------------|----------------------------|
-| `config.default_fields`       | `tuple[str, ...]`          |
-| `config.sites`                | `tuple[SiteConfig, ...]`   |
-| `config.fields_for(name)`     | `frozenset[str]`           |
-| `config.site(name)`           | `SiteConfig \| None`       |
-| `site.limit`                  | `int`                      |
-| `site.max_age_hours`          | `int \| None`              |
-| `site.filter`                 | `dict[str, list[str]]`, `{}` = no filter |
+| Expression                               | Type                       |
+|------------------------------------------|----------------------------|
+| `config.fields`                          | `tuple[str, ...]`          |
+| `config.sites`                           | `tuple[SiteConfig, ...]`   |
+| `config.list_saved_fields()`             | `frozenset[str]`, `fields` plus the anchors |
+| `config.find_site_config(site_name)`     | `SiteConfig \| None`       |
+| `site.limit`                             | `int`                      |
+| `site.max_age_hours`                     | `int \| None`              |
+| `site.filter`                            | `dict[str, list[str]]`, `{}` = no filter |
 
-Concurrency is not on the config: `resolve_concurrency()` reads it from the
+Concurrency is not on the config: `read_concurrency_from_env()` reads it from the
 env var.
 
 ## Live editing via MCP

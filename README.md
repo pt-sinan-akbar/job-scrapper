@@ -10,8 +10,8 @@ from a separate service outside this project.
 One Docker image, `job-scraper` (Dockerfile stage `app`), holds the scraper, the
 MCP server, the UI server, and the built UI. Its default command is
 `python -m mcp_server.server`. The UI runs `python -m ui_server` from the same
-image, and the CLI runs `python -m scraper`. Mongo uses the `mongo:7` image.
-Driven by job settings in Mongo (default fields, and per-site limit, max age and filter), edited at /config. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Keywords are not a setting: every run names its own (the "Start a run" box in the UI, the required `keywords` argument of the MCP `scrape_jobs` tool, or `--keyword` on the CLI), and a run without keywords is refused with `keywords are required`.
+image. Mongo uses the `mongo:7` image.
+Driven by job settings in Mongo (one fields list for every site, and per-site limit, max age and filter), edited at /config. Concurrency comes from the `SCRAPER_CONCURRENCY` env var. Keywords are not a setting: every run names its own (the "Start a run" box in the UI, or the required `keywords` argument of the MCP `scrape_jobs` tool), and a run without keywords is refused with `keywords are required`.
 
 Upwork is API-only. It uses the visitor GraphQL endpoint with no login and has no HTML fallback, so a failure shows up in `errors` with 0 jobs.
 
@@ -36,10 +36,10 @@ The root `requirements.txt` is baked into the Docker image and is not needed on 
 The TUI is a single Textual screen with:
 
 - **Env bar** — `dev` / `prod` buttons (default `dev`, from `scripts/environments.yaml`)
-- **Summary panel** — shows the site names from `seeds/job_settings.yaml`, proxy status, mongo db/collection, masked `.env` secrets
+- **Summary panel** — shows proxy status, mongo db/collection, masked `.env` secrets
 - **Command preview panel** — shows the exact command that will run when you press a button
 - **Action rows** — one row per scope (`all`, `mcp`, `mongo`, `ui`); columns: Start / Stop (labelled **Down** on the `all` row) / Status / Logs
-- **Tests row** — dev smoke tests: Scrape / Mongo
+- **Tests row** — dev smoke test: Mongo
 - Keys: `q`/`ctrl+c` quit, `c` cancel running command, `r` refresh status, `x`/`ctrl+l` clear log
 
 Equivalent raw command to start the MCP stack in dev (the TUI does this for you):
@@ -134,6 +134,8 @@ MONGO_HOST=127.0.0.1 MONGO_PORT=27018 ./seed.sh   # prod via SSH tunnel
 `./seed.sh job-settings` runs only the job settings seed, and `./seed.sh wilayah` runs only the area codes.
 
 The wilayah seed drops and recreates its collection on each run. The job settings seed only inserts when the document is missing, so it never overwrites your edits. It needs `.venv`, or a Python path in `SCRAPER_PYTHON`.
+
+After reseeding `wilayah`, restart `scraper-mcp` and `scraper-ui` (`docker restart job-scraper-mcp job-scraper-ui`). Each process loads the region list the first time a location filter needs it and keeps that copy until it stops, and the UI runs `scrape_jobs` in its own process, so both hold a copy.
 
 **`wilayah`** — 91 599 Indonesian administrative region codes (Kepmendagri No 300.2.2-2138
 Tahun 2025). Source: [cahyadsn/wilayah](https://github.com/cahyadsn/wilayah/tree/6ff9b8a2764cd4fbeb8c15fe0cba2d5a4eb26107)
@@ -254,7 +256,7 @@ Settings live in three places, by how they change
 
 | Place | Holds | Change it |
 | --- | --- | --- |
-| `job_settings` collection | `default_fields`, `sites`. Each site has its own `limit` (required), `max_age_hours` and `filter`; there are no global values | `/config` page, applies from the next run |
+| `job_settings` collection | `fields` (one list for every site), `sites`. Each site has its own `limit` (required), `max_age_hours` and `filter`; there are no global values | `/config` page, applies from the next run |
 | `PROXY_URL` env var | Proxy URL. Empty means direct connection. Not set stops scrapes | `.env` in dev, GitHub variable in prod |
 | `SCRAPER_CONCURRENCY` env var | How many `(keyword, site)` pairs run at once, 1 to 10, default 2. Invalid values log a warning and use 2 | `.env` in dev, GitHub variable in prod |
 | `discord_settings` collection | Discord token, channel, `message_template`, `max_chars` | Discord section of `/config`. Unset template and cap use the defaults in `mcp_server/discord_settings.py` |
@@ -272,21 +274,28 @@ Nothing is written to disk. `scrape_jobs` gets each site's results straight from
 # How the filter works
 
 Each site's `filter` runs **after** scraping — not at the HTTP/URL level.
-URL templates carry no location params. All search-page results are fetched and
-parsed first, then filtered in Python.
+URL templates carry no location params. All results are fetched first (from the
+site's API or its search page), then filtered in Python.
 
-Pipeline in `run_one` (`scraper/runner.py`):
+Pipeline in `scrape_site_for_keyword` (`scraper/runner.py`):
 
-1. Fetch search page (full HTTP request)
-2. Parse all jobs from HTML
-3. Drop jobs older than the site's `max_age_hours` (none dropped when it is not set)
-4. **`apply_filter`** — drop jobs not matching the site's `filter` (none dropped when it is empty)
-5. Fetch detail pages — only for jobs that survived step 4
-6. Return the site's payload to the caller
+1. Search through the site's API (`search_jobs_via_api`), when the site has a usable `api` block
+2. If the API is not used or fails, download the search page through the HTML downloader chain (curl_cffi, then cloudscraper, then Playwright) and parse it (`scraper.parse(html)`). An API-only site (Upwork) fails here instead
+3. Fill each job's missing `matched_keyword` and `posted_at`
+4. Build the raw payload: every job found, before any cut
+5. Drop jobs older than the site's `max_age_hours` (none dropped when it is not set)
+6. **`filter_reason`** — drop jobs not matching the site's `filter` (none dropped when it is empty)
+7. Keep only the first `limit` jobs
+8. Fill `requirements` — only for jobs that survived step 7, and only when `requirements` is a saved field. Jobs from the API ask the detail API first, then the job page
+9. Build the filtered payload and return both payloads to the caller
 
-`apply_filter` (`scraper/sites/_filter.py`) does case-insensitive substring
-matching per field. `location: [jakarta, tangerang]` keeps a job if
-`job["location"].lower()` contains any of those strings.
+`filter_reason` (`scraper/sites/_filter.py`) checks each filter key. The
+`location` key resolves names through the region index (the Mongo `wilayah`
+list): `location: [jakarta, tangerang]` keeps a job whose location resolves to
+a region under Jakarta or Tangerang. It falls back to substring matching only
+when the index cannot be loaded. The other keys use case-insensitive substring
+matching: `work_type: [remote, hybrid]` keeps a job if
+`job["work_type"].lower()` contains any of those strings.
 
 Edge case: if a job's filtered field is `None` (site didn't return it), the
 job passes through — it is not dropped.
@@ -296,24 +305,13 @@ job passes through — it is not dropped.
 This project has no scheduler. Scheduled runs come from a separate service
 outside this project (a Kubernetes CronJob in another repo).
 
-To run a scrape by hand, start one from the UI, or scrape only (no Mongo write,
-no Discord post):
-
-```bash
-# Via TUI: tests row → Scrape
-
-# Or directly (--keyword is required, repeat it for several):
-docker exec job-scraper-mcp python -m scraper --keyword "software engineer"
-```
-
-The CLI prints every site's filtered payload as JSON on stdout, so it pipes into `jq`.
-Logs go to stderr
-
-```bash
-docker exec job-scraper-mcp python -m scraper --keyword "software engineer" jobstreet | jq '.[].payload.count'
-```
-
-Without `--keyword` the CLI prints `keywords are required` to stderr and exits `2`.
+To run a scrape by hand, start one from the "Start a run" box in the UI, or call
+the MCP `scrape_jobs` tool with its required `keywords` argument. `scrape_jobs`
+saves the run in the Mongo `scrape_runs` collection, and skips the save when called
+with `save_run=false`. The UI calls it with `save_run=false`, so a UI run is not
+saved in `scrape_runs` and its `mongo_id` is null. The UI keeps its latest run in
+its own `ui_runs` collection. A run without keywords is refused with
+`keywords are required`.
 
 # Query MongoDB data
 
@@ -377,15 +375,19 @@ docker logs -f job-scraper-ui        # Scraper UI
 docker logs -f job-scraper-mongo     # MongoDB
 ```
 
+The scraper logs to stdout only. There is no log file and no log rotation, so
+`docker logs` is the only place to read them. A run started from the UI logs in
+`job-scraper-ui`, because the UI runs `scrape_jobs` in its own process. An MCP
+`scrape_jobs` call logs in `job-scraper-mcp`.
+
 Via TUI: select a scope row → **Logs** (runs `docker compose … logs -f --tail=200 <services>`).
 
 # Smoke tests
 
-The full MCP tool list is in [docs/mcp.md](docs/mcp.md). Quick checks from the TUI tests row:
+The full MCP tool list is in [docs/mcp.md](docs/mcp.md). Quick check from the TUI tests row:
 
 | Button      | What it tests                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------- |
-| **Scrape**  | Runs `python -m scraper --keyword "software engineer"` in `scraper-mcp` — scrape only, no Mongo write, no Discord post |
 | **Mongo**   | Inserts + reads + drops a throwaway document in `scraper-mcp` via the real Mongo connection |
 
 # Scraper UI
@@ -401,7 +403,7 @@ This starts `scraper-mcp` and `scraper-ui` in Docker, then runs the Vite dev ser
 the foreground. Ctrl+C stops Vite only, the containers keep running.
 http://127.0.0.1:8090 serves the UI baked into the image, so it only changes after a rebuild.
 
-- Runs go through `scraper-mcp`, one at a time, with no stop button
+- Runs call `scrape_jobs` inside the `scraper-ui` process, one at a time, with no stop button
 - The latest UI run (record, jobs, failures, raw and filtered payloads) is saved in the
   Mongo `ui_runs` collection, so it survives a restart. Only one run is kept, and UI runs
   never go to `scrape_runs`. If Mongo is down, the result lives in memory only, run storage is skipped for 30 s after a failure, and reading an older run by id returns 503.

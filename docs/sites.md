@@ -27,7 +27,7 @@ search result page (no detail-page fetch).
 listing exposes it. **❌** = currently never populated by the parser.
 
 `requirements` is fetched via a second request to each job's detail URL
-and requires `requirements` to be in the site's `fields` list.
+and requires `requirements` to be in the top-level `fields` list.
 
 Implication for filters: `work_type` and `employment_type` filters mostly
 affect Glints. Other sites pass via the conservative null-rule.
@@ -41,13 +41,14 @@ aligned with that site's `max_age_hours` to minimize wasted fetches.
 |-----------|----------------|-----------------------------|--------------------------------|
 | jobstreet | `daterange`    | days (integer)              | `?daterange=1`                 |
 | linkedin  | `f_TPR`        | seconds, prefix `r`         | `&f_TPR=r86400` (24h)          |
-| indeed    | `fromage`      | days (integer)              | `&fromage=1`                   |
+| indeed    | none           | n/a                         | client-side `max_age_hours` only |
 | glints    | none           | n/a                         | client-side `max_age_hours` only |
 
 Coupling: if you increase a site's `max_age_hours`, also widen these URL params
-(`daterange=7` for last week, `f_TPR=r604800`, `fromage=7`). Otherwise
+(`daterange=7` for last week, `f_TPR=r604800`). Otherwise
 the URL only returns the past day and the wider client window has nothing
-extra to admit.
+extra to admit. Indeed reads only `q` and `l` from its URL, so `fromage` has
+no effect on the jobs returned.
 
 ## Posted-date sources
 
@@ -59,10 +60,10 @@ behavior).
 | jobstreet | `__NEXT_DATA__` `listingDate`/`createdDate`         | `"2 hari yang lalu"` (Indonesian) |
 | glints    | `__NEXT_DATA__` `publishedAt`/`createdAt`           | `"2026-04-22T02:44:52.044Z"`      |
 | linkedin  | `<time class="job-search-card__listdate">` datetime | `"2026-05-09"` (ISO date)         |
-| indeed    | embedded `mosaic-data` JSON `formattedRelativeTime` | `"5 hari yang lalu"` or `"Baru dipasang"` |
+| indeed    | GraphQL API `datePublished` (epoch ms)              | `"2026-05-09T03:25:21+00:00"`     |
 
 `posted_at` is the parsed ISO UTC equivalent. For Indeed, it comes directly
-from `pubDate` (epoch ms) instead of dateparser, so it's the most accurate
+from `datePublished` (epoch ms) instead of dateparser, so it's the most accurate
 of the four.
 
 ### Glints quirk
@@ -73,13 +74,13 @@ may still show as months old to the filter. Expect Glints to dry up first
 under a tight `sites.glints.max_age_hours`. There is no public server-side recency param
 on Glints' search URL.
 
-### Indeed selectors
+### Indeed API
 
-Indeed card-level selectors don't expose posted dates in the current
-markup, so the parser reads `formattedRelativeTime` and `pubDate` from the
-embedded `mosaic-data` JSON, paired by document order with each `jobkey`.
-This is why Indeed's `posted_at` is reliable despite empty `posted_date`
-on the visible card.
+Indeed jobs are not parsed from the search page. `IndeedScraper.parse` takes
+the keyword (`q`) and location (`l`) from the URL, calls Indeed's GraphQL API
+(`apis.indeed.com/graphql`) and reads `datePublished` (epoch ms) from each job.
+Both `posted_date` and `posted_at` hold that value as ISO UTC. The job
+description comes from the same call.
 
 ## Location coverage examples
 
@@ -92,8 +93,9 @@ Free-form values seen across keywords (sample from a 60-job audit):
 | linkedin  | Jakarta, Indonesia, Area DKI Jakarta, Batam                 |
 | indeed    | Jakarta, Bandung, Bekasi, Remote                            |
 
-Use substring filters (`location: jakarta`) to catch variants like
+Use a region name (`location: jakarta`) to catch variants like
 "Jakarta Barat", "Area DKI Jakarta", "Jakarta Selatan", etc. in one shot.
+The region index resolves them all to Jakarta (see [`filters.md`](filters.md#region-index)).
 
 ## Per-site canonical value vocabulary
 
@@ -127,19 +129,29 @@ reason in the site payload and run metadata.
 
 ## Anti-bot considerations
 
-| Site      | Cloudscraper alone | Playwright fallback         |
-|-----------|--------------------|------------------------------|
-| jobstreet | works              | not needed                   |
-| glints    | works              | not needed                   |
-| linkedin  | works (guest API)  | not needed                   |
-| indeed    | 403                | required (extra ~10-15s, ~280MB Chromium) |
+HTML pages go through a three-stage chain: curl_cffi, then cloudscraper, then
+Playwright. A stage runs only when the one before it gave no usable page
+(non-200 status, challenge page or error). Playwright is the costly stage
+(extra ~10-15s, ~280MB Chromium).
 
-Indeed's 403 is consistent and not a transient failure — every run hits
-the playwright fallback. RAM cost matters when scaling `SCRAPER_CONCURRENCY`.
+| Site      | Jobs come from                                            | HTML downloader chain is used for                           |
+|-----------|-----------------------------------------------------------|-------------------------------------------------------------|
+| jobstreet | API first, search page when the API fails                 | the search page fallback and job pages                      |
+| glints    | API first, search page when the API fails                 | the search page fallback and job pages                      |
+| linkedin  | API first, search page when the API fails                 | the search page fallback and every job page (no detail API) |
+| indeed    | Indeed's GraphQL API, called inside `IndeedScraper.parse` | the search URL is still requested, its HTML is not used     |
+| upwork    | API only                                                  | nothing                                                     |
+
+Indeed does not need the search page: `IndeedScraper.parse` ignores the HTML and
+reads jobs from `apis.indeed.com/graphql` with curl_cffi. The runner still
+requests Indeed's search URL through the chain first, so Playwright starts on
+every Indeed run where curl_cffi and cloudscraper are both blocked. A failed
+download does not fail the pair (`requires_search_html = False`). RAM cost
+matters when scaling `SCRAPER_CONCURRENCY`.
 
 ## Adding new sites
 
-The four current sites cover Indonesia-focused job boards. To add another
+Five sites are registered: jobstreet, glints, linkedin, indeed and upwork. To add another
 (jobsdb, kalibrr, etc.), see `adding-a-site.md` (TBD) — short version:
 
 1. Add `scraper/sites/<name>.py` with a `Scraper` subclass implementing `parse(html)`.

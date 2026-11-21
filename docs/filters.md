@@ -27,9 +27,12 @@ sites:
 ## Matching semantics
 
 - **Substring** match, **case-insensitive**, against the job's canonical field
-  value. `jakarta` matches `Jakarta`, `Jakarta Barat`, `Area DKI Jakarta`.
+  value, for every key but `location`.
+- **`location`** resolves names through the region index (see
+  [Region index](#region-index)). `jakarta` matches `Jakarta`, `Jakarta Barat`,
+  `Area DKI Jakarta`.
 - **Within a key**: list-of-values is OR. `location: [jakarta, bandung]` keeps
-  any job where `location` substring-matches `jakarta` OR `bandung`.
+  any job where `location` matches `jakarta` OR `bandung`.
 - **Across keys**: AND. Every declared key must match at least one of its
   candidate values for the job to survive.
 - **Null fields are kept (conservative)**. If a site couldn't extract a field,
@@ -42,7 +45,7 @@ sites:
 ### `location`
 
 Free-form. There is no fixed enum — the value is whatever the source page
-emits, normalized only by stripping/lowercasing for the comparison.
+emits. The comparison goes through the region index below.
 
 Examples observed across platforms (sample, not exhaustive):
 
@@ -55,9 +58,28 @@ buleleng             cikarang               cilandak
 indonesia            remote
 ```
 
-Tip: a short substring catches multiple variants.
+Tip: one region name catches multiple variants.
 `location: jakarta` catches `Jakarta`, `Jakarta Barat`, `Jakarta Selatan`,
 `Area DKI Jakarta`, etc. in one go.
+
+#### Region index
+
+The location filter resolves names through the Indonesian region list in the
+Mongo `wilayah` collection (provinces, cities and districts). A job is kept
+when its location resolves to a region under one of the filter's regions, and
+dropped when it resolves somewhere else. When the location resolves to no
+region, the job is kept only if a filter term that is not a region name (such
+as `indonesia`) equals one part of the location.
+
+- **Loaded on first use.** The list is read the first time a location filter
+  needs it. A run with no location filter never reads `wilayah`.
+- **Cached for the process.** After a successful load the copy stays in memory
+  until the process stops. `scraper-mcp` and `scraper-ui` each hold their own
+  copy, so restart both after reseeding `wilayah` (see
+  [`deploy.md`](deploy.md#restart-after-reseeding)).
+- **Retried after a failed load.** If Mongo is unreachable or `wilayah` is
+  empty, the filter falls back to plain substring matching and logs a warning.
+  The load is tried again after 60 s, not on every job.
 
 ### `employment_type`
 
@@ -117,13 +139,15 @@ is copied into every site that had no `filter` key (see
 
 ## Reading the runtime log
 
-For each site, the runner prints how many jobs survived the filter:
+For each site, the runner logs how many jobs survived the filter. Logs go to
+stdout only, so read them with `docker logs job-scraper-mcp` (MCP calls) or
+`docker logs job-scraper-ui` (runs started from the UI):
 
 ```
 [jobstreet:software-engineer] filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 4)
 ```
 
-Each site payload (`filtered_results[*].payload` in Mongo, and the CLI's stdout) also records the filter that was applied:
+Each site payload (`filtered_results[*].payload` in Mongo, and the `scrape_jobs` response with `include_payloads=true`) also records the filter that was applied:
 
 ```json
 {
