@@ -12,12 +12,11 @@ __pycache__
 .ruff_cache
 *.log
 run.log
-Dockerfile
-.dockerignore
+infra
 README.md
 docs
-ui/node_modules
-ui/dist
+frontend/node_modules
+frontend/dist
 config-backups
 logs
 .delta

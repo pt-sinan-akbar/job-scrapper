@@ -7,21 +7,21 @@ ENV PYTHONUSERBASE=/opt/python
 WORKDIR /build
 
 COPY requirements.txt ./requirements.txt
-COPY ui_server/requirements.txt ./ui-requirements.txt
+COPY backend/requirements.txt ./backend-requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir --user -r requirements.txt -r ui-requirements.txt
+ && pip install --no-cache-dir --user -r requirements.txt -r backend-requirements.txt
 
 
 FROM oven/bun:1.4.4-slim AS bun-binary
 
-FROM node:24-slim AS ui-build
+FROM node:24-slim AS frontend-build
 
 COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
-WORKDIR /ui
-COPY ui/package.json ui/bun.lock ./
+WORKDIR /frontend
+COPY frontend/package.json frontend/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY ui/ ./
+COPY frontend/ ./
 RUN bun run build
 
 
@@ -45,8 +45,8 @@ WORKDIR /app
 
 COPY --chown=pwuser:pwuser scraper    ./scraper
 COPY --chown=pwuser:pwuser mcp_server ./mcp_server
-COPY --chown=pwuser:pwuser ui_server  ./ui_server
-COPY --chown=pwuser:pwuser --from=ui-build /ui/dist ./ui/dist
+COPY --chown=pwuser:pwuser backend    ./backend
+COPY --chown=pwuser:pwuser --from=frontend-build /frontend/dist ./frontend/dist
 
 USER pwuser
 

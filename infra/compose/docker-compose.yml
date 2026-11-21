@@ -6,7 +6,6 @@ services:
     image: mongo:7
     container_name: job-scraper-mongo
     restart: unless-stopped
-    profiles: ["mcp", "mongo", "ui"]
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
@@ -24,16 +23,15 @@ services:
       - default
       - job-net # lets the job-agent backend reach Mongo as job-scraper-mongo:27017
 
-  # SERVICE: scraper-mcp — long-running MCP HTTP server; profile-gated so `docker compose up` skips it by default
+  # SERVICE: scraper-mcp — long-running MCP HTTP server
   scraper-mcp:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: infra/docker/Dockerfile
       target: app
     image: job-scraper:latest
     container_name: job-scraper-mcp
     restart: unless-stopped
-    profiles: ["mcp"]
     depends_on:
       mongo:
         condition: service_healthy
@@ -58,17 +56,16 @@ services:
       - default
       - job-net # lets the job-agent backend reach MCP as http://job-scraper-mcp:8080/mcp
 
-  # SERVICE: scraper-ui — FastAPI + Vue control panel; profile-gated, needs scraper-mcp running
+  # SERVICE: scraper-ui — FastAPI + Vue control panel
   scraper-ui:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: infra/docker/Dockerfile
       target: app
     image: job-scraper:latest
     container_name: job-scraper-ui
-    command: ["python", "-m", "ui_server"]
+    command: ["python", "-m", "backend"]
     restart: unless-stopped
-    profiles: ["ui"]
     depends_on:
       mongo:
         condition: service_healthy
@@ -100,4 +97,5 @@ volumes:
   mongo-data:
     # pinned to the pre-rename project volume so existing Mongo data is kept
     name: job-scrapper_mongo-data
+    external: true
   scraper-logs:
