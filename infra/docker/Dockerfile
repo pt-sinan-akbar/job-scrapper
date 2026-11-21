@@ -51,9 +51,10 @@ COPY --chown=pwuser:pwuser mcp_server ./mcp_server
 COPY --chown=pwuser:pwuser backend    ./backend
 COPY --chown=pwuser:pwuser --from=frontend-build /frontend/dist ./frontend/dist
 COPY --chown=pwuser:pwuser infra/scripts/scrape-to-discord.sh ./scripts/scrape-to-discord.sh
+COPY --chown=pwuser:pwuser infra/docker/start-servers.sh ./scripts/start-servers.sh
 
 USER pwuser
 
 EXPOSE 8080 8090
 
-CMD ["python", "-m", "mcp_server.server"]
+CMD ["/app/scripts/start-servers.sh"]
