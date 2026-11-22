@@ -457,7 +457,11 @@ def test_scrape_jobs_forwards_requested_sites_to_scrape_all_sites(mock_mongo, mo
         scrape_jobs([SITE, "glints"], keywords=[KEYWORD])
 
     mock_scrape_all_sites.assert_called_once_with(
-        config, requested_sites=[SITE, "glints"], keywords=[KEYWORD]
+        config,
+        requested_sites=[SITE, "glints"],
+        keywords=[KEYWORD],
+        requested_location=None,
+        requested_max_age_hours=None,
     )
 
 

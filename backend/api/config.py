@@ -26,6 +26,7 @@ async def read_config(services: ServicesDep) -> dict[str, Any]:
             "job_fields": config_read.tool_response.get("job_fields", []),
             "mandatory_fields": config_read.tool_response.get("mandatory_fields", []),
             "location_options": config_read.tool_response.get("location_options", []),
+            "max_age_options": config_read.tool_response.get("max_age_options", []),
         }
     )
 

@@ -150,9 +150,11 @@ Nothing is written to disk. `scrape_jobs` gets each site's results straight from
 
 # How the filter works
 
-Each site's `filter` runs **after** scraping — not at the HTTP/URL level.
-URL templates carry no location params. All results are fetched first (from the
-site's API or its search page), then filtered in Python.
+Each site's `filter` runs **after** scraping. URL templates carry no location
+params. The site's `filter.location` also picks which locations its API is
+searched for (one call per city, plus a country-wide call for `Indonesia`).
+All results are fetched first (from the site's API or its search page), then
+filtered in Python.
 
 Pipeline in `scrape_site_for_keyword` (`scraper/runner.py`):
 
@@ -160,16 +162,16 @@ Pipeline in `scrape_site_for_keyword` (`scraper/runner.py`):
 2. If the API is not used or fails, download the search page through the HTML downloader chain (curl_cffi, then cloudscraper, then Playwright) and parse it (`scraper.parse(html)`). An API-only site (Upwork) fails here instead. A site that makes its own request (Indeed) skips the download: `scraper.parse("")` calls the site's API, and a failure is reported as `api failed: <code>`
 3. Fill each job's missing `matched_keyword` and `posted_at`
 4. Build the raw payload: every job found, before any cut
-5. Drop jobs older than the site's `max_age_hours` (none dropped when it is not set)
-6. **`filter_reason`** — drop jobs not matching the site's `filter` (none dropped when it is empty)
-7. Keep only the first `limit` jobs
-8. Fill `requirements` — only for jobs that survived step 7, and only when `requirements` is a saved field. Jobs from the API ask the detail API first, then the job page
-9. Build the filtered payload and return both payloads to the caller
+5. **`_drop_jobs_failing_filters`** — one pass that drops jobs older than the site's `max_age_hours` (skipped when it is not set) or not matching the site's `filter` (skipped when it is empty). Each dropped job gets one debug line with its reason, and one info line sums up kept and dropped jobs by reason (stale or filter)
+6. Keep only the first `limit` jobs
+7. Fill `requirements` — only for jobs that survived step 6, and only when `requirements` is a saved field. Jobs from the API ask the detail API first, then the job page
+8. Build the filtered payload and return both payloads to the caller
 
-`filter_reason` (`scraper/sites/_filter.py`) checks each filter key. The
+`find_content_filter_failure` (`scraper/sites/_filter.py`) checks each filter key. The
 `location` key resolves names through the region index (the Mongo `wilayah`
 list): `location: [jakarta, tangerang]` keeps a job whose location resolves to
-a region under Jakarta or Tangerang. It falls back to substring matching only
+a region under Jakarta or Tangerang, and `indonesia` keeps any Indonesian
+region. It falls back to substring matching only
 when the index cannot be loaded. The other keys use case-insensitive substring
 matching: `work_type: [remote, hybrid]` keeps a job if
 `job["work_type"].lower()` contains any of those strings.

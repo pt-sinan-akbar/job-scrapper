@@ -53,7 +53,11 @@ ScrapeOutcome = tuple[ScrapeReport, list[dict[str, Any]]]
 
 class Scraper(Protocol):
     async def scrape_jobs(
-        self, sites: tuple[str, ...], keywords: tuple[str, ...]
+        self,
+        sites: tuple[str, ...],
+        keywords: tuple[str, ...],
+        location: str | None = None,
+        max_age_hours: int | None = None,
     ) -> dict[str, Any]: ...
 
     async def read_discord_settings(self) -> dict[str, Any]: ...
@@ -96,10 +100,15 @@ class ScrapeService:
         return self._repository.find_latest()
 
     def start_scrape(
-        self, keywords: tuple[str, ...], sites: tuple[str, ...], notify_discord: bool
+        self,
+        keywords: tuple[str, ...],
+        sites: tuple[str, ...],
+        notify_discord: bool,
+        location: str | None = None,
+        max_age_hours: int | None = None,
     ) -> ScrapeSummary:
         self.ensure_idle()
-        scrape_summary = build_running_summary(keywords, sites)
+        scrape_summary = build_running_summary(keywords, sites, location, max_age_hours)
         self._latest_scrape_report = ScrapeReport(scrape_summary)
         scrape_task = self._scrape_with_crash_guard(scrape_summary, notify_discord)
         self._task = asyncio.create_task(scrape_task)
@@ -141,7 +150,10 @@ class ScrapeService:
     async def _scrape_jobs_for_summary(self, scrape_summary: ScrapeSummary) -> ScrapeOutcome:
         try:
             scrape_response = await self._scraper.scrape_jobs(
-                scrape_summary.sites, scrape_summary.keywords
+                scrape_summary.sites,
+                scrape_summary.keywords,
+                scrape_summary.location,
+                scrape_summary.max_age_hours,
             )
         except McpUnavailableError as exc:
             return _build_failed_outcome(scrape_summary, exc.message)

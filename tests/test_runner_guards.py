@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
-from datetime import UTC, datetime
-from typing import Any, cast
 
 import pytest
 
 from scraper.runner import (
-    _is_within_max_age,
     _read_future_result_or_none,
     _read_requirements_from_job_page,
 )
@@ -17,7 +14,6 @@ from tests.log_lines import list_log_lines_containing, list_warning_or_above_log
 from tests.runner_fakes import build_html_downloader_returning
 
 JOB_PAGE_HTML = "<div class='show-more-less-html__markup'>Five years of Python</div>"
-CUTOFF = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
 
 
 def _linkedin_scraper() -> LinkedinScraper:
@@ -27,12 +23,6 @@ def _linkedin_scraper() -> LinkedinScraper:
 def _job_with_url(url: str | None) -> Job:
     job = empty_job("linkedin", "Backend Engineer", "Acme")
     job["url"] = url
-    return job
-
-
-def _job_posted_at(posted_at: object) -> Job:
-    job = empty_job("linkedin", "Backend Engineer", "Acme")
-    job["posted_at"] = cast(Any, posted_at)
     return job
 
 
@@ -129,41 +119,3 @@ def test_future_that_finished_reads_as_its_value():
     requirements = _read_future_result_or_none(finished_future, "linkedin")
 
     assert requirements == "Five years of Python"
-
-
-@pytest.mark.parametrize("posted_at", [None, 1767960000, CUTOFF])
-def test_job_whose_posted_at_is_not_text_is_kept(posted_at: object):
-    is_kept = _is_within_max_age(_job_posted_at(posted_at), CUTOFF)
-
-    assert is_kept is True
-
-
-@pytest.mark.parametrize("posted_at", ["yesterday", "", "2026-13-45T00:00:00"])
-def test_job_whose_posted_at_text_is_not_a_date_is_kept(posted_at: str):
-    is_kept = _is_within_max_age(_job_posted_at(posted_at), CUTOFF)
-
-    assert is_kept is True
-
-
-def test_posted_at_without_timezone_is_read_as_utc_and_kept_when_after_the_cutoff():
-    one_hour_after_cutoff = "2026-01-10T13:00:00"
-
-    is_kept = _is_within_max_age(_job_posted_at(one_hour_after_cutoff), CUTOFF)
-
-    assert is_kept is True
-
-
-def test_posted_at_without_timezone_is_read_as_utc_and_dropped_when_before_the_cutoff():
-    one_hour_before_cutoff = "2026-01-10T11:00:00"
-
-    is_kept = _is_within_max_age(_job_posted_at(one_hour_before_cutoff), CUTOFF)
-
-    assert is_kept is False
-
-
-def test_posted_at_with_another_timezone_is_compared_as_the_same_instant():
-    one_hour_before_cutoff_in_jakarta_time = "2026-01-10T18:00:00+07:00"
-
-    is_kept = _is_within_max_age(_job_posted_at(one_hour_before_cutoff_in_jakarta_time), CUTOFF)
-
-    assert is_kept is False

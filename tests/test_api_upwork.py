@@ -281,3 +281,25 @@ def test_empty_job_has_empty_salary_numbers():
     assert job["salary_min"] is None
     assert job["salary_max"] is None
     assert list(job) == list(JOB_FIELD_ORDER)
+
+
+class FrozenUpworkDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 11, 22, 18, 0, tzinfo=UTC)
+
+
+def test_search_keeps_paging_while_jobs_stay_inside_the_midnight_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("scraper.api.upwork.datetime", FrozenUpworkDatetime)
+    inside_midnight_window = "2026-11-19T01:00:00.000Z"
+    first = []
+    for job_number in range(PAGE_SIZE):
+        first.append(_item(str(job_number), publishTime=inside_midnight_window))
+    client, session = make_client([TOKEN_RESPONSE, _page(first), _page([_item("x")])])
+
+    jobs = UpworkApi(client).search("python", "Remote", 72, 200)
+
+    assert len(session.calls) == 3
+    assert len(jobs) == PAGE_SIZE + 1

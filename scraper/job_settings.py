@@ -17,6 +17,7 @@ from .config_loader import (
     is_valid_max_age,
     parse_job_settings_into_app_config,
     read_proxy_url_from_env,
+    refuse_unknown_filter_locations,
     validate_job_settings,
 )
 from .log import get_scraper_logger
@@ -343,6 +344,7 @@ class JobSettingsStore:
         return previous is not None
 
     def seed(self, settings: dict[str, Any]) -> bool:
+        refuse_unknown_filter_locations(settings)
         validate_job_settings(settings)
         with _mongo_errors():
             document = {"_id": SETTINGS_ID, **_stamp(settings, FIRST_VERSION, SOURCE_SEED)}
@@ -356,6 +358,7 @@ class JobSettingsStore:
         self, patch: dict[str, Any], expected_version: int | None, source: str
     ) -> StoredSettings:
         _refuse_unknown_fields(patch)
+        refuse_unknown_filter_locations(patch)
         current = self._read_expected(expected_version)
         return self._replace(current, merge_settings(current.settings, patch), source)
 

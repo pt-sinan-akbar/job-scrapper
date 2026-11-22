@@ -13,6 +13,7 @@ from scraper.config_loader import (
     parse_job_settings_into_app_config,
     read_concurrency_from_env,
     read_proxy_url_from_env,
+    refuse_unknown_filter_locations,
     validate_job_settings,
 )
 
@@ -237,3 +238,117 @@ def test_site_fields_are_refused():
 def test_default_fields_is_not_a_job_setting():
     with pytest.raises(ConfigError, match="not a job setting: default_fields"):
         validate_job_settings({**SETTINGS, "default_fields": ["title"]})
+
+
+FILTER_LOCATION_PATH = "sites.jobstreet.filter.location"
+
+
+def test_location_filter_keeps_the_known_options_in_lowercase():
+    site = parse_job_settings_into_app_config(
+        _with_site(limit=3, filter={"location": ["Jakarta", " TANGERANG selatan ", "Indonesia"]}),
+        None,
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.filter == {"location": ["jakarta", "tangerang selatan", "indonesia"]}
+
+
+def test_location_filter_given_as_one_text_is_kept_when_known():
+    site = parse_job_settings_into_app_config(
+        _with_site(limit=3, filter={"location": "Bekasi"}), None
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.filter == {"location": ["bekasi"]}
+
+
+def test_stored_unknown_location_filter_value_is_dropped_with_a_warning(warnings: MagicMock):
+    site = parse_job_settings_into_app_config(
+        _with_site(limit=3, filter={"location": ["jakarta", "Surabaya"]}), None
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.filter == {"location": ["jakarta"]}
+    warnings.assert_called_once()
+    warning_text = warnings.call_args.args[0] % warnings.call_args.args[1:]
+    assert FILTER_LOCATION_PATH in warning_text
+    assert "surabaya" in warning_text
+    assert "Tangerang Selatan" in warning_text
+
+
+def test_location_filter_with_only_unknown_values_becomes_no_location_filter(
+    warnings: MagicMock,
+):
+    site = parse_job_settings_into_app_config(
+        _with_site(limit=3, filter={"location": ["Surabaya"], "work_type": ["remote"]}), None
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.filter == {"work_type": ["remote"]}
+    warnings.assert_called_once()
+
+
+def test_other_filter_fields_keep_any_value(warnings: MagicMock):
+    site = parse_job_settings_into_app_config(
+        _with_site(limit=3, filter={"work_type": ["Surabaya"]}), None
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.filter == {"work_type": ["surabaya"]}
+    warnings.assert_not_called()
+
+
+@pytest.mark.parametrize("location_filter", [["jakarta", "Surabaya"], "Surabaya"])
+def test_refuse_unknown_filter_locations_names_the_value_and_the_allowed_options(
+    location_filter: object, warnings: MagicMock
+):
+    with pytest.raises(ConfigError) as raised:
+        refuse_unknown_filter_locations(_with_site(limit=3, filter={"location": location_filter}))
+
+    message = str(raised.value)
+    assert FILTER_LOCATION_PATH in message
+    assert "Surabaya" in message
+    assert "Jakarta, Tangerang, Tangerang Selatan, Bandung, Bekasi, Indonesia" in message
+    warnings.assert_not_called()
+
+
+def test_refuse_unknown_filter_locations_accepts_known_values_in_any_case():
+    refuse_unknown_filter_locations(
+        _with_site(limit=3, filter={"location": ["JAKARTA", "tangerang selatan", "Indonesia"]})
+    )
+
+
+@pytest.mark.parametrize("empty_location_filter", [None, "", []])
+def test_refuse_unknown_filter_locations_accepts_an_empty_location_filter(
+    empty_location_filter: object,
+):
+    refuse_unknown_filter_locations(_with_site(limit=3, filter={"location": empty_location_filter}))
+
+
+@pytest.mark.parametrize(
+    "patch_without_location_filter",
+    [
+        {},
+        {"fields": ["title"]},
+        {"sites": {"jobstreet": {"limit": 9}}},
+        {"sites": {"jobstreet": {"filter": None}}},
+        {"sites": {"jobstreet": {"filter": {"work_type": ["Surabaya"]}}}},
+    ],
+)
+def test_refuse_unknown_filter_locations_accepts_a_patch_without_a_location_filter(
+    patch_without_location_filter: dict,
+):
+    refuse_unknown_filter_locations(patch_without_location_filter)
+
+
+def test_validate_job_settings_accepts_an_unknown_stored_location_filter_value(
+    warnings: MagicMock,
+):
+    validate_job_settings(_with_site(limit=3, filter={"location": ["jakarta", "depok"]}))
+
+    warnings.assert_called_once()
+
+
+def test_validate_job_settings_still_reports_non_text_location_filter_values():
+    with pytest.raises(ConfigError, match="entries must be strings"):
+        validate_job_settings(_with_site(limit=3, filter={"location": ["jakarta", 7]}))

@@ -44,8 +44,18 @@ class FakeScraper:
         self.send_outcomes: list[dict | Exception] = []
         self.sent_messages: list[tuple] = []
         self.sent_digest_counts: list[dict | None] = []
+        self.scraped_locations: list[str | None] = []
+        self.scraped_max_age_hours: list[int | None] = []
 
-    async def scrape_jobs(self, sites: tuple[str, ...], keywords: tuple[str, ...]) -> dict:
+    async def scrape_jobs(
+        self,
+        sites: tuple[str, ...],
+        keywords: tuple[str, ...],
+        location: str | None = None,
+        max_age_hours: int | None = None,
+    ) -> dict:
+        self.scraped_locations.append(location)
+        self.scraped_max_age_hours.append(max_age_hours)
         await self.release.wait()
         if isinstance(self._outcome, Exception):
             raise self._outcome
@@ -152,6 +162,62 @@ def test_scrape_finishes_and_saves_result():
         return service.read_scrape_report(scrape_summary.id).summary.status
 
     assert asyncio.run(scenario()) is ScrapeStatus.SUCCEEDED
+
+
+def test_scrape_sends_the_requested_location_and_keeps_it_on_the_summary():
+    async def scenario() -> tuple[str | None, list[str | None]]:
+        scraper = FakeScraper({"ok": True, "results": [], "errors": []})
+        service = _service(scraper)
+        scrape_summary = service.start_scrape(
+            ("django",), ("upwork",), notify_discord=False, location="Jakarta"
+        )
+        scraper.release.set()
+        await service.wait_for_current_task()
+        stored_location = service.read_scrape_report(scrape_summary.id).summary.location
+        return stored_location, scraper.scraped_locations
+
+    assert asyncio.run(scenario()) == ("Jakarta", ["Jakarta"])
+
+
+def test_scrape_without_location_sends_none_and_keeps_none_on_the_summary():
+    async def scenario() -> tuple[str | None, list[str | None]]:
+        scraper = FakeScraper({"ok": True, "results": [], "errors": []})
+        service = _service(scraper)
+        scrape_summary = service.start_scrape(("django",), ("upwork",), notify_discord=False)
+        scraper.release.set()
+        await service.wait_for_current_task()
+        stored_location = service.read_scrape_report(scrape_summary.id).summary.location
+        return stored_location, scraper.scraped_locations
+
+    assert asyncio.run(scenario()) == (None, [None])
+
+
+def test_scrape_sends_the_requested_max_age_and_keeps_it_on_the_summary():
+    async def scenario() -> tuple[int | None, list[int | None]]:
+        scraper = FakeScraper({"ok": True, "results": [], "errors": []})
+        service = _service(scraper)
+        scrape_summary = service.start_scrape(
+            ("django",), ("upwork",), notify_discord=False, max_age_hours=168
+        )
+        scraper.release.set()
+        await service.wait_for_current_task()
+        stored_max_age_hours = service.read_scrape_report(scrape_summary.id).summary.max_age_hours
+        return stored_max_age_hours, scraper.scraped_max_age_hours
+
+    assert asyncio.run(scenario()) == (168, [168])
+
+
+def test_scrape_without_max_age_sends_none_and_keeps_none_on_the_summary():
+    async def scenario() -> tuple[int | None, list[int | None]]:
+        scraper = FakeScraper({"ok": True, "results": [], "errors": []})
+        service = _service(scraper)
+        scrape_summary = service.start_scrape(("django",), ("upwork",), notify_discord=False)
+        scraper.release.set()
+        await service.wait_for_current_task()
+        stored_max_age_hours = service.read_scrape_report(scrape_summary.id).summary.max_age_hours
+        return stored_max_age_hours, scraper.scraped_max_age_hours
+
+    assert asyncio.run(scenario()) == (None, [None])
 
 
 def test_second_scrape_is_refused_while_first_is_active():

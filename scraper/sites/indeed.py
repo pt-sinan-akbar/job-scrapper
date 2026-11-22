@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
 from ..api.client import ApiError
+from ..api.location_search_plan import LocationSearchPlan
+from ..api.source import interleave_job_streams_round_robin
 from ..log import get_scraper_logger
 from ..types import Job, empty_job
 from ._markdown import html_to_markdown
@@ -31,7 +33,7 @@ _INDEED_API_HEADERS = {
 }
 
 _DEFAULT_LOCATION = "Indonesia"
-_DEFAULT_RADIUS_MILES = 50
+_DEFAULT_RADIUS_MILES = 5
 
 _GRAPHQL_QUERY_TEMPLATE = """
 query GetJobData {{
@@ -116,6 +118,30 @@ def _country_from_url(url: str) -> str:
     return "id"
 
 
+def _list_search_locations(
+    location_search_plan: LocationSearchPlan | None, location_in_url: str
+) -> list[str]:
+    if location_search_plan is None:
+        return [location_in_url]
+    if not location_search_plan.has_any_request():
+        return [location_in_url]
+    search_locations = list(location_search_plan.city_values)
+    if location_search_plan.is_country_wide:
+        search_locations.append(_DEFAULT_LOCATION)
+    return search_locations
+
+
+def _fetch_and_log_jobs_from_api(keyword: str, search_location: str, limit: int) -> list[dict]:
+    indeed_job_entries = _fetch_jobs_from_api(keyword, search_location, limit)
+    _LOG.info(
+        "[indeed-api] keyword=%r where=%r returned %d job(s)",
+        keyword,
+        search_location,
+        len(indeed_job_entries),
+    )
+    return indeed_job_entries
+
+
 def _fetch_jobs_from_api(keyword: str, where: str, limit: int) -> list[dict]:
     if not keyword:
         _LOG.warning("[indeed-api] empty keyword; nothing to query")
@@ -177,19 +203,19 @@ class IndeedScraper(Scraper):
     requires_search_html = False
 
     def parse(self, html: str) -> list[Job]:
-        keyword, where = _extract_search_params(self.url)
-        country = _country_from_url(self.url)
-        jobs_data = _fetch_jobs_from_api(keyword, where, self.limit)
-        _LOG.info(
-            "[indeed-api] keyword=%r where=%r returned %d job(s)",
-            keyword,
-            where,
-            len(jobs_data),
-        )
+        keyword, location_in_url = _extract_search_params(self.url)
+        search_locations = _list_search_locations(self.location_search_plan, location_in_url)
+        entry_streams: list[list[dict]] = []
+        for search_location in search_locations:
+            entry_streams.append(_fetch_and_log_jobs_from_api(keyword, search_location, self.limit))
+        interleaved_entries = interleave_job_streams_round_robin(entry_streams)
+        return self._convert_entries_to_unique_jobs(interleaved_entries)
 
-        results: list[Job] = []
-        seen: set[str] = set()
-        for entry in jobs_data:
+    def _convert_entries_to_unique_jobs(self, indeed_job_entries: list[dict]) -> list[Job]:
+        country = _country_from_url(self.url)
+        converted_jobs: list[Job] = []
+        seen_job_keys: set[str] = set()
+        for entry in indeed_job_entries:
             if not isinstance(entry, dict):
                 continue
             title = entry.get("title")
@@ -200,9 +226,9 @@ class IndeedScraper(Scraper):
             jk = entry.get("key")
             url = f"https://{country}.indeed.com/viewjob?jk={jk}" if jk else None
             seen_key = url or f"{title}|{company}"
-            if seen_key in seen:
+            if seen_key in seen_job_keys:
                 continue
-            seen.add(seen_key)
+            seen_job_keys.add(seen_key)
 
             location_node = entry.get("location") or {}
             formatted = (
@@ -229,7 +255,5 @@ class IndeedScraper(Scraper):
             job["posted_at"] = posted_at
             job["posted_date"] = posted_at
             job["requirements"] = description
-            results.append(job)
-            if len(results) >= self.limit:
-                break
-        return results
+            converted_jobs.append(job)
+        return converted_jobs

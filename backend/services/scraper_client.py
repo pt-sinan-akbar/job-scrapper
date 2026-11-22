@@ -86,13 +86,13 @@ class ScraperClient:
         self._cache: dict[str, dict[str, Any]] = {}
 
     async def scrape_jobs(
-        self, sites: tuple[str, ...], keywords: tuple[str, ...]
+        self,
+        sites: tuple[str, ...],
+        keywords: tuple[str, ...],
+        location: str | None = None,
+        max_age_hours: int | None = None,
     ) -> dict[str, Any]:
-        arguments = {
-            "sites": list(sites),
-            "keywords": list(keywords),
-            "save_run": False,
-        }
+        arguments = _build_scrape_arguments(sites, keywords, location, max_age_hours)
         return await self._gateway.call("scrape_jobs", arguments, SCRAPE_TIMEOUT_SECONDS)
 
     async def read_sites(self) -> CachedRead:
@@ -169,6 +169,24 @@ class ScraperClient:
             return CachedRead(self._cache[tool], True)
         self._cache = {**self._cache, tool: tool_response}
         return CachedRead(tool_response, False)
+
+
+def _build_scrape_arguments(
+    sites: tuple[str, ...],
+    keywords: tuple[str, ...],
+    location: str | None,
+    max_age_hours: int | None,
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {
+        "sites": list(sites),
+        "keywords": list(keywords),
+        "save_run": False,
+    }
+    if location is not None:
+        arguments = {**arguments, "location": location}
+    if max_age_hours is not None:
+        arguments = {**arguments, "max_age_hours": max_age_hours}
+    return arguments
 
 
 def _raise_on_failed_save(save_response: dict[str, Any]) -> None:

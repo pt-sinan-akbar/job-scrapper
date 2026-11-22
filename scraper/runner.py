@@ -3,16 +3,18 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
 from .api.client import DETAIL_DELAY_SECONDS, ApiClient, ApiError
+from .api.location_search_plan import LocationSearchPlan, build_location_search_plan
 from .api.registry import API_SOURCES
 from .api.source import ApiSource, search_all
 from .config_loader import (
     ALLOWED_URL_HOSTS,
+    LOCATION_FILTER_FIELD,
     ApiConfig,
     AppConfig,
     SiteConfig,
@@ -26,9 +28,11 @@ from .html_downloaders import (
     PlaywrightHtmlDownloader,
 )
 from .log import get_scraper_logger, hide_proxy_password
+from .max_age import compute_posted_at_cutoff
 from .sites import SCRAPERS, Scraper
 from .sites._dates import parse_to_iso
-from .sites._filter import filter_reason, project_jobs
+from .sites._filter import JobDropKind, JobDropReason, find_job_drop_reason
+from .sites._projection import pick_allowed_fields_from_jobs
 from .types import CANONICAL_FIELDS, Job
 
 _LOG = get_scraper_logger()
@@ -84,6 +88,8 @@ def scrape_all_sites(
     config: AppConfig,
     requested_sites: Iterable[str] = (),
     keywords: Iterable[str] | None = None,
+    requested_location: str | None = None,
+    requested_max_age_hours: int | None = None,
 ) -> RunResult:
     sites_to_scrape = _choose_requested_or_enabled_sites(config, requested_sites)
     cleaned_keywords = strip_and_drop_blank_keywords(keywords)
@@ -104,7 +110,12 @@ def scrape_all_sites(
     )
 
     payloads_by_keyword_site_pair = _scrape_keyword_site_pairs_concurrently(
-        config, keyword_site_pairs, html_downloader, proxy_url
+        config,
+        keyword_site_pairs,
+        html_downloader,
+        proxy_url,
+        requested_location,
+        requested_max_age_hours,
     )
     return RunResult(exit_code=0, results=MappingProxyType(payloads_by_keyword_site_pair))
 
@@ -149,8 +160,7 @@ def scrape_site_for_keyword(
     _fill_missing_matched_keyword_and_posted_at(unfiltered_jobs.jobs, keyword)
     raw_payload = _build_raw_payload(unfiltered_jobs, keyword, label)
 
-    jobs = _drop_stale_jobs(unfiltered_jobs.jobs, max_age_hours, label)
-    jobs = _drop_jobs_failing_content_filter(jobs, content_filter, label)
+    jobs = _drop_jobs_failing_filters(unfiltered_jobs.jobs, max_age_hours, content_filter, label)
     jobs = _cap_jobs_to_limit(jobs, scraper.limit, label)
     requirements_reader = _pick_requirements_reader_for_source(
         unfiltered_jobs.source, read_requirements_via_api
@@ -171,6 +181,7 @@ def build_api_search_and_requirements_functions(
     api_config: ApiConfig,
     keyword: str,
     *,
+    location_search_plan: LocationSearchPlan,
     proxy_url: str | None,
     max_age_hours: int | None,
     limit: int,
@@ -181,12 +192,10 @@ def build_api_search_and_requirements_functions(
     )
     api_client_for_requirements = build_api_client(proxy=proxy_url, delay=DETAIL_DELAY_SECONDS)
     api_source_for_requirements = build_api_source(api_client_for_requirements)
-    locations = api_config.locations
-    country_wide = api_config.country_wide
 
     def search_jobs_via_api() -> list[Job]:
         return search_all(
-            api_source_for_search, keyword, locations, country_wide, max_age_hours, limit
+            api_source_for_search, keyword, location_search_plan, max_age_hours, limit
         )
 
     return search_jobs_via_api, api_source_for_requirements.detail
@@ -249,13 +258,20 @@ def _scrape_keyword_site_pairs_concurrently(
     keyword_site_pairs: list[KeywordSitePair],
     html_downloader: FallbackHtmlDownloader,
     proxy_url: str | None,
+    requested_location: str | None,
+    requested_max_age_hours: int | None,
 ) -> dict[KeywordSitePair, FilteredAndRawPayloads]:
     payloads_by_keyword_site_pair: dict[KeywordSitePair, FilteredAndRawPayloads] = {}
     worker_count = max(1, min(read_concurrency_from_env(), len(keyword_site_pairs)))
     if worker_count == 1:
         for keyword_site_pair in keyword_site_pairs:
             payloads_by_keyword_site_pair[keyword_site_pair] = _scrape_keyword_site_pair(
-                config, keyword_site_pair, html_downloader, proxy_url
+                config,
+                keyword_site_pair,
+                html_downloader,
+                proxy_url,
+                requested_location,
+                requested_max_age_hours,
             )
         return payloads_by_keyword_site_pair
 
@@ -268,7 +284,13 @@ def _scrape_keyword_site_pairs_concurrently(
         background_scrape_tasks: dict[KeywordSitePair, Future[FilteredAndRawPayloads]] = {}
         for keyword_site_pair in keyword_site_pairs:
             background_scrape_task = thread_pool.submit(
-                _scrape_keyword_site_pair, config, keyword_site_pair, html_downloader, proxy_url
+                _scrape_keyword_site_pair,
+                config,
+                keyword_site_pair,
+                html_downloader,
+                proxy_url,
+                requested_location,
+                requested_max_age_hours,
             )
             background_scrape_tasks[keyword_site_pair] = background_scrape_task
 
@@ -282,6 +304,8 @@ def _scrape_keyword_site_pair(
     keyword_site_pair: KeywordSitePair,
     html_downloader: FallbackHtmlDownloader,
     proxy_url: str | None,
+    requested_location: str | None,
+    requested_max_age_hours: int | None,
 ) -> FilteredAndRawPayloads:
     keyword, site_name = keyword_site_pair
     try:
@@ -292,18 +316,24 @@ def _scrape_keyword_site_pair(
                 keyword, "skipped: site has no entry in the job settings"
             )
 
-        scraper = SCRAPERS[site_name](
-            url=site_config.build_search_url_for_keyword(keyword), limit=site_config.limit
+        location_search_plan = build_location_search_plan(
+            site_name, _pick_search_locations(site_config, requested_location)
         )
+        scraper = SCRAPERS[site_name](
+            url=site_config.build_search_url_for_keyword(keyword),
+            limit=site_config.limit,
+            location_search_plan=location_search_plan,
+        )
+        max_age_hours = _pick_max_age_hours(site_config, requested_max_age_hours)
         search_jobs_via_api, read_requirements_via_api = _build_api_functions_for_site(
-            scraper, site_config, site_name, keyword, proxy_url
+            site_config, site_name, keyword, proxy_url, location_search_plan, max_age_hours
         )
         return scrape_site_for_keyword(
             scraper,
             html_downloader,
             keyword,
             config.list_saved_fields(),
-            site_config.max_age_hours,
+            max_age_hours,
             site_config.filter,
             search_jobs_via_api=search_jobs_via_api,
             read_requirements_via_api=read_requirements_via_api,
@@ -313,38 +343,50 @@ def _scrape_keyword_site_pair(
         return build_keyword_site_pair_error_payloads(keyword, f"crashed: {type(exc).__name__}")
 
 
+def _pick_search_locations(site_config: SiteConfig, requested_location: str | None) -> list[str]:
+    if requested_location is None:
+        return site_config.filter.get(LOCATION_FILTER_FIELD, [])
+    return [requested_location]
+
+
+def _pick_max_age_hours(site_config: SiteConfig, requested_max_age_hours: int | None) -> int | None:
+    if requested_max_age_hours is None:
+        return site_config.max_age_hours
+    return requested_max_age_hours
+
+
 def _build_api_functions_for_site(
-    scraper: Scraper,
     site_config: SiteConfig,
     site_name: str,
     keyword: str,
     proxy_url: str | None,
+    location_search_plan: LocationSearchPlan,
+    max_age_hours: int | None,
 ) -> tuple[_SearchJobsViaApi | None, _ReadRequirementsViaApi | None]:
     api_config = site_config.api
     if api_config is None:
         return None, None
-    if not _is_api_usable_for_site(scraper, api_config, site_name):
+    if not _is_api_usable_for_site(api_config, site_name, location_search_plan):
         return None, None
     return build_api_search_and_requirements_functions(
         API_SOURCES[site_name],
         api_config,
         keyword,
+        location_search_plan=location_search_plan,
         proxy_url=proxy_url,
-        max_age_hours=site_config.max_age_hours,
+        max_age_hours=max_age_hours,
         limit=site_config.limit,
     )
 
 
-def _is_api_usable_for_site(scraper: Scraper, api_config: ApiConfig, site_name: str) -> bool:
+def _is_api_usable_for_site(
+    api_config: ApiConfig, site_name: str, location_search_plan: LocationSearchPlan
+) -> bool:
     if not api_config.enabled:
         return False
     if site_name not in API_SOURCES:
         return False
-    if not scraper.api_only:
-        return True
-    if api_config.locations:
-        return True
-    return api_config.country_wide
+    return location_search_plan.has_any_request()
 
 
 def _search_jobs_via_api_or_html(
@@ -477,7 +519,7 @@ def _fill_missing_matched_keyword_and_posted_at(jobs: list[Job], keyword: str) -
 def _build_raw_payload(
     unfiltered_jobs: _UnfilteredJobsFromApiOrHtml, keyword: str, label: str
 ) -> Payload:
-    raw_jobs = project_jobs(unfiltered_jobs.jobs, CANONICAL_FIELDS)
+    raw_jobs = pick_allowed_fields_from_jobs(unfiltered_jobs.jobs, CANONICAL_FIELDS)
     _LOG.info("[%s] kept %d raw job(s)", label, len(raw_jobs))
     return {
         "keyword": keyword,
@@ -489,70 +531,66 @@ def _build_raw_payload(
     }
 
 
-def _drop_stale_jobs(jobs: list[Job], max_age_hours: int | None, label: str) -> list[Job]:
-    if max_age_hours is None:
-        return jobs
-
-    cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
-    recent_jobs: list[Job] = []
-    for job in jobs:
-        if _is_within_max_age(job, cutoff):
-            recent_jobs.append(job)
-            continue
-        _LOG.debug(
-            "[%s] drop stale: %r posted_at=%s < cutoff=%s",
-            label,
-            job.get("title"),
-            job.get("posted_at"),
-            cutoff.isoformat(),
-        )
-    _LOG.info(
-        "[%s] max_age=%dh cutoff=%s kept %d/%d (dropped %d stale)",
-        label,
-        max_age_hours,
-        cutoff.isoformat(),
-        len(recent_jobs),
-        len(jobs),
-        len(jobs) - len(recent_jobs),
-    )
-    return recent_jobs
-
-
-def _is_within_max_age(job: Job, cutoff: datetime) -> bool:
-    posted_at_text = job.get("posted_at")
-    if not isinstance(posted_at_text, str):
-        return True
-    try:
-        posted_at = datetime.fromisoformat(posted_at_text)
-    except ValueError:
-        return True
-    if posted_at.tzinfo is None:
-        posted_at = posted_at.replace(tzinfo=UTC)
-    return posted_at >= cutoff
-
-
-def _drop_jobs_failing_content_filter(
-    jobs: list[Job], content_filter: dict[str, list[str]], label: str
+def _drop_jobs_failing_filters(
+    jobs: list[Job], max_age_hours: int | None, content_filter: dict[str, list[str]], label: str
 ) -> list[Job]:
-    if not content_filter:
+    if max_age_hours is None and not content_filter:
         return jobs
 
-    jobs_passing_filter: list[Job] = []
+    posted_at_cutoff = compute_posted_at_cutoff(max_age_hours, datetime.now(UTC))
+    kept_jobs: list[Job] = []
+    drop_kinds: list[JobDropKind] = []
     for job in jobs:
-        reason = filter_reason(job, content_filter)
-        if reason is None:
-            jobs_passing_filter.append(job)
+        drop_reason = find_job_drop_reason(job, content_filter, posted_at_cutoff)
+        if drop_reason is None:
+            kept_jobs.append(job)
             continue
-        _LOG.debug("[%s] drop filter: %r %s", label, job.get("title"), reason)
-    _LOG.info(
-        "[%s] filter=%s kept %d/%d (dropped %d)",
-        label,
-        content_filter,
-        len(jobs_passing_filter),
-        len(jobs),
-        len(jobs) - len(jobs_passing_filter),
+        drop_kinds.append(drop_reason.kind)
+        _log_dropped_job(label, job, drop_reason)
+    _log_filter_summary(
+        label, max_age_hours, posted_at_cutoff, content_filter, kept_jobs, jobs, drop_kinds
     )
-    return jobs_passing_filter
+    return kept_jobs
+
+
+def _log_dropped_job(label: str, job: Job, drop_reason: JobDropReason) -> None:
+    _LOG.debug(
+        "[%s] drop %s: %r %s", label, drop_reason.kind, job.get("title"), drop_reason.description
+    )
+
+
+def _log_filter_summary(
+    label: str,
+    max_age_hours: int | None,
+    posted_at_cutoff: datetime | None,
+    content_filter: dict[str, list[str]],
+    kept_jobs: list[Job],
+    jobs: list[Job],
+    drop_kinds: list[JobDropKind],
+) -> None:
+    _LOG.info(
+        "[%s] max_age=%s cutoff=%s filter=%s kept %d/%d (dropped %d stale, %d filter)",
+        label,
+        _describe_max_age(max_age_hours),
+        _describe_cutoff(posted_at_cutoff),
+        content_filter,
+        len(kept_jobs),
+        len(jobs),
+        drop_kinds.count(JobDropKind.STALE),
+        drop_kinds.count(JobDropKind.FILTER),
+    )
+
+
+def _describe_max_age(max_age_hours: int | None) -> str:
+    if max_age_hours is None:
+        return "off"
+    return f"{max_age_hours}h"
+
+
+def _describe_cutoff(posted_at_cutoff: datetime | None) -> str:
+    if posted_at_cutoff is None:
+        return "off"
+    return posted_at_cutoff.isoformat()
 
 
 def _cap_jobs_to_limit(jobs: list[Job], limit: int, label: str) -> list[Job]:
@@ -697,7 +735,7 @@ def _build_filtered_payload(
     max_age_hours: int | None,
     content_filter: dict[str, list[str]],
 ) -> Payload:
-    projected = project_jobs(jobs, fields)
+    projected = pick_allowed_fields_from_jobs(jobs, fields)
     return {
         "keyword": keyword,
         "fields": sorted(fields),

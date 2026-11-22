@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
+from ..max_age import compute_posted_at_cutoff
 from ..types import Job, empty_job
 from .client import ApiClient, ApiError, graphql_data
 from .window import to_utc_iso
@@ -179,9 +180,7 @@ class UpworkApi:
         self, keyword: str, location: str | None, max_age_hours: int | None, limit: int
     ) -> list[Job]:
         # every job is remote, so `location` is ignored
-        cutoff = None
-        if max_age_hours is not None:
-            cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
+        cutoff = compute_posted_at_cutoff(max_age_hours, datetime.now(UTC))
         jobs: list[Job] = []
         for offset in range(0, MAX_OFFSET, PAGE_SIZE):
             items = self._fetch_page(keyword, offset)

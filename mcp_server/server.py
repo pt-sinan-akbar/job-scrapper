@@ -18,7 +18,11 @@ from starlette.responses import JSONResponse, Response
 
 from mcp_server import mongo
 from mcp_server.discord_tools import DISCORD_TOOLS
-from scraper.api.locations import location_options_payload
+from scraper.api.location_search_plan import (
+    build_unknown_location_message,
+    find_filter_location_option,
+    list_filter_location_options,
+)
 from scraper.config import ACCEPT_LANGUAGE, USER_AGENT
 from scraper.config_loader import SAMPLE_KEYWORD, AppConfig, ConfigError
 from scraper.job_settings import (
@@ -31,6 +35,7 @@ from scraper.job_settings import (
 )
 from scraper.log import get_scraper_logger as _get_scraper_logger
 from scraper.log import hide_proxy_password as _hide_proxy_password
+from scraper.max_age import build_unknown_max_age_message, is_max_age_option, list_max_age_options
 from scraper.runner import (
     KEYWORDS_REQUIRED,
     RunResult,
@@ -99,7 +104,9 @@ def get_config() -> dict[str, Any]:
     minimal patch to change only what you want. job_fields lists every field
     name the top-level fields list accepts; mandatory_fields are always
     saved for each job, whatever the settings say. location_options lists the
-    city picker choices per site (label shown, value saved in api.locations).
+    values every site's filter.location accepts: the cities first, then
+    Indonesia, which means all regions. max_age_options lists the only
+    values scrape_jobs accepts as max_age_hours, each as {value, label}.
     """
     try:
         stored_settings = _build_job_settings_store().read()
@@ -109,7 +116,8 @@ def get_config() -> dict[str, Any]:
         **_convert_stored_settings_to_dict(stored_settings),
         "job_fields": list(JOB_FIELD_ORDER),
         "mandatory_fields": _list_mandatory_fields(),
-        "location_options": location_options_payload(),
+        "location_options": list_filter_location_options(),
+        "max_age_options": list_max_age_options(),
     }
 
 
@@ -335,6 +343,8 @@ def scrape_jobs(
     keywords: list[str] | None,
     save_run: bool = True,
     include_raw_results: bool = False,
+    location: str | None = None,
+    max_age_hours: int | None = None,
 ) -> dict[str, Any]:
     """Run the job scraper and return aggregated results.
 
@@ -355,6 +365,27 @@ def scrape_jobs(
             a list of {keyword, site, payload} with each site's payload before
             max-age, filter and limit. Off by default to keep the response
             small. raw_results exists only in this response.
+        location: optional city that each site's API searches for this call
+            only, one of get_config's location_options, matched without
+            regard to case. Indonesia means a country-wide search only. When
+            omitted or null, each site searches the cities of its saved
+            filter.location. The saved filter.location still filters the
+            results either way, and HTML scraping ignores this argument. An
+            unknown value scrapes nothing and saves nothing: the response has
+            ok=false, exit_code=1, keywords=[], results=[], mongo_id=null and
+            errors=[{keyword: null, site: null, reason: "unknown location:
+            <value>. allowed: <options>"}].
+        max_age_hours: optional max job age in hours for this call only, one
+            of the values in get_config's max_age_options (72, 168 or 720).
+            It replaces every site's saved max_age_hours for this call, both
+            in the site's search date range and in the stale cut. The stale
+            cut keeps jobs posted on or after midnight UTC of today minus the
+            hours rounded up to whole days. When omitted or null, each site
+            uses its saved max_age_hours. The saved settings never change.
+            Any other value scrapes nothing and saves nothing: the response
+            has ok=false, exit_code=1, keywords=[], results=[], mongo_id=null
+            and errors=[{keyword: null, site: null, reason: "unknown
+            max_age_hours: <value>. allowed: 72, 168, 720"}].
 
     Returns:
         dict with keys:
@@ -400,11 +431,26 @@ def scrape_jobs(
             raw_results: only when include_raw_results is true.
     """
     logger = _get_scraper_logger()
-    logger.info("scrape_jobs called sites=%s keywords=%s", sites, keywords)
+    logger.info(
+        "scrape_jobs called sites=%s keywords=%s location=%s max_age_hours=%s",
+        sites,
+        keywords,
+        location,
+        max_age_hours,
+    )
     target_keywords = strip_and_drop_blank_keywords(keywords)
     if not target_keywords:
         logger.error("scrape_jobs refused: %s", KEYWORDS_REQUIRED)
         return _build_keywords_required_response(sites)
+    requested_location = _find_requested_location_option(location)
+    if location is not None and requested_location is None:
+        unknown_location_message = build_unknown_location_message(location)
+        logger.error("scrape_jobs refused: %s", unknown_location_message)
+        return _build_refused_scrape_response(sites, unknown_location_message)
+    unknown_max_age_message = _find_unknown_max_age_message(max_age_hours)
+    if unknown_max_age_message is not None:
+        logger.error("scrape_jobs refused: %s", unknown_max_age_message)
+        return _build_refused_scrape_response(sites, unknown_max_age_message)
     started_at = time.monotonic()
 
     try:
@@ -414,7 +460,13 @@ def scrape_jobs(
         return {"ok": False, "error": str(exc)}
 
     target_sites = _choose_passed_or_enabled_sites(sites, config)
-    scrape_output = scrape_all_sites(config, requested_sites=target_sites, keywords=target_keywords)
+    scrape_output = scrape_all_sites(
+        config,
+        requested_sites=target_sites,
+        keywords=target_keywords,
+        requested_location=requested_location,
+        requested_max_age_hours=max_age_hours,
+    )
     response_parts = _build_scrape_response_parts(scrape_output, target_keywords, target_sites)
     scrape_response = _build_scrape_response(
         scrape_output.exit_code, target_keywords, target_sites, response_parts
@@ -670,6 +722,24 @@ def _log_proxy_test_result(proxy_test_result: dict[str, Any]) -> None:
 
 
 def _build_keywords_required_response(passed_sites: list[str] | None) -> dict[str, Any]:
+    return _build_refused_scrape_response(passed_sites, KEYWORDS_REQUIRED)
+
+
+def _find_requested_location_option(location: str | None) -> str | None:
+    if location is None:
+        return None
+    return find_filter_location_option(location)
+
+
+def _find_unknown_max_age_message(max_age_hours: int | None) -> str | None:
+    if max_age_hours is None:
+        return None
+    if is_max_age_option(max_age_hours):
+        return None
+    return build_unknown_max_age_message(max_age_hours)
+
+
+def _build_refused_scrape_response(passed_sites: list[str] | None, reason: str) -> dict[str, Any]:
     requested_sites: list[str] = []
     if passed_sites:
         requested_sites = list(passed_sites)
@@ -679,7 +749,7 @@ def _build_keywords_required_response(passed_sites: list[str] | None) -> dict[st
         "requested_sites": requested_sites,
         "exit_code": 1,
         "results": [],
-        "errors": [{"keyword": None, "site": None, "reason": KEYWORDS_REQUIRED}],
+        "errors": [{"keyword": None, "site": None, "reason": reason}],
         "mongo_id": None,
     }
 

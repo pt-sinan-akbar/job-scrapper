@@ -36,7 +36,7 @@ CONFIG = {
                 "limit": 30,
                 "filter": {},
                 "url_template": "x",
-                "api": {"locations": ["Remote"]},
+                "api": {"enabled": True},
             },
             "indeed": {
                 "limit": 3,
@@ -48,7 +48,19 @@ CONFIG = {
     },
     "job_fields": ["site", "title", "salary_min"],
     "mandatory_fields": ["site", "title"],
-    "location_options": {"jobstreet": [{"label": "Jakarta", "value": "Jakarta Raya"}]},
+    "location_options": [
+        "Jakarta",
+        "Tangerang",
+        "Tangerang Selatan",
+        "Bandung",
+        "Bekasi",
+        "Indonesia",
+    ],
+    "max_age_options": [
+        {"value": 72, "label": "3 days ago"},
+        {"value": 168, "label": "One week ago"},
+        {"value": 720, "label": "One month ago"},
+    ],
 }
 SAVED = {"ok": True, "version": 5}
 SITE_LIMIT = {"upwork": {"limit": 9}}
@@ -290,6 +302,8 @@ SUMMARY_FIELDS = {
     "keywords",
     "sites",
     "started_at",
+    "location",
+    "max_age_hours",
     "finished_at",
     "job_count",
     "error_count",
@@ -388,6 +402,74 @@ def test_scrape_asks_for_results_without_saving_the_scrape(
         "keywords": ["devops"],
         "save_run": False,
     }
+
+
+def test_scrape_passes_the_requested_location_through_and_records_it(
+    client: TestClient, gateway: FakeGateway
+):
+    response = client.post(
+        "/api/scrapes",
+        json={"keywords": ["devops"], "sites": ["upwork"], "location": "tangerang selatan"},
+    )
+    assert response.status_code == 202
+
+    scrape_summary = _wait_for_finish(client, response.json()["data"]["id"])
+
+    assert gateway.arguments["scrape_jobs"]["location"] == "Tangerang Selatan"
+    assert scrape_summary["location"] == "Tangerang Selatan"
+
+
+def test_scrape_without_location_records_none(client: TestClient):
+    scrape = _scrape(client)
+
+    scrape_summary = _wait_for_finish(client, scrape["id"])
+
+    assert scrape_summary["location"] is None
+
+
+def test_start_scrape_rejects_unknown_location(client: TestClient, gateway: FakeGateway):
+    response = client.post(
+        "/api/scrapes",
+        json={"keywords": ["devops"], "sites": ["upwork"], "location": "surabaya"},
+    )
+
+    assert response.status_code == 422
+    assert "Jakarta" in str(response.json())
+    assert "scrape_jobs" not in gateway.calls
+
+
+def test_scrape_passes_the_requested_max_age_through_and_records_it(
+    client: TestClient, gateway: FakeGateway
+):
+    response = client.post(
+        "/api/scrapes",
+        json={"keywords": ["devops"], "sites": ["upwork"], "max_age_hours": 168},
+    )
+    assert response.status_code == 202
+
+    scrape_summary = _wait_for_finish(client, response.json()["data"]["id"])
+
+    assert gateway.arguments["scrape_jobs"]["max_age_hours"] == 168
+    assert scrape_summary["max_age_hours"] == 168
+
+
+def test_scrape_without_max_age_records_none(client: TestClient):
+    scrape = _scrape(client)
+
+    scrape_summary = _wait_for_finish(client, scrape["id"])
+
+    assert scrape_summary["max_age_hours"] is None
+
+
+def test_start_scrape_rejects_unlisted_max_age(client: TestClient, gateway: FakeGateway):
+    response = client.post(
+        "/api/scrapes",
+        json={"keywords": ["devops"], "sites": ["upwork"], "max_age_hours": 48},
+    )
+
+    assert response.status_code == 422
+    assert "unknown max_age_hours: 48. allowed: 72, 168, 720" in str(response.json())
+    assert "scrape_jobs" not in gateway.calls
 
 
 def test_start_scrape_without_notify_has_no_discord_status(
@@ -570,20 +652,45 @@ def test_config_read_lists_job_fields_and_the_always_saved_ones(client: TestClie
     assert data["mandatory_fields"] == ["site", "title"]
 
 
-def test_config_read_passes_city_options_through(client: TestClient):
-    data = client.get("/api/config").json()["data"]
+def test_config_read_passes_location_options_through(client: TestClient):
+    location_options = client.get("/api/config").json()["data"]["location_options"]
 
-    assert data["location_options"] == {
-        "jobstreet": [{"label": "Jakarta", "value": "Jakarta Raya"}]
-    }
+    assert location_options == [
+        "Jakarta",
+        "Tangerang",
+        "Tangerang Selatan",
+        "Bandung",
+        "Bekasi",
+        "Indonesia",
+    ]
 
 
-def test_config_read_defaults_city_options_to_empty_for_an_older_scraper(
+def test_config_read_defaults_location_options_to_empty_for_an_older_scraper(
     client: TestClient, gateway: FakeGateway
 ):
     gateway.config = {k: v for k, v in CONFIG.items() if k != "location_options"}
 
-    assert client.get("/api/config").json()["data"]["location_options"] == {}
+    assert client.get("/api/config").json()["data"]["location_options"] == []
+
+
+def test_config_read_passes_max_age_options_through(client: TestClient):
+    max_age_options = client.get("/api/config").json()["data"]["max_age_options"]
+
+    assert max_age_options == [
+        {"value": 72, "label": "3 days ago"},
+        {"value": 168, "label": "One week ago"},
+        {"value": 720, "label": "One month ago"},
+    ]
+
+
+def test_config_read_defaults_max_age_options_to_empty_for_an_older_scraper(
+    client: TestClient, gateway: FakeGateway
+):
+    config_without_max_age_options = dict(CONFIG)
+    del config_without_max_age_options["max_age_options"]
+    gateway.config = config_without_max_age_options
+
+    assert client.get("/api/config").json()["data"]["max_age_options"] == []
 
 
 def test_config_read_keeps_site_filter_states_apart(client: TestClient):
@@ -595,7 +702,7 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "limit": 30,
         "max_age_hours": None,
         "filter": {},
-        "api": {"locations": ["Remote"]},
+        "api": {"enabled": True},
         "url_template": "x",
     }
     assert sites[1] == {
@@ -607,6 +714,25 @@ def test_config_read_keeps_site_filter_states_apart(client: TestClient):
         "api": None,
         "url_template": "x",
     }
+
+
+def test_config_read_leaves_out_api_locations_and_country_wide_of_older_settings(
+    client: TestClient, gateway: FakeGateway
+):
+    config_settings = CONFIG["settings"]
+    assert isinstance(config_settings, dict)
+    old_api = {
+        "enabled": True,
+        "locations": ["Jakarta Raya"],
+        "country_wide": True,
+        "delay_seconds": [4, 6],
+    }
+    stored_sites = {"jobstreet": {"limit": 3, "url_template": "x", "api": old_api}}
+    gateway.config = {**CONFIG, "settings": {**config_settings, "sites": stored_sites}}
+
+    site = client.get("/api/config").json()["data"]["values"]["sites"][0]
+
+    assert site["api"] == {"enabled": True, "delay_seconds": [4, 6]}
 
 
 def test_config_read_gives_an_empty_filter_when_a_site_has_none(
@@ -655,12 +781,7 @@ def test_config_update_sends_only_changed_fields(client: TestClient, gateway: Fa
                     "limit": 9,
                     "max_age_hours": None,
                     "filter": {"work_type": ["remote"]},
-                    "api": {
-                        "enabled": True,
-                        "locations": ["Remote"],
-                        "country_wide": False,
-                        "delay_seconds": [4, 6],
-                    },
+                    "api": {"enabled": True, "delay_seconds": [4, 6]},
                 }
             },
         },
@@ -674,18 +795,31 @@ def test_config_update_sends_only_changed_fields(client: TestClient, gateway: Fa
                     "limit": 9,
                     "max_age_hours": None,
                     "filter": {"work_type": ["remote"]},
-                    "api": {
-                        "enabled": True,
-                        "locations": ["Remote"],
-                        "country_wide": False,
-                        "delay_seconds": [4.0, 6.0],
-                    },
+                    "api": {"enabled": True, "delay_seconds": [4.0, 6.0]},
                 }
             },
         },
         "expected_version": 4,
         "source": "ui",
     }
+
+
+def test_config_update_drops_api_locations_and_country_wide_sent_by_an_older_page(
+    client: TestClient, gateway: FakeGateway
+):
+    old_page_api = {"enabled": False, "locations": ["Remote"], "country_wide": True}
+    body = {"version": 4, "sites": {"upwork": {"api": old_page_api}}}
+
+    assert client.put("/api/config", json=body).status_code == 200
+    assert gateway.arguments["update_config"]["patch"] == {
+        "sites": {"upwork": {"api": {"enabled": False}}}
+    }
+
+
+def test_config_update_still_refuses_other_unknown_api_fields(client: TestClient):
+    body = {"version": 4, "sites": {"upwork": {"api": {"enabled": True, "cities": ["x"]}}}}
+
+    assert client.put("/api/config", json=body).status_code == 422
 
 
 def test_config_update_requires_version(client: TestClient):
@@ -704,7 +838,7 @@ def test_config_update_refuses_fields_the_page_cannot_edit(client: TestClient, b
 
 
 def _delay_body(delay: list[float]) -> dict:
-    api = {"enabled": True, "locations": [], "country_wide": False, "delay_seconds": delay}
+    api = {"enabled": True, "delay_seconds": delay}
     return {"version": 4, "sites": {"jobstreet": {"api": api}}}
 
 
@@ -964,7 +1098,13 @@ def test_latest_returns_the_stored_scrape(client: TestClient, database: Any):
     data = client.get("/api/scrapes/latest").json()["data"]
 
     assert set(data) == REPORT_FIELDS
-    assert data == {key: STORED_SCRAPE[key] for key in REPORT_FIELDS}
+    assert data["record"] == {
+        **STORED_SCRAPE["record"],
+        "location": None,
+        "max_age_hours": None,
+    }
+    assert data["jobs"] == STORED_SCRAPE["jobs"]
+    assert data["failures"] == STORED_SCRAPE["failures"]
 
 
 def test_read_stored_scrape_by_id(client: TestClient, database: Any):
