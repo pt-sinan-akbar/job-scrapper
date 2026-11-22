@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue'
 import type {
-  LocationOption,
   SiteIssue,
   SiteSetting,
   SiteToggle,
@@ -13,7 +12,7 @@ import SelectionTransition from '@/shared/components/SelectionTransition.vue'
 
 const props = defineProps<{
   sites: SiteSetting[]
-  locationOptions: Record<string, LocationOption[]>
+  locationOptions: string[]
   issue?: SiteIssue | null
 }>()
 
@@ -68,7 +67,6 @@ watch(
       :selected-name="selectedSite.name"
       :panel-id="panelId"
       @select="pickedName = $event"
-      @toggle="emit('toggle', $event)"
     />
     <SelectionTransition>
       <section
@@ -82,7 +80,7 @@ watch(
         </h4>
         <SiteDetail
           :site="selectedSite"
-          :location-options="locationOptions[selectedSite.name]"
+          :location-options="locationOptions"
           :invalid-field="invalidField"
           @update="emit('update', $event)"
           @toggle="emit('toggle', $event)"

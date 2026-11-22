@@ -40,7 +40,7 @@ const SNAPSHOT: ConfigSnapshot = {
   isStale: false,
   jobFields: ['site', 'title', 'company'],
   mandatoryFields: ['site', 'company'],
-  locationOptions: {},
+  locationOptions: [],
 }
 
 async function mountForm(props: { isSaveBarSticky?: boolean } = {}, snapshot = SNAPSHOT) {
@@ -50,6 +50,35 @@ async function mountForm(props: { isSaveBarSticky?: boolean } = {}, snapshot = S
   const wrapper = mount(ConfigForm, { props, attachTo: document.body })
   await flushPromises()
   return { wrapper, store }
+}
+
+const LOCATION_OPTIONS = ['Jakarta', 'Bandung', 'Indonesia']
+
+function stubResizeObserver(): void {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = vi.fn<ResizeObserver['observe']>()
+      unobserve = vi.fn<ResizeObserver['unobserve']>()
+      disconnect = vi.fn<ResizeObserver['disconnect']>()
+    },
+  )
+  Element.prototype.scrollIntoView = vi.fn()
+}
+
+async function pickLocation(
+  wrapper: Awaited<ReturnType<typeof mountForm>>['wrapper'],
+  inputSelector: string,
+  label: string,
+): Promise<void> {
+  const input = wrapper.get(inputSelector)
+  await input.trigger('focus')
+  await input.trigger('click')
+  await flushPromises()
+  const options = Array.from(document.body.querySelectorAll('[role="option"]'))
+  const option = options.find((candidate) => candidate.textContent?.trim() === label)
+  option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
 }
 
 function findButton(wrapper: Awaited<ReturnType<typeof mountForm>>['wrapper'], label: string) {
@@ -64,7 +93,33 @@ describe('ConfigForm', () => {
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     document.body.innerHTML = ''
+  })
+
+  it('saves a location picked from the scraper list with its label', async () => {
+    stubResizeObserver()
+    saveConfig.execute.mockResolvedValue(undefined)
+    const { wrapper } = await mountForm({}, { ...SNAPSHOT, locationOptions: LOCATION_OPTIONS })
+
+    await pickLocation(wrapper, '#upwork-location', 'Jakarta')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    wrapper.unmount()
+
+    expect(saveConfig.execute).toHaveBeenCalledWith(
+      { sites: { upwork: { filter: { ...EMPTY_FILTER, location: ['Jakarta'] } } } },
+      4,
+    )
+  })
+
+  it('still shows the location box when the scraper sent no location list', async () => {
+    const { wrapper } = await mountForm()
+
+    expect(wrapper.find('#upwork-location').exists()).toBe(true)
+    expect(wrapper.get('#upwork-location-hint').text()).toBe(
+      'No location picked: searches all of Indonesia',
+    )
   })
 
   it('keeps the field ids the config page always had', async () => {

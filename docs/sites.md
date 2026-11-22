@@ -47,7 +47,7 @@ aligned with that site's `max_age_hours` to minimize wasted fetches.
 Coupling: if you increase a site's `max_age_hours`, also widen these URL params
 (`daterange=7` for last week, `f_TPR=r604800`). Otherwise
 the URL only returns the past day and the wider client window has nothing
-extra to admit. Indeed reads only `q` and `l` from its URL, so `fromage` has
+extra to admit. Indeed reads only `q` from its URL, so `fromage` has
 no effect on the jobs returned.
 
 ## Posted-date sources
@@ -78,10 +78,16 @@ on Glints' search URL.
 
 Indeed jobs are not parsed from the search page, and the search page is not
 downloaded. `IndeedScraper.parse` takes
-the keyword (`q`) and location (`l`) from the URL, calls Indeed's GraphQL API
+the keyword (`q`) from the URL, calls Indeed's GraphQL API
 (`apis.indeed.com/graphql`) and reads `datePublished` (epoch ms) from each job.
 Both `posted_date` and `posted_at` hold that value as ISO UTC. The job
 description comes from the same call.
+
+The searched locations follow the site's `filter.location`: one call per
+picked city within 5 miles (values from `scraper/api/location_mapping.yaml`),
+plus one call for `Indonesia` when it is picked or the filter is empty. The
+results are interleaved city by city and de-duplicated. The location (`l`) in
+the URL is used only when the scraper is built without a location plan.
 
 A failed Indeed request is reported in `errors` as `api failed: <code>`
 (`http_403`, `runtime_error`, `non_json`, `graphql_error`, `not_installed`),
@@ -119,7 +125,8 @@ via the null-rule.
 
 Configured per site with `sites.<name>.api` (see `configuration.md`). The API
 runs first; on failure that site + keyword reruns through `url_template`
-(HTML). Detail text is fetched per job from the detail API, falling back to
+(HTML). The API is called once per city picked in the site's
+`filter.location`, plus once country-wide when `Indonesia` is picked. Detail text is fetched per job from the detail API, falling back to
 the job-page fetch. Indeed has no `api` block (it already uses its GraphQL
 data).
 

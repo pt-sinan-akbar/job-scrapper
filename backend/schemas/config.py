@@ -30,9 +30,9 @@ class ApiSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
-    locations: TextList
-    country_wide: bool
     delay_seconds: tuple[Delay, Delay] | None = None
+    locations: Any = Field(default=None, exclude=True)
+    country_wide: Any = Field(default=None, exclude=True)
 
 
 class SiteUpdate(BaseModel):

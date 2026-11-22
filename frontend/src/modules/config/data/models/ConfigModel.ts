@@ -3,7 +3,6 @@ import type {
   ConfigChanges,
   ConfigSnapshot,
   FilterSetting,
-  LocationOption,
   SiteChanges,
   SiteSetting,
 } from '@/modules/config/domain/entities/ScraperConfig'
@@ -17,8 +16,6 @@ export interface FilterModel {
 
 export interface ApiModel {
   enabled?: boolean
-  locations?: string[]
-  country_wide?: boolean
   delay_seconds?: [number, number] | null
 }
 
@@ -32,11 +29,6 @@ export interface SiteModel {
   url_template?: string | null
 }
 
-export interface LocationOptionModel {
-  label: string
-  value: string
-}
-
 export interface ConfigModel {
   values: {
     fields: string[]
@@ -48,7 +40,7 @@ export interface ConfigModel {
   is_stale: boolean
   job_fields: string[]
   mandatory_fields: string[]
-  location_options?: Record<string, LocationOptionModel[]>
+  location_options?: string[]
 }
 
 export interface FilterChangesModel {
@@ -70,9 +62,29 @@ export interface ConfigChangesModel {
   sites?: Record<string, SiteChangesModel>
 }
 
-function toFilterSetting(model: FilterModel): FilterSetting {
+function toLocationKey(location: string): string {
+  return location.toLowerCase()
+}
+
+function findLocationLabel(savedLocation: string, locationOptions: string[]): string | undefined {
+  const savedKey = toLocationKey(savedLocation)
+  return locationOptions.find((option) => toLocationKey(option) === savedKey)
+}
+
+function toPickedLocations(savedLocations: string[], locationOptions: string[]): string[] {
+  if (locationOptions.length === 0) {
+    return savedLocations
+  }
+  const labels = savedLocations.map((savedLocation) =>
+    findLocationLabel(savedLocation, locationOptions),
+  )
+  const matchedLabels = labels.filter((label) => label !== undefined)
+  return [...new Set(matchedLabels)]
+}
+
+function toFilterSetting(model: FilterModel, locationOptions: string[]): FilterSetting {
   return {
-    location: model.location ?? [],
+    location: toPickedLocations(model.location ?? [], locationOptions),
     employmentType: model.employment_type ?? [],
     workType: model.work_type ?? [],
   }
@@ -81,52 +93,40 @@ function toFilterSetting(model: FilterModel): FilterSetting {
 function toApiSetting(model: ApiModel): ApiSetting {
   return {
     isEnabled: model.enabled ?? true,
-    locations: model.locations ?? [],
-    isCountryWide: model.country_wide ?? false,
     delayMin: model.delay_seconds?.[0] ?? null,
     delayMax: model.delay_seconds?.[1] ?? null,
   }
 }
 
-function toSiteSetting(model: SiteModel): SiteSetting {
+function toSiteSetting(model: SiteModel, locationOptions: string[]): SiteSetting {
   return {
     name: model.name,
     isEnabled: model.enabled,
     limit: model.limit,
     maxAgeHours: model.max_age_hours,
     urlTemplate: model.url_template ?? null,
-    filter: toFilterSetting(model.filter),
+    filter: toFilterSetting(model.filter, locationOptions),
     api: model.api === null ? null : toApiSetting(model.api),
   }
 }
 
-function isLocationOption(entry: unknown): entry is LocationOption {
-  if (typeof entry !== 'object' || entry === null) {
-    return false
-  }
-  const { label, value } = entry as Partial<LocationOption>
-  return typeof label === 'string' && typeof value === 'string'
+function isLocationLabel(entry: unknown): entry is string {
+  return typeof entry === 'string'
 }
 
-/** Keeps only well-formed city lists, so a bad reply never breaks the page */
-function toLocationOptions(model: unknown): Record<string, LocationOption[]> {
-  if (typeof model !== 'object' || model === null || Array.isArray(model)) {
-    return {}
+function toLocationOptions(model: unknown): string[] {
+  if (!Array.isArray(model)) {
+    return []
   }
-  const lists = Object.entries(model).filter(([, list]) => Array.isArray(list))
-  return Object.fromEntries(
-    lists.map(([site, list]) => [
-      site,
-      (list as unknown[]).filter(isLocationOption).map(({ label, value }) => ({ label, value })),
-    ]),
-  )
+  return model.filter(isLocationLabel)
 }
 
 export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
+  const locationOptions = toLocationOptions(model.location_options)
   return {
     values: {
       fields: toPickedFields(model.values.fields, model.job_fields, model.mandatory_fields),
-      sites: model.values.sites.map(toSiteSetting),
+      sites: model.values.sites.map((site) => toSiteSetting(site, locationOptions)),
     },
     version: model.version,
     updatedAt: model.updated_at,
@@ -134,7 +134,7 @@ export function toConfigSnapshot(model: ConfigModel): ConfigSnapshot {
     isStale: model.is_stale,
     jobFields: model.job_fields,
     mandatoryFields: model.mandatory_fields,
-    locationOptions: toLocationOptions(model.location_options),
+    locationOptions,
   }
 }
 
@@ -149,8 +149,6 @@ function toFilterChangesModel(filter: FilterSetting): FilterChangesModel {
 function toApiModel(api: ApiSetting): ApiModel {
   return {
     enabled: api.isEnabled,
-    locations: api.locations,
-    country_wide: api.isCountryWide,
     delay_seconds: toDelaySeconds(api.delayMin, api.delayMax),
   }
 }

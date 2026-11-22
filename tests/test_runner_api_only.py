@@ -4,12 +4,12 @@ import json
 from unittest.mock import MagicMock
 
 from scraper.api.client import ApiError
+from scraper.api.location_search_plan import LocationSearchPlan, build_location_search_plan
 from scraper.api.registry import API_SOURCES
 from scraper.api.upwork import UpworkApi
 from scraper.config_loader import ApiConfig
 from scraper.runner import FilteredAndRawPayloads, _is_api_usable_for_site, scrape_site_for_keyword
 from scraper.sites import SCRAPERS
-from scraper.sites.glints import GlintsScraper
 from scraper.sites.upwork import UpworkScraper
 from scraper.types import Job, empty_job
 from tests.runner_fakes import build_html_downloader_returning
@@ -111,16 +111,34 @@ def test_zero_results_is_not_an_error():
     assert payload["count"] == 0
 
 
-def test_api_only_site_without_locations_cannot_call_the_api():
-    empty = ApiConfig(enabled=True, locations=(), country_wide=False)
-    remote = ApiConfig(enabled=True, locations=("Remote",), country_wide=False)
-
-    assert _is_api_usable_for_site(_scraper(), empty, "upwork") is False
-    assert _is_api_usable_for_site(_scraper(), remote, "upwork") is True
+ENABLED_API = ApiConfig(enabled=True)
+PLAN_WITHOUT_ANY_REQUEST = LocationSearchPlan(city_values=(), is_country_wide=False)
+PLAN_WITH_ONE_CITY = LocationSearchPlan(city_values=("Jakarta Raya",), is_country_wide=False)
+COUNTRY_WIDE_ONLY_PLAN = LocationSearchPlan(city_values=(), is_country_wide=True)
 
 
-def test_html_site_without_locations_still_uses_the_api_path():
-    scraper = GlintsScraper(url="https://glints.com/id/opportunities/jobs/explore", limit=30)
-    empty = ApiConfig(enabled=True, locations=(), country_wide=False)
+def test_api_only_site_always_has_one_request_whatever_its_filter():
+    upwork_plan = build_location_search_plan("upwork", [])
 
-    assert _is_api_usable_for_site(scraper, empty, "glints") is True
+    assert upwork_plan == COUNTRY_WIDE_ONLY_PLAN
+    assert _is_api_usable_for_site(ENABLED_API, "upwork", upwork_plan) is True
+
+
+def test_api_only_site_with_a_plan_without_any_request_cannot_call_the_api():
+    assert _is_api_usable_for_site(ENABLED_API, "upwork", PLAN_WITHOUT_ANY_REQUEST) is False
+
+
+def test_html_site_with_a_plan_without_any_request_uses_the_html_path():
+    assert _is_api_usable_for_site(ENABLED_API, "glints", PLAN_WITHOUT_ANY_REQUEST) is False
+
+
+def test_html_site_with_a_city_or_country_request_uses_the_api_path():
+    assert _is_api_usable_for_site(ENABLED_API, "glints", PLAN_WITH_ONE_CITY) is True
+    assert _is_api_usable_for_site(ENABLED_API, "glints", COUNTRY_WIDE_ONLY_PLAN) is True
+
+
+def test_disabled_api_or_site_without_an_api_source_is_not_usable():
+    disabled_api = ApiConfig(enabled=False)
+
+    assert _is_api_usable_for_site(disabled_api, "glints", PLAN_WITH_ONE_CITY) is False
+    assert _is_api_usable_for_site(ENABLED_API, "indeed", PLAN_WITH_ONE_CITY) is False

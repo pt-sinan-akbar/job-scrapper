@@ -30,6 +30,8 @@ class ScrapeSummary:
     keywords: tuple[str, ...]
     sites: tuple[str, ...]
     started_at: str
+    location: str | None = None
+    max_age_hours: int | None = None
     finished_at: str | None = None
     job_count: int = 0
     error_count: int = 0
@@ -40,7 +42,12 @@ class ScrapeSummary:
     discord_error: str | None = None
 
 
-def build_running_summary(keywords: tuple[str, ...], sites: tuple[str, ...]) -> ScrapeSummary:
+def build_running_summary(
+    keywords: tuple[str, ...],
+    sites: tuple[str, ...],
+    location: str | None = None,
+    max_age_hours: int | None = None,
+) -> ScrapeSummary:
     started_at = _read_current_time()
     return ScrapeSummary(
         id=f"{started_at:%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}",
@@ -48,6 +55,8 @@ def build_running_summary(keywords: tuple[str, ...], sites: tuple[str, ...]) -> 
         keywords=keywords,
         sites=sites,
         started_at=started_at.isoformat(),
+        location=location,
+        max_age_hours=max_age_hours,
     )
 
 

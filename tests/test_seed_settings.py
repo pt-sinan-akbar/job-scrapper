@@ -12,7 +12,7 @@ from scraper.job_settings import JobSettingsStore
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEED_PATH = REPO_ROOT / "seeds" / "job_settings.yaml"
-CITIES = ["jakarta", "tangerang", "tangerang selatan", "bandung", "bekasi", "Indonesia"]
+CITIES = ["Jakarta", "Tangerang", "Tangerang Selatan", "Bandung", "Bekasi", "Indonesia"]
 SMALL_SEED = """
 sites:
   upwork:
@@ -89,3 +89,22 @@ def test_committed_seed_file_has_no_site_fields():
 
     for site in sites.values():
         assert "fields" not in site
+
+
+def test_committed_seed_file_has_no_api_locations_or_country_wide():
+    sites = yaml.safe_load(SEED_PATH.read_text())["sites"]
+
+    for site in sites.values():
+        api_settings = site.get("api", {})
+        assert "locations" not in api_settings
+        assert "country_wide" not in api_settings
+
+
+def test_committed_seed_file_keeps_the_api_switch_and_the_linkedin_delay():
+    sites = yaml.safe_load(SEED_PATH.read_text())["sites"]
+
+    assert sites["jobstreet"]["api"] == {"enabled": True}
+    assert sites["glints"]["api"] == {"enabled": True}
+    assert sites["linkedin"]["api"] == {"enabled": True, "delay_seconds": [4, 6]}
+    assert sites["upwork"]["api"] == {"enabled": True}
+    assert "api" not in sites["indeed"]

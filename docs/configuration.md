@@ -157,9 +157,12 @@ refused.
 
 #### `sites.<name>.max_age_hours`
 
-Optional integer `>= 1`. Drops jobs whose parsed `posted_at` is older than
-this many hours from now (UTC). Jobs with an unparseable `posted_date` are
-kept (conservative). Absent or `null` means no age cut for this site.
+Optional integer `>= 1`. Drops jobs whose parsed `posted_at` is before
+midnight UTC of today minus this many hours rounded up to whole days (72 means
+from midnight UTC three days ago, 36 means two days ago). Jobs with an
+unparseable `posted_date` are kept (conservative). Absent or `null` means no
+age cut for this site. A scrape can replace it for one call with
+`max_age_hours` (72, 168 or 720), see [`mcp.md`](mcp.md#scrape_jobs).
 
 Pair it with the URL templates' server-side recency params (e.g. jobstreet
 `?daterange=1`, linkedin `&f_TPR=r86400`, indeed `&fromage=1`). See
@@ -173,6 +176,13 @@ Keys are `location`, `employment_type`, `work_type`. Each value can be a
 single string or a list. Substring + case-insensitive, except `location`,
 which resolves names through the region index. Absent, `{}` or only
 empty lists means no filter for this site. See [`filters.md`](filters.md).
+
+`location` accepts only six values, in any letter case: `Jakarta`,
+`Tangerang`, `Tangerang Selatan`, `Bandung`, `Bekasi` and `Indonesia`
+(all regions). A save with any other value is refused. A stored value that
+is not in the list is dropped with a warning when the settings are read.
+The same list decides which locations the site is searched for (see
+[`sites.<name>.api`](#sitesnameapi)).
 
 ```yaml
 sites:
@@ -193,21 +203,30 @@ sites:
   jobstreet:
     api:
       enabled: true                 # optional, default true
-      locations: [Jakarta Raya, Bandung Jawa Barat]
-      country_wide: true            # optional
       delay_seconds: [4, 6]         # optional, default [1, 2]
 ```
 
 - `enabled` (default `true`): `false` skips the API and uses HTML only.
-- `locations`: one API call per entry. Format is per site: JobStreet `where`
-  label, Glints location UUID, LinkedIn place name (`"Jakarta, Indonesia"`).
-- The UI Config page picks `locations` from the fixed list in
-  `scraper/api/locations.py` (JobStreet, Glints, LinkedIn). To add a city,
-  add one `("Label", "value")` line to that site's tuple (same label order on
-  every site). LinkedIn has only 6 verified cities because rate limits blocked
-  checking the rest.
-- `country_wide`: adds one extra call without a city and keeps only jobs whose
-  location is labelled just `Indonesia`.
+- The searched locations come from the site's `filter.location`, not from
+  this block. Each picked city becomes one API call with that site's own
+  search value, read from `scraper/api/location_mapping.yaml` (JobStreet
+  `where` label, Glints location UUID, LinkedIn place name, Indeed `where`
+  text). Cities that share a value on a site are sent once: on LinkedIn,
+  Jakarta, Tangerang, Tangerang Selatan and Bekasi are all
+  `"Jakarta, Indonesia"`.
+- `Indonesia` in `filter.location` adds one country-wide call, and every job
+  it returns is kept. An empty `filter.location` acts like `Indonesia` alone.
+- A site with no entry in the mapping file (Upwork) always makes one call
+  with no location.
+- When no picked city has a search value for the site and `Indonesia` is not
+  picked, the API is skipped and the site uses `url_template` (HTML).
+- Indeed has no `api` block but follows the same plan inside
+  `IndeedScraper.parse`: one GraphQL call per city value within 5 miles, plus
+  one for `Indonesia` when picked.
+- Old stored `api.locations` and `api.country_wide` keys are ignored.
+- To add a city, add it to `city_locations` and to every site under `sites`
+  in `scraper/api/location_mapping.yaml`. The file ships with the code and is
+  read once per process.
 - `delay_seconds` (default `[1, 2]`): random pause between this site's API
   calls, as `[min, max]` seconds. LinkedIn uses `[4, 6]` because its guest
   endpoint returns `429` after a few quick calls.
@@ -232,6 +251,7 @@ The loader (`parse`) enforces:
 | `sites.<name>.fields`     | Not allowed                                      | `ConfigError` (`no longer supported`) |
 | `sites.<name>.filter` keys | One of `location`, `employment_type`, `work_type`; unknown → warning, dropped | `[config] warning` |
 | `sites.<name>.filter` values | String or list-of-strings                        | `ConfigError`     |
+| `sites.<name>.filter.location` values | One of the six location options, any letter case; unknown → warning, dropped on load, refused on save | `[config] warning` on load, `ConfigError` on save |
 
 ## Concurrency
 

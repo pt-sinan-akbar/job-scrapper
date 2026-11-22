@@ -8,6 +8,8 @@ from backend.dependencies import ServicesDep, require_session
 from backend.schemas.config import ConfigUpdateRequest
 from backend.schemas.response import build_ok_response
 
+REMOVED_API_KEYS: frozenset[str] = frozenset({"locations", "country_wide"})
+
 router = APIRouter(prefix="/api/config", dependencies=[Depends(require_session)])
 
 
@@ -23,7 +25,8 @@ async def read_config(services: ServicesDep) -> dict[str, Any]:
             "is_stale": config_read.is_stale,
             "job_fields": config_read.tool_response.get("job_fields", []),
             "mandatory_fields": config_read.tool_response.get("mandatory_fields", []),
-            "location_options": config_read.tool_response.get("location_options", {}),
+            "location_options": config_read.tool_response.get("location_options", []),
+            "max_age_options": config_read.tool_response.get("max_age_options", []),
         }
     )
 
@@ -51,9 +54,20 @@ def _build_site_response(name: str, site: dict[str, Any]) -> dict[str, Any]:
         "limit": site.get("limit"),
         "max_age_hours": site.get("max_age_hours"),
         "filter": _build_filter_response(site.get("filter")),
-        "api": site.get("api"),
+        "api": _build_api_response(site.get("api")),
         "url_template": site.get("url_template"),
     }
+
+
+def _build_api_response(api_settings: dict[str, Any] | None) -> dict[str, Any] | None:
+    if api_settings is None:
+        return None
+    api_response: dict[str, Any] = {}
+    for api_key, api_value in api_settings.items():
+        if api_key in REMOVED_API_KEYS:
+            continue
+        api_response[api_key] = api_value
+    return api_response
 
 
 def _build_filter_response(raw_filter: dict[str, Any] | None) -> dict[str, list[str]]:

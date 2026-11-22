@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { CheckIcon, TriangleAlertIcon } from '@lucide/vue'
+import { CheckIcon } from '@lucide/vue'
 import { ComboboxInput } from 'reka-ui'
-import type { LocationOption } from '@/modules/config/domain/entities/ScraperConfig'
 import {
   Combobox,
   ComboboxAnchor,
@@ -20,14 +19,14 @@ import {
   TagsInputItemText,
 } from '@/shared/components/ui/tags-input'
 
-const PLACEHOLDER = 'Pick cities'
-const UNKNOWN_HINT = 'Not in the city list'
-const NO_MATCH_TEXT = 'No city found'
+const PLACEHOLDER = 'Pick locations'
+const NO_MATCH_TEXT = 'No location found'
 
 const props = defineProps<{
   id: string
   modelValue: string[]
-  options: LocationOption[]
+  options: string[]
+  describedBy?: string
 }>()
 
 const emit = defineEmits<{
@@ -44,18 +43,10 @@ const picked = computed({
   },
 })
 
-const labelByValue = computed(
-  () => new Map(props.options.map((option) => [option.value, option.label])),
-)
-
 const visibleOptions = computed(() => {
   const term = searchTerm.value.trim().toLowerCase()
-  return props.options.filter((option) => option.label.toLowerCase().includes(term))
+  return props.options.filter((option) => option.toLowerCase().includes(term))
 })
-
-function isKnown(value: string): boolean {
-  return labelByValue.value.has(value)
-}
 </script>
 
 <template>
@@ -68,24 +59,15 @@ function isKnown(value: string): boolean {
         :add-on-blur="false"
         :add-on-tab="false"
       >
-        <TagsInputItem
-          v-for="value in picked"
-          :key="value"
-          :value="value"
-          :data-unknown="isKnown(value) ? undefined : 'true'"
-          :title="isKnown(value) ? undefined : UNKNOWN_HINT"
-          :class="isKnown(value) ? undefined : 'bg-danger-soft text-danger'"
-        >
-          <TriangleAlertIcon v-if="!isKnown(value)" class="size-4 shrink-0" aria-hidden="true" />
-          <TagsInputItemText>{{ labelByValue.get(value) ?? value }}</TagsInputItemText>
-          <TagsInputItemDelete
-            :aria-label="`Remove ${labelByValue.get(value) ?? value}${isKnown(value) ? '' : ', not in the city list'}`"
-          />
+        <TagsInputItem v-for="location in picked" :key="location" :value="location">
+          <TagsInputItemText>{{ location }}</TagsInputItemText>
+          <TagsInputItemDelete :aria-label="`Remove ${location}`" />
         </TagsInputItem>
         <ComboboxInput v-model="searchTerm" as-child>
           <TagsInputInput
             :id="id"
             :placeholder="picked.length === 0 ? PLACEHOLDER : ''"
+            :aria-describedby="describedBy"
             @keydown.enter.prevent
           />
         </ComboboxInput>
@@ -94,8 +76,8 @@ function isKnown(value: string): boolean {
     <ComboboxContent>
       <ComboboxViewport>
         <ComboboxEmpty>{{ NO_MATCH_TEXT }}</ComboboxEmpty>
-        <ComboboxItem v-for="option in visibleOptions" :key="option.value" :value="option.value">
-          <span class="truncate">{{ option.label }}</span>
+        <ComboboxItem v-for="option in visibleOptions" :key="option" :value="option">
+          <span class="truncate">{{ option }}</span>
           <ComboboxItemIndicator>
             <CheckIcon />
           </ComboboxItemIndicator>

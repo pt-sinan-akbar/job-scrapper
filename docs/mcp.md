@@ -100,19 +100,22 @@ Read-only. Returns the job settings from Mongo, with their version.
   },
   "job_fields": ["site", "matched_keyword", "title", "..."],
   "mandatory_fields": ["site", "matched_keyword", "title", "company", "url"],
-  "location_options": {
-    "jobstreet": [{"label": "Jakarta", "value": "Jakarta Raya"}, "..."],
-    "glints": [{"label": "Jakarta", "value": "78d63064-78a1-4577-8516-036a6c5e903e"}, "..."],
-    "linkedin": [{"label": "Jakarta", "value": "Jakarta, Indonesia"}, "..."]
-  }
+  "location_options": ["Jakarta", "Tangerang", "Tangerang Selatan", "Bandung", "Bekasi", "Indonesia"],
+  "max_age_options": [
+    {"value": 72, "label": "3 days ago"},
+    {"value": 168, "label": "One week ago"},
+    {"value": 720, "label": "One month ago"}
+  ]
 }
 ```
 
 - `job_fields`: every field name the top-level `fields` list accepts, in scraper order
 - `mandatory_fields`: fields saved for every job whatever the settings say
-- `location_options`: the fixed city list per site (from `scraper/api/locations.py`).
-  `label` is what the UI shows, `value` is what goes into `sites.<name>.api.locations`.
-  Sites without an API city list (indeed, upwork) are absent
+- `location_options`: the only values `sites.<name>.filter.location` accepts, the same
+  list for every site (from `scraper/api/location_mapping.yaml`): the cities first, then
+  `Indonesia`, which means all regions
+- `max_age_options`: the only values `scrape_jobs` accepts as `max_age_hours`
+  (from `scraper/max_age.py`), each with the label the UI shows
 
 Returns `{"error": "..."}` when Mongo is down or the document is missing.
 
@@ -205,9 +208,9 @@ Disable LinkedIn for the next runs:
 {"patch": {"sites": {"linkedin": {"enabled": false}}}}
 ```
 
-Add a search location to one site's filter (the whole filter is replaced, so send every location and key):
+Add a search location to one site's filter (the whole filter is replaced, so send every location and key). Only the values in `location_options` are accepted:
 ```json
-{"patch": {"sites": {"jobstreet": {"filter": {"location": ["jakarta", "bandung", "surabaya"]}}}}}
+{"patch": {"sites": {"jobstreet": {"filter": {"location": ["Jakarta", "Bandung", "Bekasi"]}}}}}
 ```
 
 Change the filter of a site:
@@ -314,6 +317,12 @@ are keyword-only: `scrape_jobs(["glints"], keywords=["data analyst"])`.
   Off by default because it carries every job each site returned, which makes
   the response much bigger. The job-agent backend and the scraper UI both leave
   it off.
+- `max_age_hours`: max job age for this call only, one of `get_config`'s
+  `max_age_options` (72, 168 or 720). It replaces every site's saved
+  `max_age_hours` for this call, in the site's search date range and in the
+  stale cut. Omitted or `null` = each site's saved value. Any other value is
+  refused like empty keywords, with reason
+  `unknown max_age_hours: <value>. allowed: 72, 168, 720`.
 
 **Returns**:
 

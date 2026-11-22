@@ -62,7 +62,7 @@ const CONFIG: ConfigSnapshot = {
   isStale: false,
   jobFields: ['title', 'company', 'url'],
   mandatoryFields: ['company'],
-  locationOptions: {},
+  locationOptions: [],
 }
 
 const SETTINGS: DiscordSettings = {

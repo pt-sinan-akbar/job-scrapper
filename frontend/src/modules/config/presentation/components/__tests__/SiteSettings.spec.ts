@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import { EMPTY_FILTER, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
@@ -12,7 +12,7 @@ const SITES: SiteSetting[] = [
     maxAgeHours: 72,
     urlTemplate: null,
     filter: EMPTY_FILTER,
-    api: { isEnabled: true, locations: [], isCountryWide: true, delayMin: null, delayMax: null },
+    api: { isEnabled: true, delayMin: null, delayMax: null },
   },
   {
     name: 'indeed',
@@ -34,9 +34,11 @@ const SITES: SiteSetting[] = [
   },
 ]
 
+const LOCATION_OPTIONS = ['Jakarta', 'Bandung', 'Indonesia']
+
 function mountSettings(sites: SiteSetting[] = SITES) {
   return mount(SiteSettings, {
-    props: { sites, locationOptions: {} },
+    props: { sites, locationOptions: LOCATION_OPTIONS },
     attachTo: document.body,
   })
 }
@@ -55,17 +57,57 @@ function selectedName(wrapper: Wrapper): string | undefined {
     .text()
 }
 
-function lastToggle(wrapper: {
-  emitted: (event: string) => unknown[][] | undefined
-}): unknown[] | undefined {
-  const toggles = wrapper.emitted('toggle') ?? []
-  return toggles[toggles.length - 1]
-}
-
 function lastUpdate(wrapper: Wrapper): SiteSetting | undefined {
   const updates = wrapper.emitted('update') ?? []
   return updates[updates.length - 1]?.[0] as SiteSetting | undefined
 }
+
+function stubResizeObserver(): void {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = vi.fn<ResizeObserver['observe']>()
+      unobserve = vi.fn<ResizeObserver['unobserve']>()
+      disconnect = vi.fn<ResizeObserver['disconnect']>()
+    },
+  )
+  Element.prototype.scrollIntoView = vi.fn()
+}
+
+function optionLabels(): string[] {
+  const options = document.body.querySelectorAll('[role="option"]')
+  return Array.from(options).map((option) => option.textContent?.trim() ?? '')
+}
+
+async function openLocationList(wrapper: Wrapper, siteName: string): Promise<void> {
+  const input = wrapper.get(`#${siteName}-location`)
+  await input.trigger('focus')
+  await input.trigger('click')
+  await flushPromises()
+}
+
+describe('SiteSettings filter locations', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  it('offers the same location options to every site, with or without an API', async () => {
+    stubResizeObserver()
+    const wrapper = mountSettings()
+
+    await openLocationList(wrapper, 'glints')
+    const glintsOptions = optionLabels()
+    await selectButton(wrapper, 'linkedin').trigger('click')
+    await flushPromises()
+    await openLocationList(wrapper, 'linkedin')
+    const linkedinOptions = optionLabels()
+    wrapper.unmount()
+
+    expect(glintsOptions).toEqual(LOCATION_OPTIONS)
+    expect(linkedinOptions).toEqual(LOCATION_OPTIONS)
+  })
+})
 
 describe('SiteSettings list and detail', () => {
   afterEach(() => {
@@ -156,31 +198,11 @@ describe('SiteSettings list and detail', () => {
     expect(selectedName(wrapper)).toBe('glints')
   })
 
-  it('turns a site off from its list checkbox without picking it', async () => {
-    const wrapper = mountSettings()
+  it('shows no on and off checkbox in the site list', () => {
+    const list = mountSettings().get('ul[aria-label="Sites"]')
 
-    await wrapper.get('[aria-label="Turn on linkedin"]').trigger('click')
-    await flushPromises()
-
-    expect(lastToggle(wrapper)).toEqual([{ siteName: 'linkedin', field: 'isEnabled', isOn: false }])
-    expect(selectedName(wrapper)).toBe('glints')
-  })
-
-  it('keeps the checkbox outside the pick button', () => {
-    const wrapper = mountSettings()
-
-    expect(wrapper.find('[data-slot="site-select"] [data-slot="checkbox"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-slot="checkbox"][aria-label^="Turn on"]')).toHaveLength(3)
-  })
-
-  it('gives the list checkboxes no ids built from site names', () => {
-    const wrapper = mountSettings()
-
-    expect(
-      wrapper
-        .findAll('[data-slot="checkbox"][aria-label^="Turn on"]')
-        .map((box) => box.attributes('id')),
-    ).toEqual([undefined, undefined, undefined])
+    expect(list.find('[data-slot="checkbox"]').exists()).toBe(false)
+    expect(list.find('[aria-label^="Turn on"]').exists()).toBe(false)
   })
 
   it('builds safe ids for a site name with spaces and symbols', () => {

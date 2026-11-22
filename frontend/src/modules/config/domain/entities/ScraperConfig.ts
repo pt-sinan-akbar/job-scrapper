@@ -6,8 +6,6 @@ export interface FilterSetting {
 
 export interface ApiSetting {
   isEnabled: boolean
-  locations: string[]
-  isCountryWide: boolean
   delayMin: number | null
   delayMax: number | null
 }
@@ -27,11 +25,6 @@ export interface ConfigValues {
   sites: SiteSetting[]
 }
 
-export interface LocationOption {
-  label: string
-  value: string
-}
-
 export interface ConfigSnapshot {
   values: ConfigValues
   version: number
@@ -40,7 +33,7 @@ export interface ConfigSnapshot {
   isStale: boolean
   jobFields: string[]
   mandatoryFields: string[]
-  locationOptions: Record<string, LocationOption[]>
+  locationOptions: string[]
 }
 
 export type SiteChanges = Partial<Omit<SiteSetting, 'name' | 'limit' | 'urlTemplate'>> & {
@@ -71,7 +64,7 @@ export interface SiteIssue {
 
 export type ApiStatus = 'on' | 'off' | 'none'
 
-export type SiteToggleField = 'isEnabled' | 'apiEnabled' | 'apiCountryWide'
+export type SiteToggleField = 'isEnabled' | 'apiEnabled'
 
 export interface SiteToggle {
   siteName: string
@@ -94,10 +87,7 @@ export function readSiteToggle(site: SiteSetting, field: SiteToggleField): boole
   if (site.api === null) {
     return false
   }
-  if (field === 'apiEnabled') {
-    return site.api.isEnabled
-  }
-  return site.api.isCountryWide
+  return site.api.isEnabled
 }
 
 export function setSiteToggle(
@@ -111,10 +101,7 @@ export function setSiteToggle(
   if (site.api === null) {
     return site
   }
-  if (field === 'apiEnabled') {
-    return { ...site, api: { ...site.api, isEnabled: isOn } }
-  }
-  return { ...site, api: { ...site.api, isCountryWide: isOn } }
+  return { ...site, api: { ...site.api, isEnabled: isOn } }
 }
 
 export function toSiteToggleChanges(savedSite: SiteSetting, toggle: SiteToggle): ConfigChanges {

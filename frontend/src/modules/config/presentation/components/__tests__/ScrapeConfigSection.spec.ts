@@ -24,7 +24,7 @@ const SNAPSHOT: ConfigSnapshot = {
   isStale: false,
   jobFields: ['site', 'title', 'company'],
   mandatoryFields: ['site', 'company'],
-  locationOptions: {},
+  locationOptions: [],
 }
 
 function createTestRouter(): Router {

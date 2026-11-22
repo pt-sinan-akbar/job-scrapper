@@ -1,14 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 
-import type { LocationOption } from '@/modules/config/domain/entities/ScraperConfig'
 import LocationPicker from '@/modules/config/presentation/components/LocationPicker.vue'
 
-const OPTIONS: LocationOption[] = [
-  { label: 'Jakarta', value: 'Jakarta Raya' },
-  { label: 'Bandung', value: 'Bandung, Jawa Barat' },
-  { label: 'Surabaya', value: 'Surabaya, Jawa Timur' },
-]
+const OPTIONS = ['Jakarta', 'Tangerang', 'Tangerang Selatan', 'Bandung', 'Bekasi', 'Indonesia']
 
 function stubBrowser(): void {
   vi.stubGlobal(
@@ -26,9 +21,9 @@ type PickerWrapper = VueWrapper<InstanceType<typeof LocationPicker>>
 
 const mounted: PickerWrapper[] = []
 
-function mountPicker(modelValue: string[]): PickerWrapper {
+function mountPicker(modelValue: string[], options: string[] = OPTIONS): PickerWrapper {
   const wrapper = mount(LocationPicker, {
-    props: { id: 'glints-locations', modelValue, options: OPTIONS },
+    props: { id: 'glints-locations', modelValue, options },
     attachTo: document.body,
   })
   mounted.push(wrapper)
@@ -53,6 +48,16 @@ function optionLabels(): string[] {
   return Array.from(options).map((option) => option.textContent?.trim() ?? '')
 }
 
+function findOption(label: string): Element | undefined {
+  const options = Array.from(document.body.querySelectorAll('[role="option"]'))
+  return options.find((option) => option.textContent?.trim() === label)
+}
+
+async function clickOption(label: string): Promise<void> {
+  findOption(label)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
 async function openList(wrapper: PickerWrapper): Promise<void> {
   const input = wrapper.get('#glints-locations')
   await input.trigger('focus')
@@ -69,44 +74,56 @@ describe('LocationPicker', () => {
     document.body.innerHTML = ''
   })
 
-  it('shows the pick placeholder while no city is picked', () => {
+  it('shows the pick placeholder while no location is picked', () => {
     const wrapper = mountPicker([])
 
-    expect(wrapper.get('#glints-locations').attributes('placeholder')).toBe('Pick cities')
+    expect(wrapper.get('#glints-locations').attributes('placeholder')).toBe('Pick locations')
     expect(chips()).toHaveLength(0)
   })
 
-  it('shows a chip with the clean label for each known value', () => {
-    mountPicker(['Jakarta Raya', 'Bandung, Jawa Barat'])
+  it('shows no placeholder once a location is picked', () => {
+    const wrapper = mountPicker(['Jakarta'])
 
-    expect(chips().map((chip) => chip.textContent?.trim())).toEqual(['Jakarta', 'Bandung'])
-    expect(chips().every((chip) => chip.dataset.unknown === undefined)).toBe(true)
+    expect(wrapper.get('#glints-locations').attributes('placeholder')).toBe('')
   })
 
-  it('keeps a saved value that is not in the list as a marked chip', () => {
-    mountPicker(['Jakarta Raya', 'Atlantis'])
+  it('shows a chip for each picked location', () => {
+    mountPicker(['Jakarta', 'Tangerang Selatan'])
 
-    const [, unknown] = chips()
-    expect(unknown?.textContent).toContain('Atlantis')
-    expect(unknown?.dataset.unknown).toBe('true')
-    expect(unknown?.getAttribute('title')).toBe('Not in the city list')
+    expect(chips().map((chip) => chip.textContent?.trim())).toEqual([
+      'Jakarta',
+      'Tangerang Selatan',
+    ])
   })
 
-  it('adds the raw value when a city is chosen from the list', async () => {
-    const wrapper = mountPicker(['Jakarta Raya'])
+  it('lists the six options in the order given', async () => {
+    const wrapper = mountPicker([])
 
     await openList(wrapper)
-    const bandung = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) =>
-      option.textContent?.includes('Bandung'),
-    )
-    bandung?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await flushPromises()
 
-    expect(lastUpdate(wrapper)).toEqual(['Jakarta Raya', 'Bandung, Jawa Barat'])
+    expect(optionLabels()).toEqual(OPTIONS)
   })
 
-  it('marks the picked cities in the list', async () => {
-    const wrapper = mountPicker(['Jakarta Raya'])
+  it('adds the option label when a location is chosen from the list', async () => {
+    const wrapper = mountPicker(['Jakarta'])
+
+    await openList(wrapper)
+    await clickOption('Bandung')
+
+    expect(lastUpdate(wrapper)).toEqual(['Jakarta', 'Bandung'])
+  })
+
+  it('lets Indonesia be picked together with cities', async () => {
+    const wrapper = mountPicker(['Jakarta', 'Bekasi'])
+
+    await openList(wrapper)
+    await clickOption('Indonesia')
+
+    expect(lastUpdate(wrapper)).toEqual(['Jakarta', 'Bekasi', 'Indonesia'])
+  })
+
+  it('marks the picked locations in the list', async () => {
+    const wrapper = mountPicker(['Jakarta'])
 
     await openList(wrapper)
 
@@ -114,18 +131,36 @@ describe('LocationPicker', () => {
     expect(Array.from(selected).map((option) => option.textContent?.trim())).toEqual(['Jakarta'])
   })
 
-  it('removes a city from the picked ones with its chip button', async () => {
-    const wrapper = mountPicker(['Jakarta Raya', 'Bandung, Jawa Barat'])
+  it('names the location on each chip remove button', () => {
+    mountPicker(['Tangerang Selatan'])
+
+    const remove = chips()[0]?.querySelector('[data-slot="tags-input-item-delete"]')
+
+    expect(remove?.getAttribute('aria-label')).toBe('Remove Tangerang Selatan')
+  })
+
+  it('still shows the saved values when the option list is empty', async () => {
+    const wrapper = mountPicker(['jakarta', 'Atlantis'], [])
+
+    await openList(wrapper)
+
+    expect(chips().map((chip) => chip.textContent?.trim())).toEqual(['jakarta', 'Atlantis'])
+    expect(optionLabels()).toEqual([])
+    expect(document.body.textContent).toContain('No location found')
+  })
+
+  it('removes a location from the picked ones with its chip button', async () => {
+    const wrapper = mountPicker(['Jakarta', 'Bandung'])
 
     const remove = chips()[0]?.querySelector<HTMLElement>('[data-slot="tags-input-item-delete"]')
     remove?.click()
     await flushPromises()
 
-    expect(lastUpdate(wrapper)).toEqual(['Bandung, Jawa Barat'])
+    expect(lastUpdate(wrapper)).toEqual(['Bandung'])
   })
 
-  it('removes a saved value that is not in the list', async () => {
-    const wrapper = mountPicker(['Atlantis'])
+  it('removes the last picked location, which leaves an empty selection', async () => {
+    const wrapper = mountPicker(['Indonesia'])
 
     const remove = chips()[0]?.querySelector<HTMLElement>('[data-slot="tags-input-item-delete"]')
     remove?.click()
@@ -138,11 +173,10 @@ describe('LocationPicker', () => {
     const wrapper = mountPicker([])
 
     await openList(wrapper)
-    expect(optionLabels()).toEqual(['Jakarta', 'Bandung', 'Surabaya'])
-    await wrapper.get('#glints-locations').setValue('bAnd')
+    await wrapper.get('#glints-locations').setValue('tAng')
     await flushPromises()
 
-    expect(optionLabels()).toEqual(['Bandung'])
+    expect(optionLabels()).toEqual(['Tangerang', 'Tangerang Selatan'])
   })
 
   it('does not accept a typed value that is not in the list', async () => {
@@ -158,42 +192,65 @@ describe('LocationPicker', () => {
     await flushPromises()
 
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    expect(document.body.textContent).toContain('No city found')
+    expect(document.body.textContent).toContain('No location found')
   })
 
-  it('emits exactly once with the new list when a city is chosen', async () => {
-    const wrapper = mountPicker(['Jakarta Raya'])
+  it('emits exactly once with the new list when a location is chosen', async () => {
+    const wrapper = mountPicker(['Jakarta'])
 
     await openList(wrapper)
-    const bandung = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) =>
-      option.textContent?.includes('Bandung'),
-    )
-    bandung?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await flushPromises()
+    await clickOption('Bandung')
 
-    expect(updates(wrapper)).toEqual([['Jakarta Raya', 'Bandung, Jawa Barat']])
+    expect(updates(wrapper)).toEqual([['Jakarta', 'Bandung']])
   })
 
   it('emits exactly once with the shorter list when a chip is removed', async () => {
-    const wrapper = mountPicker(['Jakarta Raya', 'Bandung, Jawa Barat'])
+    const wrapper = mountPicker(['Jakarta', 'Bandung'])
 
     chips()[0]?.querySelector<HTMLElement>('[data-slot="tags-input-item-delete"]')?.click()
     await flushPromises()
 
-    expect(updates(wrapper)).toEqual([['Bandung, Jawa Barat']])
+    expect(updates(wrapper)).toEqual([['Bandung']])
   })
 
-  it('emits exactly once when a picked city is chosen again to unpick it', async () => {
-    const wrapper = mountPicker(['Jakarta Raya', 'Bandung, Jawa Barat'])
+  it('emits exactly once when a picked location is chosen again to unpick it', async () => {
+    const wrapper = mountPicker(['Jakarta', 'Bandung'])
 
     await openList(wrapper)
-    const jakarta = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) =>
-      option.textContent?.includes('Jakarta'),
-    )
-    jakarta?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await clickOption('Jakarta')
+
+    expect(updates(wrapper)).toEqual([['Bandung']])
+  })
+
+  it('picks the highlighted location with the keyboard', async () => {
+    const wrapper = mountPicker([])
+
+    await openList(wrapper)
+    const input = wrapper.get('#glints-locations')
+    await input.setValue('band')
+    await flushPromises()
+    await input.trigger('keydown', { key: 'ArrowDown' })
+    await input.trigger('keydown', { key: 'Enter' })
     await flushPromises()
 
-    expect(updates(wrapper)).toEqual([['Bandung, Jawa Barat']])
+    expect(updates(wrapper)).toEqual([['Bandung']])
+  })
+
+  it('ties the box to a hint when one is named', () => {
+    const wrapper = mount(LocationPicker, {
+      props: {
+        id: 'glints-locations',
+        modelValue: [],
+        options: OPTIONS,
+        describedBy: 'glints-locations-hint',
+      },
+      attachTo: document.body,
+    })
+    mounted.push(wrapper)
+
+    expect(wrapper.get('#glints-locations').attributes('aria-describedby')).toBe(
+      'glints-locations-hint',
+    )
   })
 
   it('does not add a typed value on paste', async () => {

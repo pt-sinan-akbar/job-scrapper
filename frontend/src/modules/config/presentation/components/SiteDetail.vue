@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import {
   SITE_LIMIT_MAX,
   SITE_LIMIT_MIN,
-  type LocationOption,
   type SiteField,
   type SiteSetting,
   type SiteToggle,
@@ -21,7 +20,7 @@ const LIMIT_HINT = `${SITE_LIMIT_MIN} to ${SITE_LIMIT_MAX}`
 
 const props = defineProps<{
   site: SiteSetting
-  locationOptions?: LocationOption[]
+  locationOptions: string[]
   invalidField?: SiteField | null
 }>()
 
@@ -73,6 +72,7 @@ function change(changes: Partial<Omit<SiteSetting, 'name'>>): void {
       <FilterFields
         :id-prefix="idPrefix"
         :model-value="site.filter"
+        :location-options="locationOptions"
         @update:model-value="change({ filter: $event })"
       />
     </SiteGroup>
@@ -81,7 +81,6 @@ function change(changes: Partial<Omit<SiteSetting, 'name'>>): void {
       :id-prefix="idPrefix"
       :api="site.api"
       :invalid-field="invalidField"
-      :location-options="locationOptions"
       @update="change({ api: $event })"
       @toggle="emitToggle"
     />

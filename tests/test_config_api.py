@@ -9,6 +9,7 @@ from scraper.config_loader import (
     AppConfig,
     ConfigError,
     parse_job_settings_into_app_config,
+    validate_job_settings,
 )
 
 BASE = """
@@ -26,15 +27,12 @@ def _parse_app_config_with_extra_yaml(extra: str) -> AppConfig:
 def test_api_block_parsed():
     site = _parse_app_config_with_extra_yaml(
         """    api:
-      enabled: true
-      locations: [Jakarta Raya, Bandung Jawa Barat]
-      country_wide: true
+      enabled: false
+      delay_seconds: [1, 2]
 """,
     ).find_site_config("jobstreet")
     assert site is not None
-    assert site.api == ApiConfig(
-        enabled=True, locations=("Jakarta Raya", "Bandung Jawa Barat"), country_wide=True
-    )
+    assert site.api == ApiConfig(enabled=False, delay_seconds=(1.0, 2.0))
 
 
 def test_missing_api_block_is_none():
@@ -46,12 +44,42 @@ def test_missing_api_block_is_none():
 def test_api_defaults():
     site = _parse_app_config_with_extra_yaml("    api: {}\n").find_site_config("jobstreet")
     assert site is not None
-    assert site.api == ApiConfig(enabled=True, locations=(), country_wide=False)
+    assert site.api == ApiConfig(enabled=True)
 
 
-def test_locations_must_be_list_of_strings():
-    with pytest.raises(ConfigError, match="sites.jobstreet.api.locations"):
-        _parse_app_config_with_extra_yaml("    api:\n      locations: Jakarta\n")
+def test_api_config_has_no_locations_or_country_wide():
+    api_config = ApiConfig(enabled=True)
+
+    assert not hasattr(api_config, "locations")
+    assert not hasattr(api_config, "country_wide")
+
+
+@pytest.mark.parametrize(
+    "old_api_keys",
+    [
+        "      locations: [Jakarta Raya, Bandung Jawa Barat]\n      country_wide: true\n",
+        "      locations: Jakarta\n",
+        "      locations: [Remote]\n      country_wide: false\n",
+    ],
+)
+def test_old_saved_locations_and_country_wide_are_ignored_silently(
+    old_api_keys: str, scraper_log_records: pytest.LogCaptureFixture
+):
+    site = _parse_app_config_with_extra_yaml(
+        "    api:\n      enabled: true\n" + old_api_keys
+    ).find_site_config("jobstreet")
+
+    assert site is not None
+    assert site.api == ApiConfig(enabled=True)
+    assert scraper_log_records.messages == []
+
+
+def test_old_saved_locations_and_country_wide_pass_validation():
+    settings = yaml.safe_load(
+        BASE + "    api:\n      locations: [Jakarta Raya]\n      country_wide: true\n"
+    )
+
+    validate_job_settings(settings)
 
 
 def test_registry_has_api_sites():
@@ -90,7 +118,7 @@ sites:
     filter: {}
     url_template: "https://www.upwork.com/nx/search/jobs/?q={keyword}&sort=recency"
     api:
-      locations: [Remote]
+      enabled: true
 """
         ),
         None,
@@ -101,5 +129,4 @@ sites:
     assert site.filter == {}
     assert site.limit == 30
     assert site.max_age_hours is None
-    assert site.api is not None
-    assert site.api.locations == ("Remote",)
+    assert site.api == ApiConfig(enabled=True)
