@@ -1,0 +1,32 @@
+city_locations:
+  - Jakarta
+  - Tangerang
+  - Tangerang Selatan
+  - Bandung
+  - Bekasi
+country_location: Indonesia
+sites:
+  jobstreet:
+    Jakarta: Jakarta Raya
+    Tangerang: Tangerang Banten
+    Tangerang Selatan: Tangerang Selatan Banten
+    Bandung: Bandung Jawa Barat
+    Bekasi: Bekasi Jawa Barat
+  glints:
+    Jakarta: 78d63064-78a1-4577-8516-036a6c5e903e
+    Tangerang: ae3c458e-5947-4833-8f1b-e001ce2fad1d
+    Tangerang Selatan: 337f8da8-70d8-4916-9733-1cee8e4902e9
+    Bandung: 86a3dc56-1bd7-4cd3-8225-d3e4b976e552
+    Bekasi: 87c39cfb-0e3c-4edb-a7a0-754fb70cc587
+  linkedin:
+    Jakarta: "Jakarta, Indonesia"
+    Tangerang: "Jakarta, Indonesia"
+    Tangerang Selatan: "Jakarta, Indonesia"
+    Bandung: "Bandung, Indonesia"
+    Bekasi: "Jakarta, Indonesia"
+  indeed:
+    Jakarta: Jakarta
+    Tangerang: Tangerang
+    Tangerang Selatan: Tangerang
+    Bandung: Bandung
+    Bekasi: Bekasi

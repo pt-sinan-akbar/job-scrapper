@@ -5,12 +5,17 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from .api.location_search_plan import list_filter_location_options
 from .log import get_scraper_logger
 from .types import CANONICAL_FIELDS, MANDATORY_FIELDS
 
 DEFAULT_FIELDS: tuple[str, ...] = ("title", "company", "location", "url")
 
-FILTERABLE_FIELDS: frozenset[str] = frozenset({"location", "employment_type", "work_type"})
+LOCATION_FILTER_FIELD = "location"
+
+FILTERABLE_FIELDS: frozenset[str] = frozenset(
+    {LOCATION_FILTER_FIELD, "employment_type", "work_type"}
+)
 
 ALLOWED_URL_HOSTS: frozenset[str] = frozenset(
     {
@@ -55,8 +60,6 @@ class ProxyConfig:
 @dataclass(frozen=True)
 class ApiConfig:
     enabled: bool
-    locations: tuple[str, ...]
-    country_wide: bool
     # (min, max) jittered pause between this site's API calls; None = client default
     delay_seconds: tuple[float, float] | None = None
 
@@ -143,6 +146,22 @@ def validate_job_settings(settings: dict[str, Any]) -> None:
     if unknown:
         raise ConfigError(f"not a job setting: {', '.join(unknown)}")
     parse_job_settings_into_app_config(settings, None)
+
+
+def refuse_unknown_filter_locations(job_settings_or_patch: dict[str, Any]) -> None:
+    sites_settings = job_settings_or_patch.get("sites")
+    if not isinstance(sites_settings, dict):
+        return
+    for site_name, site_settings in sites_settings.items():
+        if not isinstance(site_settings, dict):
+            continue
+        site_filter = site_settings.get("filter")
+        if not isinstance(site_filter, dict):
+            continue
+        _refuse_unknown_locations_in_filter_value(
+            site_filter.get(LOCATION_FILTER_FIELD),
+            f"sites.{site_name}.filter.{LOCATION_FILTER_FIELD}",
+        )
 
 
 def parse_job_settings_into_app_config(
@@ -321,9 +340,65 @@ def _keep_known_filter_fields(site_filter: object, setting_path: str) -> dict[st
         lowercase_filter_texts = _convert_filter_value_to_lowercase_list(
             filter_value, f"{setting_path}.{filter_field}"
         )
+        if filter_field == LOCATION_FILTER_FIELD:
+            lowercase_filter_texts = _keep_known_filter_locations(
+                lowercase_filter_texts, f"{setting_path}.{filter_field}"
+            )
         if lowercase_filter_texts:
             known_filters[filter_field] = lowercase_filter_texts
     return known_filters
+
+
+def _keep_known_filter_locations(
+    lowercase_filter_locations: list[str], setting_path: str
+) -> list[str]:
+    lowercase_location_options = _list_lowercase_filter_location_options()
+    known_filter_locations: list[str] = []
+    for lowercase_filter_location in lowercase_filter_locations:
+        if lowercase_filter_location not in lowercase_location_options:
+            get_scraper_logger().warning(
+                "[config] %s contains unknown location '%s'; ignored. allowed: %s",
+                setting_path,
+                lowercase_filter_location,
+                list_filter_location_options(),
+            )
+            continue
+        known_filter_locations.append(lowercase_filter_location)
+    return known_filter_locations
+
+
+def _list_lowercase_filter_location_options() -> list[str]:
+    lowercase_location_options: list[str] = []
+    for location_option in list_filter_location_options():
+        lowercase_location_options.append(location_option.lower())
+    return lowercase_location_options
+
+
+def _refuse_unknown_locations_in_filter_value(location_filter: object, setting_path: str) -> None:
+    lowercase_location_options = _list_lowercase_filter_location_options()
+    for filter_location in _list_stripped_texts_in_filter_value(location_filter):
+        if filter_location.lower() in lowercase_location_options:
+            continue
+        raise ConfigError(
+            f"{setting_path} contains unknown location '{filter_location}'; "
+            f"allowed: {', '.join(list_filter_location_options())}"
+        )
+
+
+def _list_stripped_texts_in_filter_value(filter_value: object) -> list[str]:
+    filter_entries: list[object] = []
+    if isinstance(filter_value, str):
+        filter_entries = [filter_value]
+    if isinstance(filter_value, list):
+        filter_entries = filter_value
+    stripped_texts: list[str] = []
+    for filter_entry in filter_entries:
+        if not isinstance(filter_entry, str):
+            continue
+        stripped_text = filter_entry.strip()
+        if stripped_text:
+            stripped_texts.append(stripped_text)
+    return stripped_texts
 
 
 def _parse_api_config(api_settings: object, setting_path: str) -> ApiConfig | None:
@@ -333,28 +408,10 @@ def _parse_api_config(api_settings: object, setting_path: str) -> ApiConfig | No
         raise ConfigError(f"{setting_path} must be a mapping")
     return ApiConfig(
         enabled=bool(api_settings.get("enabled", True)),
-        locations=_strip_api_locations(
-            api_settings.get("locations", []), f"{setting_path}.locations"
-        ),
-        country_wide=bool(api_settings.get("country_wide", False)),
         delay_seconds=_parse_delay_seconds_range(
             api_settings.get("delay_seconds"), f"{setting_path}.delay_seconds"
         ),
     )
-
-
-def _strip_api_locations(locations_setting: object, setting_path: str) -> tuple[str, ...]:
-    if not isinstance(locations_setting, list):
-        raise ConfigError(f"{setting_path} must be a list of non-empty strings")
-    stripped_locations: list[str] = []
-    for location in locations_setting:
-        if not isinstance(location, str):
-            raise ConfigError(f"{setting_path} must be a list of non-empty strings")
-        stripped_location = location.strip()
-        if not stripped_location:
-            raise ConfigError(f"{setting_path} must be a list of non-empty strings")
-        stripped_locations.append(stripped_location)
-    return tuple(stripped_locations)
 
 
 def _parse_delay_seconds_range(

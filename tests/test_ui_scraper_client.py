@@ -134,6 +134,56 @@ def test_read_raises_when_nothing_is_cached():
         asyncio.run(ScraperClient(gateway).read_config())
 
 
+def test_scrape_jobs_sends_the_requested_location():
+    gateway = FakeGateway()
+    gateway.responses = [{"ok": True}]
+
+    asyncio.run(ScraperClient(gateway).scrape_jobs(("glints",), ("django",), "Jakarta"))
+
+    assert gateway.calls == [
+        (
+            "scrape_jobs",
+            {
+                "sites": ["glints"],
+                "keywords": ["django"],
+                "save_run": False,
+                "location": "Jakarta",
+            },
+        )
+    ]
+
+
+def test_scrape_jobs_sends_the_requested_max_age():
+    gateway = FakeGateway()
+    gateway.responses = [{"ok": True}]
+
+    asyncio.run(ScraperClient(gateway).scrape_jobs(("glints",), ("django",), max_age_hours=168))
+
+    assert gateway.calls == [
+        (
+            "scrape_jobs",
+            {
+                "sites": ["glints"],
+                "keywords": ["django"],
+                "save_run": False,
+                "max_age_hours": 168,
+            },
+        )
+    ]
+
+
+def test_scrape_jobs_sends_the_requested_location_and_max_age_together():
+    gateway = FakeGateway()
+    gateway.responses = [{"ok": True}]
+
+    asyncio.run(
+        ScraperClient(gateway).scrape_jobs(("glints",), ("django",), "Jakarta", max_age_hours=720)
+    )
+
+    assert gateway.calls[0][1]["location"] == "Jakarta"
+    assert gateway.calls[0][1]["max_age_hours"] == 720
+
+
 def test_scrape_jobs_sends_sites_and_keywords_without_saving_the_scrape_or_asking_for_raw_results():
     gateway = FakeGateway()
     gateway.responses = [{"ok": True}]

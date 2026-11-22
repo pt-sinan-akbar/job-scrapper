@@ -7,3 +7,7 @@ services:
     environment:
       - UI_ENV=dev
       - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - UI_DOMAIN=job-scraper-ui
+    networks:
+      - default
+      - job-net

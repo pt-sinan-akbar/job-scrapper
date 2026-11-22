@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { nextTick } from 'vue'
-import type { SiteSetting, SiteToggle } from '@/modules/config/domain/entities/ScraperConfig'
-import { Checkbox } from '@/shared/components/ui/checkbox'
+import type { SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
 import { cn } from '@/shared/utils/cn'
 
 const PREVIOUS_KEYS = new Set(['ArrowUp', 'ArrowLeft'])
@@ -15,7 +14,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [name: string]
-  toggle: [toggle: SiteToggle]
 }>()
 
 function toTargetIndex(key: string, index: number): number | null {
@@ -63,24 +61,17 @@ async function moveSelection(event: KeyboardEvent, index: number): Promise<void>
       :key="site.name"
       :class="
         cn(
-          'flex shrink-0 items-center gap-3 rounded-md border border-line pl-3 transition-colors duration-150 hover:bg-surface-subtle md:border-transparent',
+          'flex shrink-0 items-center rounded-md border border-line transition-colors duration-150 hover:bg-surface-subtle md:border-transparent',
           site.name === selectedName && 'border-line-strong bg-surface-subtle',
         )
       "
     >
-      <Checkbox
-        :model-value="site.isEnabled"
-        :aria-label="`Turn on ${site.name}`"
-        @update:model-value="
-          emit('toggle', { siteName: site.name, field: 'isEnabled', isOn: $event === true })
-        "
-      />
       <button
         type="button"
         data-slot="site-select"
         :aria-controls="panelId"
         :aria-current="site.name === selectedName ? 'true' : undefined"
-        class="flex min-w-0 flex-1 cursor-pointer items-center rounded-md py-2 pr-3 text-left outline-none focus-visible:focus-ring"
+        class="flex min-w-0 flex-1 cursor-pointer items-center rounded-md px-3 py-2 text-left outline-none focus-visible:focus-ring"
         @click="emit('select', site.name)"
         @keydown="moveSelection($event, index)"
       >

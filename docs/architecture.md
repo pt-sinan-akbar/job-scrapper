@@ -21,7 +21,7 @@ scraper/                    # library used by the MCP and UI servers
 │   └── playwright.py       # last attempt: browser (lazy import, ~280MB Chromium)
 ├── api/                    # API-first job sources
 │   ├── client.py           # ApiClient (one curl_cffi session, paced requests) + ApiError
-│   ├── source.py           # ApiSource protocol + search_all(): one search per city, de-duplicated
+│   ├── source.py           # ApiSource protocol + search_all(): one search per city plus a country-wide one, interleaved and de-duplicated
 │   ├── registry.py         # API_SOURCES: site name → API class
 │   ├── jobstreet.py        # JobstreetApi: search API + GraphQL job detail
 │   ├── glints.py           # GlintsApi: GraphQL search + job detail
@@ -29,12 +29,14 @@ scraper/                    # library used by the MCP and UI servers
 │   ├── upwork.py           # UpworkApi: visitor GraphQL search, the search already returns the description
 │   ├── window.py           # max_age_hours → days or seconds search window, to_utc_iso()
 │   ├── draftjs.py          # draftjs_to_markdown() for Glints job descriptions
-│   └── locations.py        # fixed city list per site (label + API value) for the UI picker, served by get_config
+│   ├── location_search_plan.py  # build_location_search_plan(): a site's filter.location → the city values and country-wide call to search
+│   └── location_mapping.yaml    # the six location options and each site's search value per city
 └── sites/                  # per-site adapters
     ├── base.py             # Scraper abstract
     ├── _next_data.py       # __NEXT_DATA__ extraction helper
     ├── _dates.py           # parse_to_iso() — locale-aware date parsing
-    ├── _filter.py          # project_jobs(), filter_reason(), apply_filter()
+    ├── _filter.py          # find_job_drop_reason(): stale or content filter reason per job
+    ├── _projection.py      # pick_allowed_fields_from_jobs()
     ├── _location.py        # region index for the location filter: loaded from Mongo `wilayah` on first use, cached for the process
     ├── _markdown.py        # html_to_markdown() for job descriptions
     ├── jobstreet.py
@@ -76,7 +78,7 @@ The UI calls the MCP tool functions in its own process through `LocalGateway`
 thread with `asyncio.to_thread`, async ones are awaited.
 
 - `GET /api/config`: the job settings plus `location_options`, the same
-  `{site: [{label, value}]}` map `get_config` returns.
+  list of location labels `get_config` returns.
 - `POST /api/scrapes`: starts one scrape at a time (409 while one is running) and
   returns its record. UI scrapes call `scrape_jobs` with `save_run: false`, so
   they never reach `scrape_runs`.
@@ -163,11 +165,10 @@ runner.scrape_all_sites(config, requested_sites, keywords)
    │       │           └─ scraper.parse(html)      → list[Job] (per-site selectors)
    │       ├─ _fill_missing_matched_keyword_and_posted_at() → stamp matched_keyword + parse posted_at
    │       ├─ _build_raw_payload()                 → every parsed job, all canonical fields
-   │       ├─ _drop_stale_jobs()                   → drop jobs older than site.max_age_hours
-   │       ├─ _drop_jobs_failing_content_filter()  → filter_reason() per job against site.filter
+   │       ├─ _drop_jobs_failing_filters()         → find_job_drop_reason() per job: max_age_hours + site.filter
    │       ├─ _cap_jobs_to_limit()                 → keep the first site.limit jobs
    │       ├─ _fill_requirements_for_jobs()        → only when `requirements` is a saved field
-   │       └─ _build_filtered_payload()            → project_jobs(fields), strip to configured fields
+   │       └─ _build_filtered_payload()            → pick_allowed_fields_from_jobs(fields), strip to configured fields
    │
    └─ return RunResult(exit_code, results)   results keyed by (keyword, site)
 ```

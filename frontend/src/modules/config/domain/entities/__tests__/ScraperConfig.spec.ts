@@ -23,13 +23,7 @@ const SITE: SiteSetting = {
   maxAgeHours: 72,
   urlTemplate: 'https://www.upwork.com/nx/search/jobs/?q={keyword}',
   filter: EMPTY_FILTER,
-  api: {
-    isEnabled: true,
-    locations: ['Remote'],
-    isCountryWide: false,
-    delayMin: null,
-    delayMax: null,
-  },
+  api: { isEnabled: true, delayMin: null, delayMax: null },
 }
 
 const ORIGINAL: ConfigValues = {

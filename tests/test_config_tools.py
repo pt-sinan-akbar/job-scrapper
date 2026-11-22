@@ -7,7 +7,7 @@ import mongomock
 import pytest
 
 from mcp_server import server
-from scraper.job_settings import JobSettingsStore
+from scraper.job_settings import SETTINGS_COLLECTION, SETTINGS_ID, JobSettingsStore
 
 SETTINGS: dict[str, Any] = {
     "sites": {
@@ -50,11 +50,15 @@ def test_get_config_lists_job_fields_and_the_always_saved_ones(database: Any):
     assert result["mandatory_fields"] == ["site", "matched_keyword", "title", "company", "url"]
 
 
-def test_get_config_lists_city_options_for_sites_with_a_picker(database: Any):
-    options = server.get_config()["location_options"]
-
-    assert set(options) == {"jobstreet", "glints", "linkedin"}
-    assert options["jobstreet"][0] == {"label": "Jakarta", "value": "Jakarta Raya"}
+def test_get_config_lists_the_location_filter_options(database: Any):
+    assert server.get_config()["location_options"] == [
+        "Jakarta",
+        "Tangerang",
+        "Tangerang Selatan",
+        "Bandung",
+        "Bekasi",
+        "Indonesia",
+    ]
 
 
 def test_get_config_reports_missing_document(monkeypatch: pytest.MonkeyPatch):
@@ -84,6 +88,63 @@ def test_update_config_saves_site_age_and_filter(database: Any):
     assert result["ok"] is True
     assert result["settings"]["sites"]["upwork"]["max_age_hours"] == 24
     assert result["settings"]["sites"]["upwork"]["filter"] == {"work_type": ["remote"]}
+
+
+def test_get_config_lists_the_max_age_options(database: Any):
+    assert server.get_config()["max_age_options"] == [
+        {"value": 72, "label": "3 days ago"},
+        {"value": 168, "label": "One week ago"},
+        {"value": 720, "label": "One month ago"},
+    ]
+
+
+def test_update_config_saves_known_location_filter_values(database: Any):
+    known_location_patch = {"sites": {"glints": {"filter": {"location": ["Jakarta", "Indonesia"]}}}}
+
+    save_response = server.update_config(known_location_patch, expected_version=1)
+
+    assert save_response["ok"] is True
+    assert save_response["settings"]["sites"]["glints"]["filter"] == {
+        "location": ["Jakarta", "Indonesia"]
+    }
+
+
+def test_update_config_refuses_an_unknown_location_filter_value(database: Any):
+    unknown_location_patch = {
+        "sites": {"glints": {"filter": {"location": ["Jakarta", "Surabaya"]}}}
+    }
+
+    save_response = server.update_config(unknown_location_patch, expected_version=1)
+
+    assert save_response["ok"] is False
+    assert save_response["reason"] == "invalid"
+    assert "Surabaya" in save_response["message"]
+    assert "Tangerang Selatan" in save_response["message"]
+    assert server.get_config()["version"] == 1
+
+
+def test_update_config_saves_another_site_when_a_stored_location_is_unknown(database: Any):
+    database[SETTINGS_COLLECTION].update_one(
+        {"_id": SETTINGS_ID},
+        {"$set": {"settings.sites.glints.filter": {"location": ["depok"]}}},
+    )
+
+    save_response = server.update_config(UPWORK_LIMIT_9, expected_version=1)
+
+    assert save_response["ok"] is True
+    assert save_response["settings"]["sites"]["upwork"]["limit"] == 9
+    assert save_response["settings"]["sites"]["glints"]["filter"] == {"location": ["depok"]}
+
+
+def test_update_config_keeps_working_with_old_saved_api_locations(database: Any):
+    old_api = {"enabled": True, "locations": ["Remote"], "country_wide": False}
+    first_save = server.update_config({"sites": {"upwork": {"api": old_api}}}, expected_version=1)
+
+    second_save = server.update_config(UPWORK_LIMIT_9, expected_version=2)
+
+    assert first_save["ok"] is True
+    assert second_save["ok"] is True
+    assert second_save["settings"]["sites"]["upwork"]["api"] == old_api
 
 
 @pytest.mark.parametrize("key", ["limit", "concurrency", "max_age_hours", "filter"])

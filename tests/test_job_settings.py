@@ -57,6 +57,8 @@ LEGACY: dict[str, Any] = {
     },
 }
 LEGACY_VERSION = 3
+UNKNOWN_STORED_LOCATION = "depok"
+LOCATION_OPTIONS_TEXT = "Jakarta, Tangerang, Tangerang Selatan, Bandung, Bekasi, Indonesia"
 
 
 def _upwork_limit(value: int | None) -> dict[str, Any]:
@@ -263,6 +265,107 @@ def test_save_stores_top_level_fields(store: JobSettingsStore):
 def test_save_refuses_removing_a_site_limit(store: JobSettingsStore):
     with pytest.raises(ConfigError, match="sites.upwork.limit is required"):
         store.save(_upwork_limit(None), 1, "ui")
+
+
+def _build_store_with_unknown_stored_glints_location() -> JobSettingsStore:
+    settings_with_unknown_location = deepcopy(SETTINGS)
+    settings_with_unknown_location["sites"]["glints"]["filter"] = {
+        "location": [UNKNOWN_STORED_LOCATION]
+    }
+    return JobSettingsStore(_legacy_database(settings_with_unknown_location))
+
+
+def test_save_on_another_site_works_when_a_stored_location_is_unknown():
+    store = _build_store_with_unknown_stored_glints_location()
+
+    saved = store.save(_upwork_limit(9), LEGACY_VERSION, "ui")
+
+    assert saved.version == LEGACY_VERSION + 1
+    assert saved.settings["sites"]["upwork"]["limit"] == 9
+    assert saved.settings["sites"]["glints"]["filter"] == {"location": [UNKNOWN_STORED_LOCATION]}
+
+
+def test_save_on_the_same_site_works_when_its_stored_location_is_unknown():
+    store = _build_store_with_unknown_stored_glints_location()
+
+    saved = store.save({"sites": {"glints": {"limit": 7}}}, LEGACY_VERSION, "ui")
+
+    assert saved.version == LEGACY_VERSION + 1
+    assert saved.settings["sites"]["glints"]["limit"] == 7
+    assert saved.settings["sites"]["glints"]["filter"] == {"location": [UNKNOWN_STORED_LOCATION]}
+
+
+def test_save_refuses_an_unknown_location_in_the_patch(store: JobSettingsStore):
+    unknown_location_patch = {
+        "sites": {"glints": {"filter": {"location": ["Jakarta", "Surabaya"]}}}
+    }
+
+    with pytest.raises(ConfigError) as raised:
+        store.save(unknown_location_patch, 1, "ui")
+
+    refusal_message = str(raised.value)
+    assert "sites.glints.filter.location" in refusal_message
+    assert "Surabaya" in refusal_message
+    assert LOCATION_OPTIONS_TEXT in refusal_message
+    assert store.read().version == 1
+
+
+def test_save_refuses_an_unknown_patch_location_when_a_stored_location_is_unknown():
+    store = _build_store_with_unknown_stored_glints_location()
+    unknown_location_patch = {"sites": {"upwork": {"filter": {"location": ["Surabaya"]}}}}
+
+    with pytest.raises(ConfigError, match="sites.upwork.filter.location"):
+        store.save(unknown_location_patch, LEGACY_VERSION, "ui")
+
+    assert store.read().version == LEGACY_VERSION
+
+
+def test_seed_refuses_an_unknown_location():
+    store = JobSettingsStore(mongomock.MongoClient()["job_scraper"])
+    seed_with_unknown_location = deepcopy(SETTINGS)
+    seed_with_unknown_location["sites"]["glints"]["filter"] = {
+        "location": [UNKNOWN_STORED_LOCATION]
+    }
+
+    with pytest.raises(ConfigError) as raised:
+        store.seed(seed_with_unknown_location)
+
+    refusal_message = str(raised.value)
+    assert "sites.glints.filter.location" in refusal_message
+    assert UNKNOWN_STORED_LOCATION in refusal_message
+    assert LOCATION_OPTIONS_TEXT in refusal_message
+
+
+def test_load_app_config_drops_an_unknown_stored_location_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(PROXY_ENV_VAR, "")
+    store = _build_store_with_unknown_stored_glints_location()
+
+    config = load_app_config(store)
+    glints = config.find_site_config("glints")
+
+    assert glints is not None
+    assert glints.filter == {}
+    assert store.read().settings["sites"]["glints"]["filter"] == {
+        "location": [UNKNOWN_STORED_LOCATION]
+    }
+
+
+def test_read_migrates_legacy_settings_holding_an_unknown_location():
+    legacy_with_unknown_location = {
+        **deepcopy(LEGACY),
+        "filter": {"location": [UNKNOWN_STORED_LOCATION]},
+    }
+    store = JobSettingsStore(_legacy_database(legacy_with_unknown_location))
+
+    migrated = store.read()
+
+    assert migrated.version == LEGACY_VERSION + 1
+    assert migrated.updated_by == "migration"
+    assert migrated.settings["sites"]["jobstreet"]["filter"] == {
+        "location": [UNKNOWN_STORED_LOCATION]
+    }
 
 
 def test_store_has_no_history_or_restore(store: JobSettingsStore):

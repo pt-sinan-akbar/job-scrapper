@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 
 import { EMPTY_FILTER, type SiteSetting } from '@/modules/config/domain/entities/ScraperConfig'
 import SiteDetail from '@/modules/config/presentation/components/SiteDetail.vue'
@@ -14,11 +14,76 @@ const SITE: SiteSetting = {
   api: null,
 }
 
-function mountSite(site: SiteSetting) {
-  return mount(SiteDetail, {
-    props: { site },
-    attachTo: document.body,
-  })
+const LOCATION_OPTIONS = [
+  'Jakarta',
+  'Tangerang',
+  'Tangerang Selatan',
+  'Bandung',
+  'Bekasi',
+  'Indonesia',
+]
+
+const NO_LOCATION_HINT = 'No location picked: searches all of Indonesia'
+
+function stubResizeObserver(): void {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe = vi.fn<ResizeObserver['observe']>()
+      unobserve = vi.fn<ResizeObserver['unobserve']>()
+      disconnect = vi.fn<ResizeObserver['disconnect']>()
+    },
+  )
+  Element.prototype.scrollIntoView = vi.fn()
+}
+
+type DetailWrapper = VueWrapper<InstanceType<typeof SiteDetail>>
+
+const mountedDetails: DetailWrapper[] = []
+
+function mountDetail(props: InstanceType<typeof SiteDetail>['$props']): DetailWrapper {
+  stubResizeObserver()
+  const wrapper = mount(SiteDetail, { props, attachTo: document.body })
+  mountedDetails.push(wrapper)
+  return wrapper
+}
+
+function mountSite(site: SiteSetting, locationOptions: string[] = LOCATION_OPTIONS): DetailWrapper {
+  return mountDetail({ site, locationOptions })
+}
+
+function unmountDetails(): void {
+  mountedDetails.splice(0).forEach((wrapper) => wrapper.unmount())
+  vi.unstubAllGlobals()
+  document.body.innerHTML = ''
+}
+
+function withLocations(location: string[]): SiteSetting {
+  return { ...SITE, filter: { ...EMPTY_FILTER, location } }
+}
+
+function chipLabels(): string[] {
+  const chips = document.body.querySelectorAll('[data-slot="tags-input-item"]')
+  return Array.from(chips).map((chip) => chip.textContent?.trim() ?? '')
+}
+
+function optionLabels(): string[] {
+  const options = document.body.querySelectorAll('[role="option"]')
+  return Array.from(options).map((option) => option.textContent?.trim() ?? '')
+}
+
+async function openLocationList(wrapper: DetailWrapper): Promise<void> {
+  const input = wrapper.get('#glints-location')
+  await input.trigger('focus')
+  await input.trigger('click')
+  await flushPromises()
+}
+
+async function clickLocationOption(label: string): Promise<void> {
+  const options = Array.from(document.body.querySelectorAll('[role="option"]'))
+  const option = options.find((candidate) => candidate.textContent?.trim() === label)
+  option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
 }
 
 function lastToggle(wrapper: {
@@ -28,15 +93,13 @@ function lastToggle(wrapper: {
   return toggles[toggles.length - 1]
 }
 
-function lastUpdate(wrapper: ReturnType<typeof mountSite>): SiteSetting | undefined {
+function lastUpdate(wrapper: DetailWrapper): SiteSetting | undefined {
   const updates = wrapper.emitted('update') ?? []
   return updates[updates.length - 1]?.[0] as SiteSetting | undefined
 }
 
 describe('SiteDetail job fields', () => {
-  afterEach(() => {
-    document.body.innerHTML = ''
-  })
+  afterEach(unmountDetails)
 
   it('has no job fields of its own, since every site uses the global list', () => {
     const wrapper = mountSite(SITE)
@@ -48,109 +111,145 @@ describe('SiteDetail job fields', () => {
 
 const API_SITE: SiteSetting = {
   ...SITE,
-  api: { isEnabled: true, locations: [], isCountryWide: false, delayMin: null, delayMax: null },
+  api: { isEnabled: true, delayMin: null, delayMax: null },
 }
 
-const LOCATION_OPTIONS = [
-  { label: 'Jakarta', value: '78d63064-78a1-4577-8516-036a6c5e903e' },
-  { label: 'Bandung', value: 'bandung-id' },
-]
+describe('SiteDetail filter locations', () => {
+  afterEach(unmountDetails)
 
-const EMPTY_WARNING = 'No city and no country search: this site finds nothing'
+  it('labels the location pick list plainly', () => {
+    const wrapper = mountSite(SITE)
 
-function mountApiSite(site: SiteSetting, locationOptions?: typeof LOCATION_OPTIONS) {
-  vi.stubGlobal(
-    'ResizeObserver',
-    class {
-      observe = vi.fn<ResizeObserver['observe']>()
-      unobserve = vi.fn<ResizeObserver['unobserve']>()
-      disconnect = vi.fn<ResizeObserver['disconnect']>()
-    },
-  )
-  return mount(SiteDetail, {
-    props: { site, locationOptions },
-    attachTo: document.body,
-  })
-}
-
-describe('SiteDetail API locations', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    document.body.innerHTML = ''
+    expect(wrapper.get('label[for="glints-location"]').text()).toBe('Locations')
+    expect(wrapper.text()).not.toContain('Locations, separated by commas')
   })
 
-  it('shows no locations box when the site has no city list', () => {
-    const wrapper = mountApiSite({ ...API_SITE, api: { ...API_SITE.api!, locations: ['Remote'] } })
+  it('shows a chip for each picked location', () => {
+    mountSite(withLocations(['Jakarta', 'Tangerang Selatan']))
 
-    expect(wrapper.find('#glints-api-locations').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    expect(chipLabels()).toEqual(['Jakarta', 'Tangerang Selatan'])
   })
 
-  it('shows no locations box when the city list is empty', () => {
-    const wrapper = mountApiSite({ ...API_SITE, api: { ...API_SITE.api!, locations: [] } }, [])
+  it('offers the options it was given, also for a site with no API', async () => {
+    const wrapper = mountSite(SITE)
+
+    await openLocationList(wrapper)
+
+    expect(optionLabels()).toEqual(LOCATION_OPTIONS)
+  })
+
+  it('sends the option label of a picked location in the filter', async () => {
+    const wrapper = mountSite(withLocations(['Jakarta']))
+
+    await openLocationList(wrapper)
+    await clickLocationOption('Indonesia')
+
+    expect(lastUpdate(wrapper)?.filter).toEqual({
+      ...EMPTY_FILTER,
+      location: ['Jakarta', 'Indonesia'],
+    })
+  })
+
+  it('does not take typed text as a location', async () => {
+    const wrapper = mountSite(SITE)
+
+    await wrapper.get('#glints-location').setValue('Atlantis, Jakarta')
+    await wrapper.get('#glints-location').trigger('blur')
+    await flushPromises()
+
+    expect(wrapper.emitted('update')).toBeUndefined()
+  })
+
+  it('says the whole country is searched while no location is picked', () => {
+    const wrapper = mountSite(SITE)
+
+    expect(wrapper.get('#glints-location-hint').text()).toBe(NO_LOCATION_HINT)
+  })
+
+  it('ties the whole country hint to the location box', () => {
+    const wrapper = mountSite(SITE)
+
+    expect(wrapper.get('#glints-location').attributes('aria-describedby')).toBe(
+      'glints-location-hint',
+    )
+  })
+
+  it('hides the whole country hint once a location is picked', () => {
+    const wrapper = mountSite(withLocations(['Bekasi']))
+
+    expect(wrapper.find('#glints-location-hint').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain(NO_LOCATION_HINT)
+    expect(wrapper.get('#glints-location').attributes('aria-describedby')).toBeUndefined()
+  })
+
+  it('keeps the saved values on show when the option list is empty', () => {
+    mountSite(withLocations(['jakarta', 'Atlantis']), [])
+
+    expect(chipLabels()).toEqual(['jakarta', 'Atlantis'])
+  })
+
+  it('keeps employment types and work types as free text', async () => {
+    const wrapper = mountSite(SITE)
+
+    await wrapper.get('#glints-employment').setValue('contract, full time')
+
+    expect(wrapper.get('label[for="glints-employment"]').text()).toBe(
+      'Employment types, separated by commas',
+    )
+    expect(wrapper.get('label[for="glints-work"]').text()).toBe('Work types, separated by commas')
+    expect(lastUpdate(wrapper)?.filter.employmentType).toEqual(['contract', 'full time'])
+  })
+})
+
+describe('SiteDetail API group', () => {
+  afterEach(unmountDetails)
+
+  it('has no API locations picker', () => {
+    const wrapper = mountSite(API_SITE)
 
     expect(wrapper.find('#glints-api-locations').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('API locations')
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
   })
 
-  it('shows the city picker with chips for the saved values', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, locations: [LOCATION_OPTIONS[0]!.value] } },
-      LOCATION_OPTIONS,
-    )
+  it('has no whole country checkbox', () => {
+    const wrapper = mountSite(API_SITE)
 
-    expect(wrapper.find('#glints-api-locations').exists()).toBe(true)
-    expect(wrapper.text()).toContain('API locations')
-    expect(wrapper.text()).not.toContain('one per line')
-    expect(wrapper.text()).toContain('Jakarta')
+    expect(wrapper.find('#glints-api-country').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Also search the whole country')
   })
 
-  it('warns when no city is picked and the whole country is off', () => {
-    const wrapper = mountApiSite(API_SITE, LOCATION_OPTIONS)
+  it('never warns that the site finds nothing', () => {
+    const wrapper = mountSite(API_SITE)
 
-    expect(wrapper.text()).toContain(EMPTY_WARNING)
+    expect(wrapper.text()).not.toContain('this site finds nothing')
   })
 
-  it('does not warn when the whole country is searched', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, isCountryWide: true } },
-      LOCATION_OPTIONS,
-    )
+  it('keeps the API switch and both delay boxes', () => {
+    const wrapper = mountSite(API_SITE)
 
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
-  })
-
-  it('does not warn when a city is picked', () => {
-    const wrapper = mountApiSite(
-      { ...API_SITE, api: { ...API_SITE.api!, locations: ['bandung-id'] } },
-      LOCATION_OPTIONS,
-    )
-
-    expect(wrapper.text()).not.toContain(EMPTY_WARNING)
+    expect(wrapper.get('label[for="glints-api-enabled"]').text()).toBe('Use the API')
+    expect(wrapper.find('#glints-api-delay-min').exists()).toBe(true)
+    expect(wrapper.find('#glints-api-delay-max').exists()).toBe(true)
   })
 
   it('gives each empty text and number box a placeholder', () => {
-    const wrapper = mountApiSite({ ...API_SITE, limit: null }, LOCATION_OPTIONS)
+    const wrapper = mountSite({ ...API_SITE, limit: null })
 
     expect(wrapper.get('#glints-api-delay-min').attributes('placeholder')).toBe('Min delay')
     expect(wrapper.get('#glints-api-delay-max').attributes('placeholder')).toBe('Max delay')
     expect(wrapper.get('#glints-limit').attributes('placeholder')).toBe('1 to 200')
     expect(wrapper.get('#glints-max-age').attributes('placeholder')).toBe('Any age')
-    expect(wrapper.get('#glints-location').attributes('placeholder')).toBe('Locations')
+    expect(wrapper.get('#glints-location').attributes('placeholder')).toBe('Pick locations')
     expect(wrapper.get('#glints-employment').attributes('placeholder')).toBe('Employment types')
     expect(wrapper.get('#glints-work').attributes('placeholder')).toBe('Work types')
   })
 })
 
 describe('SiteDetail delay', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    document.body.innerHTML = ''
-  })
+  afterEach(unmountDetails)
 
   it('labels both delay boxes and lets them use the full width', () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     expect(wrapper.get('label[for="glints-api-delay-min"]').text()).toBe('Min delay in seconds')
     expect(wrapper.get('label[for="glints-api-delay-max"]').text()).toBe('Max delay in seconds')
@@ -159,7 +258,7 @@ describe('SiteDetail delay', () => {
   })
 
   it('keeps the other delay value when one changes', async () => {
-    const wrapper = mountApiSite({
+    const wrapper = mountSite({
       ...API_SITE,
       api: { ...API_SITE.api!, delayMin: 2, delayMax: 5 },
     })
@@ -170,7 +269,7 @@ describe('SiteDetail delay', () => {
   })
 
   it('does not copy one delay value into the empty other one', async () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     await wrapper.get('#glints-api-delay-max').setValue('8')
 
@@ -178,7 +277,7 @@ describe('SiteDetail delay', () => {
   })
 
   it('lets the min delay go above the max delay for the save check to catch', async () => {
-    const wrapper = mountApiSite({
+    const wrapper = mountSite({
       ...API_SITE,
       api: { ...API_SITE.api!, delayMin: 2, delayMax: 5 },
     })
@@ -189,7 +288,7 @@ describe('SiteDetail delay', () => {
   })
 
   it('takes half seconds as a delay', async () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     await wrapper.get('#glints-api-delay-min').setValue('1.5')
 
@@ -197,9 +296,10 @@ describe('SiteDetail delay', () => {
   })
 
   it('marks the delay box named by a save issue', () => {
-    const wrapper = mount(SiteDetail, {
-      props: { site: API_SITE, invalidField: 'delayMax' },
-      attachTo: document.body,
+    const wrapper = mountDetail({
+      site: API_SITE,
+      locationOptions: LOCATION_OPTIONS,
+      invalidField: 'delayMax',
     })
 
     expect(wrapper.get('#glints-api-delay-max').attributes('aria-invalid')).toBe('true')
@@ -207,22 +307,19 @@ describe('SiteDetail delay', () => {
   })
 })
 
-function legends(wrapper: ReturnType<typeof mountSite>): string[] {
+function legends(wrapper: DetailWrapper): string[] {
   return wrapper.findAll('[data-slot="site-group"] > legend').map((legend) => legend.text())
 }
 
 describe('SiteDetail basics and filter', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    document.body.innerHTML = ''
-  })
+  afterEach(unmountDetails)
 
   it('groups the settings under labelled headings', () => {
     expect(legends(mountSite(SITE))).toEqual(['Source', 'Basics', 'Filter'])
   })
 
   it('adds an API group for sites with an API', () => {
-    expect(legends(mountApiSite(API_SITE))).toEqual(['Source', 'Basics', 'Filter', 'API'])
+    expect(legends(mountSite(API_SITE))).toEqual(['Source', 'Basics', 'Filter', 'API'])
   })
 
   it('makes the limit a required whole number box', () => {
@@ -328,10 +425,7 @@ const URL_TEMPLATE =
   'https://glints.com/id/opportunities/jobs/explore?keyword={keyword}&locationName={location}'
 
 describe('SiteDetail source', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    document.body.innerHTML = ''
-  })
+  afterEach(unmountDetails)
 
   it('shows the URL template read only', () => {
     const wrapper = mountSite({ ...SITE, urlTemplate: URL_TEMPLATE })
@@ -360,13 +454,13 @@ describe('SiteDetail source', () => {
   })
 
   it('shows API on when the site API is enabled', () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     expect(wrapper.get('#glints-api-status').text()).toBe('API on')
   })
 
   it('asks to save the API toggle at once when Use the API is unchecked', async () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     await wrapper.get('#glints-api-enabled').trigger('click')
 
@@ -374,19 +468,8 @@ describe('SiteDetail source', () => {
     expect(wrapper.emitted('update')).toBeUndefined()
   })
 
-  it('asks to save the whole country toggle at once', async () => {
-    const wrapper = mountApiSite(API_SITE)
-    const isCountryWide = API_SITE.api?.isCountryWide ?? false
-
-    await wrapper.get('#glints-api-country').trigger('click')
-
-    expect(lastToggle(wrapper)).toEqual([
-      { siteName: 'glints', field: 'apiCountryWide', isOn: !isCountryWide },
-    ])
-  })
-
   it('shows API off once the saved site has the API turned off', async () => {
-    const wrapper = mountApiSite(API_SITE)
+    const wrapper = mountSite(API_SITE)
 
     await wrapper.setProps({ site: { ...API_SITE, api: { ...API_SITE.api!, isEnabled: false } } })
 

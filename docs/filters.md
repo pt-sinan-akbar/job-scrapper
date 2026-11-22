@@ -10,8 +10,9 @@ filter.
 > `max_age_hours` run **before** the per-site `limit` cap, so `limit` means "up
 > to N jobs *after* filtering" — you reliably get up to N matches, not the first
 > N parsed (which were often filtered down to zero). With no filter set,
-> behavior is unchanged (still the first N). `indeed` caps at the API and is
-> unaffected.
+> behavior is unchanged (still the first N). `indeed` works the same way: it
+> returns every job of its location searches and the runner cuts to `limit`
+> after filtering.
 
 ## Quick reference
 
@@ -44,10 +45,20 @@ sites:
 
 ### `location`
 
-Free-form. There is no fixed enum — the value is whatever the source page
-emits. The comparison goes through the region index below.
+The filter accepts only six values, in any letter case: `Jakarta`,
+`Tangerang`, `Tangerang Selatan`, `Bandung`, `Bekasi` and `Indonesia`. A save
+with any other value is refused. The same list decides which locations each
+site is searched for (see [`configuration.md`](configuration.md#sitesnameapi)).
 
-Examples observed across platforms (sample, not exhaustive):
+`Indonesia` means all regions: a job is kept when its location resolves to any
+Indonesian region, when one part of its location is literally `Indonesia`, or
+when its location is blank. Foreign or unknown places such as `Bangkok` or
+`Remote` are dropped.
+
+The job's own location is free-form: whatever the source emits. The
+comparison goes through the region index below.
+
+Examples of job locations observed across platforms (sample, not exhaustive):
 
 ```
 jakarta              jakarta selatan        jakarta barat
@@ -67,7 +78,8 @@ Tip: one region name catches multiple variants.
 The location filter resolves names through the Indonesian region list in the
 Mongo `wilayah` collection (provinces, cities and districts). A job is kept
 when its location resolves to a region under one of the filter's regions, and
-dropped when it resolves somewhere else. When the location resolves to no
+dropped when it resolves somewhere else, unless `indonesia` is picked: then a
+location that resolves to any region is kept. When the location resolves to no
 region, the job is kept only if a filter term that is not a region name (such
 as `indonesia`) equals one part of the location.
 
@@ -139,12 +151,20 @@ is copied into every site that had no `filter` key (see
 
 ## Reading the runtime log
 
-For each site, the runner logs how many jobs survived the filter. Logs go to
-stdout only, so read them with `docker logs job-scraper-mcp` (MCP calls) or
-`docker logs job-scraper-ui` (runs started from the UI):
+For each site, the runner logs one line with how many jobs survived the
+recency cut and the filter together, split by why the others were dropped.
+Logs go to stdout only, so read them with `docker logs job-scraper-mcp` (MCP
+calls) or `docker logs job-scraper-ui` (runs started from the UI):
 
 ```
-[jobstreet:software-engineer] filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 4)
+[jobstreet:software-engineer] max_age=24h cutoff=2026-11-21T00:00:00+00:00 filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 1 stale, 3 filter)
+```
+
+At debug level each dropped job also gets its own line with the exact reason:
+
+```
+[jobstreet:software-engineer] drop stale: 'Data Analyst' posted_at=2026-11-19T10:00:00+00:00 < cutoff=2026-11-21T00:00:00+00:00
+[jobstreet:software-engineer] drop filter: 'Backend Engineer' location='Surabaya' resolved out of scope, not in ['jakarta', 'bandung']
 ```
 
 Each site payload (`results[*].payload` in the `scrape_jobs` response and in Mongo) also records the filter that was applied:
@@ -170,7 +190,7 @@ Each recipe is the `filter` block of one site, `sites.<name>.filter`.
 
 ```yaml
 filter:
-  location: [jakarta, bekasi, tangerang, depok, bogor]
+  location: [jakarta, bekasi, tangerang, tangerang selatan]
   employment_type: full-time
 ```
 
@@ -193,5 +213,5 @@ filter:
 
 If a combination yields empty output across all sites, drop the most
 restrictive key first — typically `work_type` or `employment_type`. The
-runtime log shows `kept N/M (dropped X)` per site so you can tell which
+runtime log shows `kept N/M (dropped X stale, Y filter)` per site so you can tell which
 filter is doing the cutting.

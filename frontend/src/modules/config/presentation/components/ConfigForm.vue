@@ -18,7 +18,7 @@ const store = useConfigStore()
 const isStale = computed(() => store.snapshot?.isStale ?? true)
 const jobFields = computed(() => store.snapshot?.jobFields ?? [])
 const mandatoryFields = computed(() => store.snapshot?.mandatoryFields ?? [])
-const locationOptions = computed(() => store.snapshot?.locationOptions ?? {})
+const locationOptions = computed(() => store.snapshot?.locationOptions ?? [])
 
 function updateSite(next: SiteSetting): void {
   if (store.values !== null) {

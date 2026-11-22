@@ -22,7 +22,11 @@ async def start_scrape(body: StartScrapeRequest, services: ServicesDep) -> dict[
     if unknown_site_names:
         raise ConfigInvalidError(f"Unknown site: {', '.join(unknown_site_names)}")
     scrape_summary = services.scrape_service.start_scrape(
-        tuple(body.keywords), tuple(body.sites), body.notify_discord
+        tuple(body.keywords),
+        tuple(body.sites),
+        body.notify_discord,
+        body.location,
+        body.max_age_hours,
     )
     return build_ok_response(convert_summary_to_dict(scrape_summary))
 
