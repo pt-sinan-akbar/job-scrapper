@@ -29,7 +29,7 @@ const SNAPSHOT: ConfigSnapshot = {
   isStale: false,
   jobFields: ['site', 'title', 'company', 'salary_min', 'company_id'],
   mandatoryFields: ['site', 'company'],
-  locationOptions: {},
+  locationOptions: [],
 }
 
 describe('useConfigStore', () => {
@@ -132,13 +132,7 @@ describe('useConfigStore', () => {
           {
             ...SNAPSHOT.values.sites[0]!,
             name: 'glints',
-            api: {
-              isEnabled: true,
-              locations: [],
-              isCountryWide: true,
-              delayMin: 2,
-              delayMax: 5,
-            },
+            api: { isEnabled: true, delayMin: 2, delayMax: 5 },
           },
         ],
       },
@@ -194,19 +188,7 @@ describe('useConfigStore', () => {
       await expect(store.save()).resolves.toBe(true)
 
       expect(saveConfig.execute).toHaveBeenCalledWith(
-        {
-          sites: {
-            glints: {
-              api: {
-                isEnabled: true,
-                locations: [],
-                isCountryWide: true,
-                delayMin: 1,
-                delayMax: 9,
-              },
-            },
-          },
-        },
+        { sites: { glints: { api: { isEnabled: true, delayMin: 1, delayMax: 9 } } } },
         4,
       )
     })
@@ -356,13 +338,7 @@ describe('useConfigStore', () => {
         sites: [
           {
             ...SNAPSHOT.values.sites[0]!,
-            api: {
-              isEnabled: true,
-              locations: ['jakarta'],
-              isCountryWide: false,
-              delayMin: 1,
-              delayMax: 2,
-            },
+            api: { isEnabled: true, delayMin: 1, delayMax: 2 },
           },
         ],
       },
@@ -414,16 +390,24 @@ describe('useConfigStore', () => {
       await store.load()
       store.values!.sites[0]!.api!.delayMax = 9
 
-      await store.saveSiteToggle({ siteName: 'upwork', field: 'apiCountryWide', isOn: true })
+      await store.saveSiteToggle({ siteName: 'upwork', field: 'apiEnabled', isOn: false })
 
       expect(saveConfig.execute).toHaveBeenCalledWith(
-        {
-          sites: {
-            upwork: { api: { ...API_SNAPSHOT.values.sites[0]!.api!, isCountryWide: true } },
-          },
-        },
+        { sites: { upwork: { api: { isEnabled: false, delayMin: 1, delayMax: 2 } } } },
         4,
       )
+    })
+
+    it('puts the API toggle back when its save fails', async () => {
+      getConfig.execute.mockResolvedValue(API_SNAPSHOT)
+      saveConfig.execute.mockRejectedValue(new Error('Config changed elsewhere'))
+      const store = useConfigStore()
+      await store.load()
+
+      await store.saveSiteToggle({ siteName: 'upwork', field: 'apiEnabled', isOn: false })
+
+      expect(store.values?.sites[0]?.api?.isEnabled).toBe(true)
+      expect(store.autoSaveError).toBe('Config changed elsewhere')
     })
 
     it('keeps other unsaved edits after an auto save', async () => {

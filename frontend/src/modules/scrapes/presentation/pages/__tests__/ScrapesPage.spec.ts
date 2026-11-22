@@ -125,7 +125,7 @@ const CONFIG_SNAPSHOT: ConfigSnapshot = {
   isStale: false,
   jobFields: ['site', 'title', 'company'],
   mandatoryFields: ['site', 'company'],
-  locationOptions: {},
+  locationOptions: [],
 }
 
 const PAGE_STUBS = {

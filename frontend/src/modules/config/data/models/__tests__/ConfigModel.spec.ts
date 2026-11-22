@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { ApiSetting } from '@/modules/config/domain/entities/ScraperConfig'
 import {
   toConfigChangesModel,
   toConfigSnapshot,
@@ -15,7 +16,7 @@ const MODEL: ConfigModel = {
         limit: 30,
         max_age_hours: null,
         filter: {},
-        api: { locations: ['Remote'] },
+        api: {},
         url_template: 'https://www.upwork.com/nx/search/jobs/?q={keyword}',
       },
       {
@@ -34,6 +35,28 @@ const MODEL: ConfigModel = {
   is_stale: false,
   job_fields: ['site', 'title', 'location', 'salary_min'],
   mandatory_fields: ['site'],
+}
+
+const LOCATION_OPTIONS = [
+  'Jakarta',
+  'Tangerang',
+  'Tangerang Selatan',
+  'Bandung',
+  'Bekasi',
+  'Indonesia',
+]
+
+function withSavedLocations(savedLocations: string[], locationOptions: unknown): ConfigModel {
+  const [upwork] = MODEL.values.sites
+  return {
+    ...MODEL,
+    values: { ...MODEL.values, sites: [{ ...upwork!, filter: { location: savedLocations } }] },
+    location_options: locationOptions,
+  } as ConfigModel
+}
+
+function readLocations(model: ConfigModel): string[] | undefined {
+  return toConfigSnapshot(model).values.sites[0]?.filter.location
 }
 
 describe('toConfigSnapshot', () => {
@@ -120,14 +143,23 @@ describe('toConfigSnapshot', () => {
   it('fills api defaults', () => {
     const [upwork, indeed] = toConfigSnapshot(MODEL).values.sites
 
-    expect(upwork?.api).toEqual({
-      isEnabled: true,
-      locations: ['Remote'],
-      isCountryWide: false,
+    expect(upwork?.api).toEqual({ isEnabled: true, delayMin: null, delayMax: null })
+    expect(indeed?.api).toBeNull()
+  })
+
+  it('ignores the locations and country switch of an older saved api block', () => {
+    const [upwork] = MODEL.values.sites
+    const oldApi = { enabled: false, locations: ['Remote'], country_wide: true }
+    const model = {
+      ...MODEL,
+      values: { ...MODEL.values, sites: [{ ...upwork!, api: oldApi }] },
+    } as ConfigModel
+
+    expect(toConfigSnapshot(model).values.sites[0]?.api).toEqual({
+      isEnabled: false,
       delayMin: null,
       delayMax: null,
     })
-    expect(indeed?.api).toBeNull()
   })
 
   it('splits the saved delay into a min and a max value', () => {
@@ -148,53 +180,67 @@ describe('toConfigSnapshot', () => {
 })
 
 describe('toConfigSnapshot location options', () => {
-  it('maps the city list of each site', () => {
-    const model: ConfigModel = {
-      ...MODEL,
-      location_options: {
-        glints: [
-          { label: 'Jakarta', value: '78d63064' },
-          { label: 'Bandung', value: 'bandung-id' },
-        ],
-      },
-    }
+  it('reads the list of location labels', () => {
+    const model: ConfigModel = { ...MODEL, location_options: LOCATION_OPTIONS }
 
-    expect(toConfigSnapshot(model).locationOptions).toEqual({
-      glints: [
-        { label: 'Jakarta', value: '78d63064' },
-        { label: 'Bandung', value: 'bandung-id' },
-      ],
-    })
+    expect(toConfigSnapshot(model).locationOptions).toEqual(LOCATION_OPTIONS)
   })
 
-  it('treats a missing location_options key as no lists', () => {
-    expect(toConfigSnapshot(MODEL).locationOptions).toEqual({})
+  it('treats a missing location_options key as an empty list', () => {
+    expect(toConfigSnapshot(MODEL).locationOptions).toEqual([])
   })
 
-  it('skips a malformed list and malformed entries', () => {
+  it.each([null, 'Jakarta', 5, { glints: [{ label: 'Jakarta', value: 'jakarta' }] }])(
+    'treats a location_options of %o as an empty list',
+    (locationOptions) => {
+      const model = { ...MODEL, location_options: locationOptions } as unknown as ConfigModel
+
+      expect(toConfigSnapshot(model).locationOptions).toEqual([])
+    },
+  )
+
+  it('skips entries that are not text', () => {
     const model = {
       ...MODEL,
-      location_options: {
-        glints: [
-          { label: 'Jakarta', value: 'ok' },
-          { label: 5, value: 'x' },
-          null,
-          { label: 'No value' },
-        ],
-        jobstreet: 'oops',
-        linkedin: null,
-      },
+      location_options: ['Jakarta', 5, null, { label: 'Bandung' }, 'Indonesia'],
     } as unknown as ConfigModel
 
-    expect(toConfigSnapshot(model).locationOptions).toEqual({
-      glints: [{ label: 'Jakarta', value: 'ok' }],
-    })
+    expect(toConfigSnapshot(model).locationOptions).toEqual(['Jakarta', 'Indonesia'])
+  })
+})
+
+describe('toConfigSnapshot filter locations', () => {
+  it('turns saved values of any case into the option labels', () => {
+    const model = withSavedLocations(
+      ['jakarta', 'tangerang selatan', 'INDONESIA', 'Bekasi'],
+      LOCATION_OPTIONS,
+    )
+
+    expect(readLocations(model)).toEqual(['Jakarta', 'Tangerang Selatan', 'Indonesia', 'Bekasi'])
   })
 
-  it('treats a location_options that is not an object as no lists', () => {
-    const model = { ...MODEL, location_options: [] } as unknown as ConfigModel
+  it('drops saved values that match no option', () => {
+    const model = withSavedLocations(['jakarta', 'Atlantis', 'tangerang sel'], LOCATION_OPTIONS)
 
-    expect(toConfigSnapshot(model).locationOptions).toEqual({})
+    expect(readLocations(model)).toEqual(['Jakarta'])
+  })
+
+  it('keeps one label when two saved values match the same option', () => {
+    const model = withSavedLocations(['jakarta', 'Jakarta', 'bandung'], LOCATION_OPTIONS)
+
+    expect(readLocations(model)).toEqual(['Jakarta', 'Bandung'])
+  })
+
+  it('keeps the saved values as they are when the option list is missing', () => {
+    const model = withSavedLocations(['jakarta', 'Atlantis'], undefined)
+
+    expect(readLocations(model)).toEqual(['jakarta', 'Atlantis'])
+  })
+
+  it('keeps the saved values as they are when the option list is malformed', () => {
+    const model = withSavedLocations(['jakarta', 'Atlantis'], { glints: [] })
+
+    expect(readLocations(model)).toEqual(['jakarta', 'Atlantis'])
   })
 })
 
@@ -207,14 +253,12 @@ describe('toConfigChangesModel', () => {
           isEnabled: false,
           limit: 20,
           maxAgeHours: null,
-          filter: { location: [], employmentType: ['contract'], workType: [] },
-          api: {
-            isEnabled: true,
-            locations: ['Remote'],
-            isCountryWide: true,
-            delayMin: 4,
-            delayMax: 6,
+          filter: {
+            location: ['Jakarta', 'Tangerang Selatan'],
+            employmentType: ['contract'],
+            workType: [],
           },
+          api: { isEnabled: true, delayMin: 4, delayMax: 6 },
         },
       },
     })
@@ -226,8 +270,12 @@ describe('toConfigChangesModel', () => {
           enabled: false,
           limit: 20,
           max_age_hours: null,
-          filter: { location: [], employment_type: ['contract'], work_type: [] },
-          api: { enabled: true, locations: ['Remote'], country_wide: true, delay_seconds: [4, 6] },
+          filter: {
+            location: ['Jakarta', 'Tangerang Selatan'],
+            employment_type: ['contract'],
+            work_type: [],
+          },
+          api: { enabled: true, delay_seconds: [4, 6] },
         },
       },
     })
@@ -237,18 +285,26 @@ describe('toConfigChangesModel', () => {
     const model = toConfigChangesModel({
       sites: {
         upwork: {
-          api: {
-            isEnabled: true,
-            locations: [],
-            isCountryWide: true,
-            delayMin: null,
-            delayMax: null,
-          },
+          api: { isEnabled: true, delayMin: null, delayMax: null },
         },
       },
     })
 
     expect(model.sites?.upwork?.api?.delay_seconds).toBeNull()
+  })
+
+  it('never sends api locations or a country switch', () => {
+    const staleApi = {
+      isEnabled: false,
+      delayMin: null,
+      delayMax: null,
+      locations: ['Remote'],
+      isCountryWide: true,
+    } as ApiSetting
+
+    const model = toConfigChangesModel({ sites: { upwork: { api: staleApi } } })
+
+    expect(model.sites?.upwork?.api).toEqual({ enabled: false, delay_seconds: null })
   })
 
   it('sends empty lists for no filter', () => {
