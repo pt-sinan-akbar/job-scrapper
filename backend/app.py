@@ -9,6 +9,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import Scope
 
 from backend.api import auth, config, discord, scrapes, sites
+from backend.api.openapi_docs import (
+    API_DESCRIPTION,
+    HEALTH_TAG,
+    OPENAPI_TAGS,
+    READ_HEALTH_DOCS,
+)
 from backend.dependencies import Services, reject_cross_site
 from backend.errors import install_error_handlers
 from backend.services.auth_service import AuthService
@@ -127,6 +133,8 @@ def _build_services(
 def _create_fastapi_app(settings: Settings) -> FastAPI:
     return FastAPI(
         title=APP_TITLE,
+        description=API_DESCRIPTION,
+        openapi_tags=OPENAPI_TAGS,
         dependencies=[Depends(reject_cross_site)],
         docs_url=_hide_path_in_prod(settings, DOCS_PATH),
         redoc_url=None,
@@ -146,7 +154,7 @@ def _add_trusted_host_middleware(app: FastAPI, settings: Settings) -> None:
 
 
 def _register_api_routers(app: FastAPI) -> None:
-    app.get(HEALTH_PATH)(read_health)
+    app.get(HEALTH_PATH, tags=[HEALTH_TAG], **READ_HEALTH_DOCS)(read_health)
     for api_module in API_ROUTER_MODULES:
         app.include_router(api_module.router)
 
