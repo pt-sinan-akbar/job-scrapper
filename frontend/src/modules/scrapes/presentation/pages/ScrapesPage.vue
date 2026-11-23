@@ -100,6 +100,7 @@ function hideScrapeOverlay(): void {
         :is-scraping="store.isScraping"
         :discord-block="notifyDiscordBlock"
         :has-unsaved-config="configStore.isDirty"
+        :latest-scrape="store.latestScrape?.record ?? null"
         @start="(keywords, sites, notifyDiscord) => store.start(keywords, sites, notifyDiscord)"
       />
     </PageSection>

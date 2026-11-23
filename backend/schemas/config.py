@@ -21,16 +21,22 @@ Delay = Annotated[float, Field(ge=0, le=MAX_DELAY_SECONDS)]
 class FilterSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    location: TextList = Field(default_factory=list)
-    employment_type: TextList = Field(default_factory=list)
-    work_type: TextList = Field(default_factory=list)
+    location: TextList = Field(default_factory=list, description="Keep only jobs in these places")
+    employment_type: TextList = Field(
+        default_factory=list, description="Keep only these types, like `full_time`"
+    )
+    work_type: TextList = Field(
+        default_factory=list, description="Keep only these, like `remote` or `hybrid`"
+    )
 
 
 class ApiSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool
-    delay_seconds: tuple[Delay, Delay] | None = None
+    enabled: bool = Field(description="Use the site API, `false` reads the web page only")
+    delay_seconds: tuple[Delay, Delay] | None = Field(
+        default=None, description="Random pause between API calls, `[min, max]` seconds"
+    )
     locations: Any = Field(default=None, exclude=True)
     country_wide: Any = Field(default=None, exclude=True)
 
@@ -38,11 +44,21 @@ class ApiSettings(BaseModel):
 class SiteUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool | None = None
-    limit: int | None = Field(default=None, ge=1, le=MAX_LIMIT)
-    max_age_hours: int | None = Field(default=None, ge=1, le=MAX_AGE_HOURS)
-    filter: FilterSettings | None = None
-    api: ApiSettings | None = None
+    enabled: bool | None = Field(default=None, description="Turn the site on or off")
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_LIMIT,
+        description=f"Most jobs to keep per keyword, 1 to {MAX_LIMIT}",
+    )
+    max_age_hours: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_AGE_HOURS,
+        description=f"Skip jobs older than this, up to {MAX_AGE_HOURS}",
+    )
+    filter: FilterSettings | None = Field(default=None, description="Keep only matching jobs")
+    api: ApiSettings | None = Field(default=None, description="Site API settings")
 
     @field_validator("limit", "filter", mode="before")
     @classmethod
@@ -55,9 +71,13 @@ class SiteUpdate(BaseModel):
 class ConfigUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: int = Field(ge=1)
-    fields: FieldList | None = None
-    sites: dict[SiteName, SiteUpdate] = Field(default_factory=dict)
+    version: int = Field(ge=1, description="`version` from `GET /api/config`")
+    fields: FieldList | None = Field(
+        default=None, description="Job fields to keep, names from `job_fields`"
+    )
+    sites: dict[SiteName, SiteUpdate] = Field(
+        default_factory=dict, description="Settings per site, keyed by site name"
+    )
 
     def to_patch(self) -> dict[str, Any]:
         # exclude_unset keeps explicit nulls, which remove a key from the settings

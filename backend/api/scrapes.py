@@ -1,19 +1,37 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Path, status
 
+from backend.api.openapi_docs import (
+    PROTECTED_ROUTER_RESPONSES,
+    READ_LATEST_SCRAPE_DOCS,
+    READ_SCRAPE_DOCS,
+    SCRAPE_ID_EXAMPLE,
+    SCRAPES_TAG,
+    SEND_LATEST_SCRAPE_DOCS,
+    START_SCRAPE_DOCS,
+)
 from backend.dependencies import ServicesDep, require_session
 from backend.errors import ConfigInvalidError
 from backend.schemas.response import build_ok_response
 from backend.schemas.scrapes import StartScrapeRequest
 from backend.services.scrape_report import build_report_response, convert_summary_to_dict
 
-router = APIRouter(prefix="/api/scrapes", dependencies=[Depends(require_session)])
+router = APIRouter(
+    prefix="/api/scrapes",
+    tags=[SCRAPES_TAG],
+    dependencies=[Depends(require_session)],
+    responses=PROTECTED_ROUTER_RESPONSES,
+)
+
+ScrapeId = Annotated[
+    str, Path(description="Scrape id from `POST /api/scrapes`", examples=[SCRAPE_ID_EXAMPLE])
+]
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("", status_code=status.HTTP_202_ACCEPTED, **START_SCRAPE_DOCS)
 async def start_scrape(body: StartScrapeRequest, services: ServicesDep) -> dict[str, Any]:
     services.scrape_service.ensure_idle()
     sites_read = await services.scraper.read_sites()
@@ -31,13 +49,13 @@ async def start_scrape(body: StartScrapeRequest, services: ServicesDep) -> dict[
     return build_ok_response(convert_summary_to_dict(scrape_summary))
 
 
-@router.post("/latest/discord", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/latest/discord", status_code=status.HTTP_202_ACCEPTED, **SEND_LATEST_SCRAPE_DOCS)
 async def send_latest_scrape_to_discord(services: ServicesDep) -> dict[str, Any]:
     scrape_summary = await services.scrape_service.send_latest_scrape_to_discord()
     return build_ok_response(convert_summary_to_dict(scrape_summary))
 
 
-@router.get("/latest")
+@router.get("/latest", **READ_LATEST_SCRAPE_DOCS)
 def read_latest_scrape_report(services: ServicesDep) -> dict[str, Any]:
     latest_report = services.scrape_service.read_latest_scrape_report()
     if latest_report is None:
@@ -45,8 +63,8 @@ def read_latest_scrape_report(services: ServicesDep) -> dict[str, Any]:
     return build_ok_response(build_report_response(latest_report))
 
 
-@router.get("/{scrape_id}")
-def read_scrape_report(scrape_id: str, services: ServicesDep) -> dict[str, Any]:
+@router.get("/{scrape_id}", **READ_SCRAPE_DOCS)
+def read_scrape_report(scrape_id: ScrapeId, services: ServicesDep) -> dict[str, Any]:
     scrape_report = services.scrape_service.read_scrape_report(scrape_id)
     return build_ok_response(build_report_response(scrape_report))
 
