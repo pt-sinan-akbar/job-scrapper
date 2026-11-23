@@ -110,8 +110,8 @@ class ScrapeService:
         self.ensure_idle()
         scrape_summary = build_running_summary(keywords, sites, location, max_age_hours)
         self._latest_scrape_report = ScrapeReport(scrape_summary)
-        scrape_task = self._scrape_with_crash_guard(scrape_summary, notify_discord)
-        self._task = asyncio.create_task(scrape_task)
+        background_scrape = self._scrape_or_mark_failed(scrape_summary, notify_discord)
+        self._task = asyncio.create_task(background_scrape)
         return scrape_summary
 
     async def send_latest_scrape_to_discord(self) -> ScrapeSummary:
@@ -130,16 +130,16 @@ class ScrapeService:
             return False
         return self._latest_scrape_report.summary.id == scrape_id
 
-    async def _scrape_with_crash_guard(
+    async def _scrape_or_mark_failed(
         self, scrape_summary: ScrapeSummary, notify_discord: bool
     ) -> None:
         try:
-            await self._scrape_save_and_notify(scrape_summary, notify_discord)
+            await self._scrape_save_and_notify_if_asked(scrape_summary, notify_discord)
         except Exception:
             LOG.exception("scrape %s crashed", scrape_summary.id)
-            self._mark_crashed_scrape_failed(scrape_summary)
+            self._mark_unfinished_scrape_failed(scrape_summary)
 
-    async def _scrape_save_and_notify(
+    async def _scrape_save_and_notify_if_asked(
         self, scrape_summary: ScrapeSummary, notify_discord: bool
     ) -> None:
         scrape_report, jobs = await self._scrape_jobs_for_summary(scrape_summary)
@@ -162,7 +162,7 @@ class ScrapeService:
             return _build_failed_outcome(scrape_summary, SCRAPE_FAILED_MESSAGE)
         return _build_finished_outcome(scrape_summary, scrape_response)
 
-    def _mark_crashed_scrape_failed(self, scrape_summary: ScrapeSummary) -> None:
+    def _mark_unfinished_scrape_failed(self, scrape_summary: ScrapeSummary) -> None:
         current_report = self._read_current_report(scrape_summary)
         if current_report.summary.status is not ScrapeStatus.RUNNING:
             return
@@ -179,20 +179,22 @@ class ScrapeService:
             scrape_report.summary, DiscordStatus.SENDING
         )
         self._latest_scrape_report = replace(scrape_report, summary=sending_summary)
-        send_task = self._send_scrape_with_crash_guard(sending_summary, list(scrape_report.jobs))
-        self._task = asyncio.create_task(send_task)
+        background_send = self._send_to_discord_or_mark_failed(
+            sending_summary, list(scrape_report.jobs)
+        )
+        self._task = asyncio.create_task(background_send)
         return sending_summary
 
-    async def _send_scrape_with_crash_guard(
+    async def _send_to_discord_or_mark_failed(
         self, scrape_summary: ScrapeSummary, jobs: list[dict[str, Any]]
     ) -> None:
         try:
             await self._send_scrape_to_discord(scrape_summary, jobs)
         except Exception:
             LOG.exception("scrape %s discord send crashed", scrape_summary.id)
-            self._mark_stuck_send_failed(scrape_summary)
+            self._mark_sending_discord_failed(scrape_summary)
 
-    def _mark_stuck_send_failed(self, scrape_summary: ScrapeSummary) -> None:
+    def _mark_sending_discord_failed(self, scrape_summary: ScrapeSummary) -> None:
         current_report = self._latest_scrape_report
         if current_report is None or current_report.summary.id != scrape_summary.id:
             return
