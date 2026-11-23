@@ -2,7 +2,7 @@
 import { Play } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import type { ScrapeOptions } from '@/modules/scrapes/domain/entities/Scrape'
+import { MAX_KEYWORDS, type ScrapeOptions } from '@/modules/scrapes/domain/entities/Scrape'
 import type { NotifyDiscordBlock } from '@/modules/scrapes/presentation/components/notifyDiscordBlock'
 import {
   readNotifyDiscord,
@@ -16,6 +16,7 @@ import { parseKeywords } from '@/shared/utils/parseKeywords'
 
 const DISCORD_ROUTE = '/discord'
 const CONFIG_ROUTE = { path: '/scrapes', hash: '#config' }
+const KEYWORDS_HINT_ID = 'scrape-keywords-hint'
 
 interface DiscordHint {
   text: string
@@ -45,6 +46,7 @@ const pickedSites = ref<string[]>([])
 const shouldNotifyDiscord = ref(readNotifyDiscord())
 
 const keywords = computed(() => parseKeywords(keywordText.value))
+const hasTooManyKeywords = computed(() => keywords.value.length > MAX_KEYWORDS)
 const canNotifyDiscord = computed(() => props.discordBlock === null)
 const discordHint = computed(() =>
   props.discordBlock === null ? null : DISCORD_HINTS[props.discordBlock],
@@ -53,6 +55,7 @@ const notifyDiscord = computed(() => canNotifyDiscord.value && shouldNotifyDisco
 const canStart = computed(
   () =>
     keywords.value.length > 0 &&
+    !hasTooManyKeywords.value &&
     pickedSites.value.length > 0 &&
     !props.isScraping &&
     !props.hasUnsavedConfig,
@@ -65,6 +68,13 @@ watch(
   },
   { immediate: true },
 )
+
+function startScrape(): void {
+  if (!canStart.value) {
+    return
+  }
+  emit('start', keywords.value, pickedSites.value, notifyDiscord.value)
+}
 
 function setNotifyDiscord(isPicked: boolean | 'indeterminate'): void {
   shouldNotifyDiscord.value = isPicked === true
@@ -80,10 +90,7 @@ function setSite(name: string, isPicked: boolean | 'indeterminate'): void {
 </script>
 
 <template>
-  <form
-    class="flex flex-col gap-8"
-    @submit.prevent="emit('start', keywords, pickedSites, notifyDiscord)"
-  >
+  <form class="flex flex-col gap-8" @submit.prevent="startScrape">
     <div class="flex flex-col gap-2">
       <Label for="scrape-keywords" class="sr-only">Keywords, separated by commas</Label>
       <div class="flex flex-col gap-3 sm:flex-row">
@@ -92,12 +99,20 @@ function setSite(name: string, isPicked: boolean | 'indeterminate'): void {
           v-model="keywordText"
           placeholder="data analyst, python"
           class="sm:flex-1"
+          :aria-describedby="hasTooManyKeywords ? KEYWORDS_HINT_ID : undefined"
         />
         <Button type="submit" variant="primary" :disabled="!canStart">
           <Play aria-hidden="true" />
           {{ isScraping ? 'Scrape running' : 'Run scrape' }}
         </Button>
       </div>
+      <p
+        v-if="hasTooManyKeywords"
+        :id="KEYWORDS_HINT_ID"
+        class="text-body-sm tabular-nums text-danger"
+      >
+        {{ keywords.length }} / {{ MAX_KEYWORDS }} keywords
+      </p>
       <p v-if="hasUnsavedConfig" class="text-body-sm text-ink-muted">
         <RouterLink :to="CONFIG_ROUTE" class="text-link hover:underline">
           Save or discard config changes first

@@ -558,6 +558,26 @@ def test_start_scrape_needs_keywords(client: TestClient):
     assert response.status_code == 422
 
 
+def test_start_scrape_rejects_more_than_ten_keywords(client: TestClient, gateway: FakeGateway):
+    eleven_keywords = _build_keywords(11)
+
+    response = client.post("/api/scrapes", json={"keywords": eleven_keywords, "sites": ["upwork"]})
+
+    assert response.status_code == 422
+    assert "keywords" in response.json()["error"]
+    assert "scrape_jobs" not in gateway.calls
+
+
+def test_start_scrape_accepts_ten_keywords(client: TestClient, gateway: FakeGateway):
+    ten_keywords = _build_keywords(10)
+
+    response = client.post("/api/scrapes", json={"keywords": ten_keywords, "sites": ["upwork"]})
+
+    assert response.status_code == 202
+    _wait_for_finish(client, response.json()["data"]["id"])
+    assert gateway.arguments["scrape_jobs"]["keywords"] == ten_keywords
+
+
 def test_unknown_scrape_returns_404(client: TestClient):
     assert client.get("/api/scrapes/nope").status_code == 404
 
@@ -1287,3 +1307,10 @@ def test_send_latest_scrape_refuses_a_cross_site_request(client: TestClient):
     response = client.post("/api/scrapes/latest/discord", headers={"sec-fetch-site": "cross-site"})
 
     assert response.status_code == 403
+
+
+def _build_keywords(count: int) -> list[str]:
+    keywords: list[str] = []
+    for index in range(count):
+        keywords.append(f"keyword {index}")
+    return keywords

@@ -7,9 +7,9 @@ from scraper.api.location_search_plan import (
     build_unknown_location_message,
     find_filter_location_option,
 )
+from scraper.config_loader import MAX_KEYWORDS
 from scraper.max_age import build_unknown_max_age_message, is_max_age_option
 
-MAX_KEYWORDS = 20
 MAX_SITES = 20
 START_SCRAPE_EXAMPLE = {
     "keywords": ["data analyst"],

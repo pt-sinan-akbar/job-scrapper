@@ -24,7 +24,7 @@ from scraper.api.location_search_plan import (
     list_filter_location_options,
 )
 from scraper.config import ACCEPT_LANGUAGE, USER_AGENT
-from scraper.config_loader import SAMPLE_KEYWORD, AppConfig, ConfigError
+from scraper.config_loader import MAX_KEYWORDS, SAMPLE_KEYWORD, AppConfig, ConfigError
 from scraper.job_settings import (
     JobSettingsStore,
     SettingsConflictError,
@@ -357,6 +357,9 @@ def scrape_jobs(
             runs and nothing is saved: the response has ok=false,
             exit_code=1, keywords=[], results=[], mongo_id=null and
             errors=[{keyword: null, site: null, reason: "keywords are required"}].
+            At most 10 keywords are allowed after blanks are dropped. More
+            are refused the same way, with reason "keywords must be 10 or
+            fewer, got <count>".
         save_run: when false, return the results without storing the run in
             Mongo, so it never reaches the scrape history. mongo_id is then null.
             A stored run keeps run_metadata, results and note. raw_results
@@ -442,6 +445,10 @@ def scrape_jobs(
     if not target_keywords:
         logger.error("scrape_jobs refused: %s", KEYWORDS_REQUIRED)
         return _build_keywords_required_response(sites)
+    too_many_keywords_message = _find_too_many_keywords_message(target_keywords)
+    if too_many_keywords_message is not None:
+        logger.error("scrape_jobs refused: %s", too_many_keywords_message)
+        return _build_refused_scrape_response(sites, too_many_keywords_message)
     requested_location = _find_requested_location_option(location)
     if location is not None and requested_location is None:
         unknown_location_message = build_unknown_location_message(location)
@@ -723,6 +730,13 @@ def _log_proxy_test_result(proxy_test_result: dict[str, Any]) -> None:
 
 def _build_keywords_required_response(passed_sites: list[str] | None) -> dict[str, Any]:
     return _build_refused_scrape_response(passed_sites, KEYWORDS_REQUIRED)
+
+
+def _find_too_many_keywords_message(target_keywords: list[str]) -> str | None:
+    keyword_count = len(target_keywords)
+    if keyword_count <= MAX_KEYWORDS:
+        return None
+    return f"keywords must be {MAX_KEYWORDS} or fewer, got {keyword_count}"
 
 
 def _find_requested_location_option(location: str | None) -> str | None:

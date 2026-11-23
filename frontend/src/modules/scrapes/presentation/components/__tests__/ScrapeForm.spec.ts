@@ -42,6 +42,11 @@ async function typeKeywords(wrapper: Wrapper) {
   await wrapper.get('#scrape-keywords').setValue('django, vue')
 }
 
+async function typeKeywordCount(wrapper: Wrapper, count: number) {
+  const keywords = Array.from({ length: count }, (_, index) => `keyword ${index + 1}`)
+  await wrapper.get('#scrape-keywords').setValue(keywords.join(', '))
+}
+
 describe('ScrapeForm', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', createMemoryStorage())
@@ -196,6 +201,48 @@ describe('ScrapeForm', () => {
         path: '/scrapes',
         hash: '#config',
       })
+    })
+  })
+
+  describe('keyword limit', () => {
+    it('keeps Run scrape on at exactly 10 keywords with no hint', async () => {
+      const wrapper = mountForm()
+
+      await typeKeywordCount(wrapper, 10)
+
+      expect(scrapeButton(wrapper).attributes('disabled')).toBeUndefined()
+      expect(wrapper.find('#scrape-keywords-hint').exists()).toBe(false)
+      expect(wrapper.get('#scrape-keywords').attributes('aria-describedby')).toBeUndefined()
+    })
+
+    it('blocks Run scrape past 10 keywords and shows the count', async () => {
+      const wrapper = mountForm()
+
+      await typeKeywordCount(wrapper, 11)
+
+      const hint = wrapper.get('#scrape-keywords-hint')
+      expect(scrapeButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(hint.text()).toBe('11 / 10 keywords')
+      expect(hint.classes()).toContain('text-danger')
+    })
+
+    it('ties the count hint to the keywords box', async () => {
+      const wrapper = mountForm()
+
+      await typeKeywordCount(wrapper, 12)
+
+      expect(wrapper.get('#scrape-keywords').attributes('aria-describedby')).toBe(
+        'scrape-keywords-hint',
+      )
+    })
+
+    it('does not submit past 10 keywords', async () => {
+      const wrapper = mountForm()
+      await typeKeywordCount(wrapper, 11)
+
+      await wrapper.get('form').trigger('submit')
+
+      expect(wrapper.emitted('start')).toBeUndefined()
     })
   })
 

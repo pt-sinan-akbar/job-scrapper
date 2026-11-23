@@ -1,3 +1,5 @@
+export const MAX_KEYWORDS = 10
+
 export type ScrapeStatus = 'running' | 'succeeded' | 'partial' | 'failed'
 
 export type ScrapeDiscordStatus = 'sending' | 'sent' | 'partial' | 'failed'
