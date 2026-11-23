@@ -18,11 +18,22 @@ Token = Annotated[
 class DiscordSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    token: Token | None = None
-    default_channel_id: ClearableSnowflake | None = None
-    mention_user_id: ClearableSnowflake | None = None
-    message_template: str | None = Field(default=None, min_length=1)
-    max_chars: int | None = Field(default=None, ge=1, le=MAX_TEXT_CHARS)
+    token: Token | None = Field(default=None, description="Discord bot token")
+    default_channel_id: ClearableSnowflake | None = Field(
+        default=None, description="Channel id that scrape results go to, empty string clears it"
+    )
+    mention_user_id: ClearableSnowflake | None = Field(
+        default=None, description="User id to mention in messages, empty string clears it"
+    )
+    message_template: str | None = Field(
+        default=None, min_length=1, description="Message per job, `{title}` style placeholders"
+    )
+    max_chars: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_TEXT_CHARS,
+        description=f"Longest message to send, 1 to {MAX_TEXT_CHARS}",
+    )
 
     @model_validator(mode="after")
     def _reject_null_required_fields(self) -> Self:
@@ -38,9 +49,13 @@ class DiscordSettingsRequest(BaseModel):
 class DiscordMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mention: bool
-    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    mention: bool = Field(description="Mention the saved user at the start")
+    text: str = Field(
+        min_length=1,
+        max_length=MAX_TEXT_CHARS,
+        description=f"Message text, up to {MAX_TEXT_CHARS} characters",
+    )
 
 
 class DiscordSendRequest(DiscordMessageRequest):
-    channel_id: Snowflake
+    channel_id: Snowflake = Field(description="Channel id from `GET /api/discord/channels`")

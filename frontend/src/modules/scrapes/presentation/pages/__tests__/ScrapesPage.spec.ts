@@ -162,9 +162,13 @@ function keywordInput(wrapper: Wrapper): HTMLInputElement {
   return wrapper.get('#scrape-keywords').element as HTMLInputElement
 }
 
+function startButton(wrapper: Wrapper) {
+  return wrapper.get('[data-slot="scrape-start"]')
+}
+
 async function startWith(wrapper: Wrapper): Promise<void> {
   await wrapper.get('#scrape-keywords').setValue('django')
-  await wrapper.get('form').trigger('submit')
+  await startButton(wrapper).trigger('click')
   await flushPromises()
 }
 
@@ -350,13 +354,13 @@ describe('ScrapesPage', () => {
     config.values = { ...structuredClone(CONFIG_SNAPSHOT.values), fields: ['url'] }
     await nextTick()
 
-    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    expect(startButton(wrapper).attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('Save or discard config changes first')
 
     config.discard()
     await nextTick()
 
-    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    expect(startButton(wrapper).attributes('disabled')).toBeUndefined()
   })
 
   describe('a running scrape', () => {
@@ -375,13 +379,45 @@ describe('ScrapesPage', () => {
 
       await startWith(wrapper)
 
-      const submit = wrapper.get('button[type="submit"]')
+      const submit = startButton(wrapper)
       expect(submit.text()).toContain('Scrape running')
       expect(submit.attributes('disabled')).toBeDefined()
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
 
-      expect(wrapper.get('button[type="submit"]').text()).toContain('Run scrape')
+      expect(startButton(wrapper).text()).toContain('Run scrape')
+    })
+
+    it('blocks Run scrape for the same input once the scrape ends', async () => {
+      getScrape.execute
+        .mockResolvedValueOnce(detailOf({ ...SCRAPE, status: 'running' }))
+        .mockResolvedValue(FINISHED)
+      const wrapper = await mountPage()
+      await flushPromises()
+      await startWith(wrapper)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
+
+      expect(startButton(wrapper).attributes('disabled')).toBeDefined()
+      expect(wrapper.text()).toContain('Change keywords or sites to scrape again')
+
+      await wrapper.get('#scrape-keywords').setValue('vue')
+
+      expect(startButton(wrapper).attributes('disabled')).toBeUndefined()
+    })
+
+    it('lets the same input start again after a failed scrape', async () => {
+      getScrape.execute
+        .mockResolvedValueOnce(detailOf({ ...SCRAPE, status: 'running' }))
+        .mockResolvedValue(detailOf({ ...SCRAPE, status: 'failed' }))
+      const wrapper = await mountPage()
+      await flushPromises()
+      await startWith(wrapper)
+
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
+
+      expect(startButton(wrapper).attributes('disabled')).toBeUndefined()
+      expect(wrapper.text()).not.toContain('Change keywords or sites to scrape again')
     })
 
     it('shows a skeleton in Results while the scrape is processing', async () => {
@@ -488,15 +524,15 @@ describe('ScrapesPage', () => {
       await flushPromises()
 
       expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(true)
-      expect(wrapper.get('button[type="submit"]').text()).toContain('Scrape running')
-      expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+      expect(startButton(wrapper).text()).toContain('Scrape running')
+      expect(startButton(wrapper).attributes('disabled')).toBeDefined()
 
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2)
 
       expect(getScrape.execute).toHaveBeenCalledWith('run-1')
       expect(wrapper.find('[data-slot="results-skeleton"]').exists()).toBe(false)
       expect(wrapper.text()).toContain('Django dev')
-      expect(wrapper.get('button[type="submit"]').text()).toContain('Run scrape')
+      expect(startButton(wrapper).text()).toContain('Run scrape')
       expect(useScrapeStore().scrapeOutcome?.status).toBe('succeeded')
     })
 
@@ -529,7 +565,7 @@ describe('ScrapesPage', () => {
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3)
 
       expect(getScrape.execute).toHaveBeenCalledTimes(3)
-      expect(again.get('button[type="submit"]').text()).toContain('Scrape running')
+      expect(again.get('[data-slot="scrape-start"]').text()).toContain('Scrape running')
     })
   })
 

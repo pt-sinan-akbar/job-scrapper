@@ -305,6 +305,8 @@ one result per pair.
 - `keywords`: required list of keywords to scrape. The job settings hold no
   keywords, so there is no fallback. Each keyword is trimmed and blank ones
   are dropped. `null`, `[]` or only blank keywords is refused (see below).
+  At most 10 keywords are allowed after blanks are dropped. More are refused
+  like empty keywords, with reason `keywords must be 10 or fewer, got <count>`.
 - `sites`: list of site names to scrape. Omitted = all enabled sites.
 
 In Python, `sites` is the only positional parameter; `keywords` and the rest

@@ -8,4 +8,8 @@ MAX_PASSWORD_LENGTH = 200
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    password: str = Field(
+        min_length=1,
+        max_length=MAX_PASSWORD_LENGTH,
+        description="The `AUTH_TOKEN` from the scraper `.env`",
+    )

@@ -43,6 +43,8 @@ MAX_CONCURRENCY = 10
 
 MAX_SITE_LIMIT = 200
 
+MAX_KEYWORDS = 10
+
 JOB_SETTINGS_KEYS: frozenset[str] = frozenset({"fields", "sites"})
 
 SAMPLE_KEYWORD = "data analyst"

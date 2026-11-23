@@ -4,16 +4,27 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from backend.api.openapi_docs import (
+    CONFIG_TAG,
+    PROTECTED_ROUTER_RESPONSES,
+    READ_CONFIG_DOCS,
+    SAVE_CONFIG_DOCS,
+)
 from backend.dependencies import ServicesDep, require_session
 from backend.schemas.config import ConfigUpdateRequest
 from backend.schemas.response import build_ok_response
 
 REMOVED_API_KEYS: frozenset[str] = frozenset({"locations", "country_wide"})
 
-router = APIRouter(prefix="/api/config", dependencies=[Depends(require_session)])
+router = APIRouter(
+    prefix="/api/config",
+    tags=[CONFIG_TAG],
+    dependencies=[Depends(require_session)],
+    responses=PROTECTED_ROUTER_RESPONSES,
+)
 
 
-@router.get("")
+@router.get("", **READ_CONFIG_DOCS)
 async def read_config(services: ServicesDep) -> dict[str, Any]:
     config_read = await services.scraper.read_config()
     return build_ok_response(
@@ -31,7 +42,7 @@ async def read_config(services: ServicesDep) -> dict[str, Any]:
     )
 
 
-@router.put("")
+@router.put("", **SAVE_CONFIG_DOCS)
 async def save_config(body: ConfigUpdateRequest, services: ServicesDep) -> dict[str, Any]:
     await services.scraper.save_config(body.to_patch(), body.version)
     return build_ok_response(None)
