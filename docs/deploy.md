@@ -14,9 +14,7 @@ Nothing deploys the image automatically.
 
 | Image | Container | Role |
 |---|---|---|
-| `job-scraper` | `job-scraper-mcp` | `command: ["python", "-m", "mcp_server.server"]`, FastMCP HTTP server on port 8080 |
-| same image | `job-scraper-ui` | `command: ["python", "-m", "backend"]`, UI on port 8090 |
-| same image | one cluster container | default command `/app/scripts/start-servers.sh`, MCP on 8080 and UI on 8090 in one container, exits when either one stops |
+| `job-scraper` | `job-scraper` (compose) or one cluster container | default command `/app/scripts/start-servers.sh`, MCP on 8080 and UI on 8090 in one container, exits when either one stops |
 
 ## Changing config
 
@@ -26,8 +24,8 @@ Job settings and Discord settings live in Mongo. The rest is baked in:
 |---|---|
 | Change sites, or a site's limit, max age, filter | Edit at `/config`. Applies from the next run, no deploy |
 | Change keywords | Not a setting. Type them in "Start a run", or pass them to `scrape_jobs` on every run |
-| Change the proxy | Update `PROXY_URL` in `.env` → recreate scraper-mcp and scraper-ui |
-| Change concurrency | Update `SCRAPER_CONCURRENCY` in `.env` (1 to 10, default 2) → recreate scraper-mcp and scraper-ui |
+| Change the proxy | Update `PROXY_URL` in `.env` → recreate the scraper service |
+| Change concurrency | Update `SCRAPER_CONCURRENCY` in `.env` (1 to 10, default 2) → recreate the scraper service |
 | Change the schedule | Scheduled runs come from a separate service outside this project. This project has no scheduler |
 | Change Discord job format | Edit the template in the Discord section of `/config`. It fills each job in the attached `jobs-YYYY-MM-DD.md` file. Read fresh each send, no deploy |
 | Change Discord max chars | Kept for older setups. Job sends ignore it and put every job in full in the attached file |
@@ -130,12 +128,12 @@ non-zero on mismatch.
 ### Restart after reseeding
 
 The location filter reads `wilayah` the first time it needs it and then keeps
-that copy in memory until the process stops. `scraper-mcp` and `scraper-ui`
+that copy in memory until the process stops. The MCP and UI processes in `job-scraper`
 each hold their own copy, because the UI runs `scrape_jobs` in its own
-process. After reseeding, restart both so they read the new data:
+process. After reseeding, restart the container so both read the new data:
 
 ```bash
-docker restart job-scraper-mcp job-scraper-ui
+docker restart job-scraper
 ```
 
 ### Seed job settings

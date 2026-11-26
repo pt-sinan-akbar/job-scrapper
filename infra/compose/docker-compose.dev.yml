@@ -1,13 +1,9 @@
 services:
 
-  # override: local access only
-  scraper-ui:
+  scraper:
     ports:
       - "127.0.0.1:8090:8090"
     environment:
       - UI_ENV=dev
       - AUTH_TOKEN=${AUTH_TOKEN:-}
-      - UI_DOMAIN=job-scraper-ui
-    networks:
-      - default
-      - job-net
+      - UI_DOMAIN=job-scraper

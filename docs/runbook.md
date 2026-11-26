@@ -152,7 +152,7 @@ logs a warning and uses 2. Set it in `.env` and recreate the containers:
 
 ```bash
 SCRAPER_CONCURRENCY=4
-docker compose --project-directory . -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.dev.yml up -d scraper-mcp scraper-ui
+docker compose --project-directory . -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.dev.yml up -d scraper
 ```
 
 Each Playwright fallback consumes ~250-300MB RAM. On a 2GB host, stay at

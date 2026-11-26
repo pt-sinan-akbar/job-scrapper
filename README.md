@@ -2,7 +2,8 @@
 
 Personal job scraper for job boards (JobStreet, Glints, LinkedIn, Indeed,
 Upwork). Flow: a Playwright/Python scraper is exposed as an **MCP HTTP server**
-(`scraper-mcp`, port 8080) and a web control panel (`scraper-ui`, port 8090).
+(port 8080) and a web control panel (port 8090), both in the `scraper` service
+(container `job-scraper`).
 MCP scrape runs are recorded in **MongoDB**. Discord posting goes through a UI run with
 **Notify Discord** or the MCP `send_discord_message` tool. Scheduled runs come
 from a separate service outside this project.
@@ -42,7 +43,7 @@ This is for an MCP client you run on your host machine (for example `claude` in
 your laptop terminal, in the repo dir) to talk to the dockerized MCP server —
 handy for ad-hoc testing.
 
-It works because `scraper-mcp` publishes its port to the host
+It works because the `scraper` service publishes port 8080 to the host
 (`infra/compose/docker-compose.yml`: `ports: "8080:8080"`), so `localhost:8080` on your host
 forwards into the container.
 
@@ -71,17 +72,21 @@ curl http://localhost:8080/health
 Containers reach the MCP server by name, not `localhost` — `localhost` inside a
 container refers to the container itself, not the host.
 
-- `scraper-ui` does not call the MCP server. It runs the scrape, config and Discord
-  functions in its own process, so it needs `MONGO_URI`, `MONGO_DB_NAME`,
-  `MONGO_COLLECTION_NAME` and `PROXY_URL` like `scraper-mcp`
-- The job-agent backend uses `http://job-scraper-mcp:8080/mcp` on the shared `job-net` network
+- The `scraper` service runs `/app/scripts/start-servers.sh`, which starts the MCP server
+  (`python -m mcp_server.server`, port 8080) and the UI (`python -m backend`, port 8090) as
+  two processes in the `job-scraper` container
+- The UI does not call the MCP server. It runs the scrape, config and Discord
+  functions in its own process, with the same `MONGO_URI`, `MONGO_DB_NAME`,
+  `MONGO_COLLECTION_NAME` and `PROXY_URL`
+- The job-agent backend uses `http://job-scraper:8080/mcp` on the shared `job-net` network,
+  and other containers reach the UI API at `http://job-scraper:8090`
 
 # Ports used here
 
 | Service       | Port  | Bind                                      | Notes                                                    |
 | ------------- | ----- | ----------------------------------------- | -------------------------------------------------------- |
-| `scraper-mcp` | 8080  | `0.0.0.0:8080`                            | MCP HTTP; `/health` and `/mcp` endpoints                 |
-| `scraper-ui`  | 8090  | `127.0.0.1:8090`                          | FastAPI backend serving the built frontend               |
+| `scraper`     | 8080  | `0.0.0.0:8080`                            | MCP HTTP; `/health` and `/mcp` endpoints                 |
+| `scraper`     | 8090  | `127.0.0.1:8090`                          | FastAPI backend serving the built frontend               |
 | `mongo`       | 27017 | `127.0.0.1:27017`                         | data in `mongo-data` volume                              |
 
 # Copy the .example files
@@ -114,7 +119,7 @@ MONGO_HOST=127.0.0.1 MONGO_PORT=27018 ./seed.sh   # remote Mongo via SSH tunnel
 
 The wilayah seed drops and recreates its collection on each run. The job settings seed only inserts when the document is missing, so it never overwrites your edits. It needs `.venv`, or a Python path in `SCRAPER_PYTHON`.
 
-After reseeding `wilayah`, restart `scraper-mcp` and `scraper-ui` (`docker restart job-scraper-mcp job-scraper-ui`). Each process loads the region list the first time a location filter needs it and keeps that copy until it stops, and the UI runs `scrape_jobs` in its own process, so both hold a copy.
+After reseeding `wilayah`, restart the scraper container (`docker restart job-scraper`). Each process loads the region list the first time a location filter needs it and keeps that copy until it stops, and the UI runs `scrape_jobs` in its own process, so both hold a copy.
 
 **`wilayah`** — 91 599 Indonesian administrative region codes (Kepmendagri No 300.2.2-2138
 Tahun 2025). Source: [cahyadsn/wilayah](https://github.com/cahyadsn/wilayah/tree/6ff9b8a2764cd4fbeb8c15fe0cba2d5a4eb26107)
@@ -256,15 +261,14 @@ For a remote Mongo, open an SSH tunnel first
 Stream container logs:
 
 ```bash
-docker logs -f job-scraper-mcp       # MCP server
-docker logs -f job-scraper-ui        # Scraper UI
+docker logs -f job-scraper           # MCP server and Scraper UI
 docker logs -f job-scraper-mongo     # MongoDB
 ```
 
 The scraper logs to stdout only. There is no log file and no log rotation, so
-`docker logs` is the only place to read them. A run started from the UI logs in
-`job-scraper-ui`, because the UI runs `scrape_jobs` in its own process. An MCP
-`scrape_jobs` call logs in `job-scraper-mcp`.
+`docker logs` is the only place to read them. Both the MCP server and the UI log to
+`job-scraper`. A run started from the UI logs from the UI process, because the UI
+runs `scrape_jobs` in its own process.
 
 # Smoke tests
 
@@ -279,19 +283,19 @@ Start it in dev with Vue hot reload, then open http://localhost:5174:
 
     ./infra/scripts/manage.sh start
 
-This starts `scraper-mcp` and `scraper-ui` in Docker, then runs the Vite dev server in
+This starts the `scraper` service (MCP and UI) in Docker, then runs the Vite dev server in
 the foreground. Ctrl+C stops Vite only, the containers keep running.
 http://127.0.0.1:8090 serves the UI baked into the image, so it only changes after a rebuild.
 
-- Runs call `scrape_jobs` inside the `scraper-ui` process, one at a time, with no stop button
+- Runs call `scrape_jobs` inside the UI process, one at a time, with no stop button
 - The latest UI run (record, jobs, failures, filtered payloads) is saved in the
   Mongo `ui_runs` collection, so it survives a restart. Only one run is kept, and UI runs
   never go to `scrape_runs`. If Mongo is down, the result lives in memory only, run storage is skipped for 30 s after a failure, and reading an older run by id returns 503.
   API: `GET /api/scrapes/latest` and `GET /api/scrapes/{scrape_id}`, see [`docs/architecture.md`](docs/architecture.md#scraper-ui-api-backend)
 - A run with **Notify Discord** on posts one Discord message, using the Discord settings saved in the UI. The message is a job digest with a `jobs-YYYY-MM-DD.md` file attached that holds every job. A run with 0 jobs or a failed run posts a short text message instead. See [`docs/orchestration.md`](docs/orchestration.md#what-a-job-send-posts)
 - **Send last result** on the Discord page posts the same digest for the latest finished run to the default channel again (`POST /api/scrapes/latest/discord`)
-- `./infra/scripts/scrape-to-discord.sh "<keyword>"` starts a scrape of one keyword on linkedin, glints, jobstreet and indeed with **Notify Discord** on, then waits until the Discord post ends. A named site is scraped even when it is off in the job settings. The keyword, `SCRAPER_UI_URL` (the scraper-ui address, like `http://127.0.0.1:8090` locally) and `AUTH_TOKEN` (sent as `Authorization: Bearer`) are all required, and it reads no `.env`. It exits 1 unless every job was sent
-- Config saves go through `scraper-mcp` into Mongo. Saving is off while a scrape runs, because MCP is busy then
+- `./infra/scripts/scrape-to-discord.sh "<keyword>" ["<keyword>" ...]` starts one scrape of 1 to 10 keywords on linkedin, glints, jobstreet and indeed with **Notify Discord** on, then waits until the Discord post ends. A named site is scraped even when it is off in the job settings. At least one keyword, `SCRAPER_UI_URL` (the scraper UI address, like `http://127.0.0.1:8090` locally) and `AUTH_TOKEN` (sent as `Authorization: Bearer`) are all required, and it reads no `.env`. It exits 1 unless every job was sent
+- Config saves write straight to Mongo from the UI process, without the MCP server. Saving is off when a config read fails and the page shows the last cached copy
 - Compose needs the external `job-net` network. The scripts in `infra/scripts/` create it.
   With plain `docker compose`, run `docker network create job-net`
   once first

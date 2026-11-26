@@ -33,13 +33,13 @@ Add an entry to that container's `~/.claude/.mcp.json`:
   "mcpServers": {
     "job-scraper": {
       "type": "http",
-      "url": "http://scraper-mcp:8080/mcp"
+      "url": "http://job-scraper:8080/mcp"
     }
   }
 }
 ```
 
-Hostname `scraper-mcp` assumes both containers share the same Docker network.
+Hostname `job-scraper` assumes both containers share the same Docker network.
 Adjust if running elsewhere.
 
 ## Tool catalog
