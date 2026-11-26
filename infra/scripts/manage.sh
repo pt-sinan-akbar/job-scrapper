@@ -55,7 +55,7 @@ print_usage() {
 Usage: $(basename "$0") [start|stop|restart|--help]
 
 Run with no argument to choose a command from a menu
-The dev stack is mongo, scraper-mcp (:8080), scraper-ui (:8090) and Vite ($VITE_URL)
+The dev stack is mongo, scraper (MCP :8080 and UI :8090) and Vite ($VITE_URL)
 
 Commands:
   start    Build and start the containers, then run Vite in the foreground

@@ -6,6 +6,7 @@ UI_URL="${SCRAPER_UI_URL:-}"
 readonly UI_URL="${UI_URL%/}"
 readonly BEARER_TOKEN="${AUTH_TOKEN:-}"
 readonly SITES=(linkedin glints jobstreet indeed)
+readonly MAX_KEYWORDS=10
 readonly REQUEST_TIMEOUT_SECONDS=30
 readonly POLL_SECONDS=5
 readonly SCRAPE_TIMEOUT_SECONDS=1800
@@ -23,16 +24,12 @@ main() {
             return
             ;;
     esac
-    (( $# <= 1 )) || exit_with_usage
-
-    local keyword="${1:-}"
-    [[ -n "${keyword//[[:space:]]/}" ]] || exit_with_error "No keyword, pass one like \"data analyst\""
-
+    validate_keywords "$@"
     validate_requirements
 
     local scrape_id
-    scrape_id="$(start_scrape "$keyword")"
-    echo "Started scrape $scrape_id for \"$keyword\" on ${SITES[*]}"
+    scrape_id="$(start_scrape "$@")"
+    echo "Started scrape $scrape_id for $(join_quoted_keywords "$@") on ${SITES[*]}"
 
     wait_for_discord_send "$scrape_id"
 
@@ -44,9 +41,9 @@ main() {
 
 print_usage() {
     cat <<USAGE
-Usage: $(basename "$0") <keyword>
+Usage: $(basename "$0") <keyword> [<keyword> ...]
 
-Scrape one keyword on ${SITES[*]}, then post the jobs to Discord
+Scrape 1 to $MAX_KEYWORDS keywords on ${SITES[*]} in one scrape, then post the jobs to Discord
 Every other setting comes from the job settings and Discord settings saved in Mongo
 Quote a keyword that has spaces, like "data analyst"
 
@@ -56,14 +53,19 @@ Environment (all required):
 USAGE
 }
 
-exit_with_usage() {
-    print_usage >&2
-    exit 1
-}
-
 exit_with_error() {
     echo "ERROR: $*" >&2
     exit 1
+}
+
+validate_keywords() {
+    (( $# >= 1 )) || exit_with_error "No keyword, pass one like \"data analyst\""
+    (( $# <= MAX_KEYWORDS )) || exit_with_error "At most $MAX_KEYWORDS keywords, got $#"
+
+    local keyword
+    for keyword in "$@"; do
+        [[ -n "${keyword//[[:space:]]/}" ]] || exit_with_error "Blank keyword, every keyword needs text"
+    done
 }
 
 validate_requirements() {
@@ -74,9 +76,8 @@ validate_requirements() {
 }
 
 start_scrape() {
-    local keyword="$1"
     local scrape_body
-    scrape_body="$(build_scrape_body "$keyword")" || return 1
+    scrape_body="$(build_scrape_body "$@")" || return 1
 
     local scrape_summary
     scrape_summary="$(call_ui_api POST /api/scrapes "$scrape_body")" || return 1
@@ -166,11 +167,16 @@ exit_unless_scraped_and_sent() {
 }
 
 build_scrape_body() {
-    local keyword="$1"
+    local keywords_json
+    keywords_json="$(jq --null-input --compact-output '$ARGS.positional' --args "$@")" || return 1
     jq --null-input \
-        --arg keyword "$keyword" \
-        '{keywords: [$keyword], sites: $ARGS.positional, notify_discord: true}' \
+        --argjson keywords "$keywords_json" \
+        '{keywords: $keywords, sites: $ARGS.positional, notify_discord: true}' \
         --args "${SITES[@]}"
+}
+
+join_quoted_keywords() {
+    jq --null-input --raw-output '$ARGS.positional | map("\"" + . + "\"") | join(", ")' --args "$@"
 }
 
 read_summary_field() {

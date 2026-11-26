@@ -261,8 +261,8 @@ whole number in that range logs a warning and uses `2`. `1` runs pairs one by
 one without a thread pool. Each Playwright fallback uses ~250-300MB RAM, so
 tune it for the memory you have. It is read at the start of every run, in
 `scraper/config_loader.py::read_concurrency_from_env`, and passed through to the
-`scraper-mcp` and `scraper-ui` containers by `infra/compose/docker-compose.yml`. Change it in
-`.env` and recreate the containers.
+`scraper` service by `infra/compose/docker-compose.yml`. Change it in
+`.env` and recreate the container.
 
 ## Migration from global values
 
