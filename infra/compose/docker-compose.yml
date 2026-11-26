@@ -23,21 +23,19 @@ services:
       - default
       - job-net # lets the job-agent backend reach Mongo as job-scraper-mongo:27017
 
-  # SERVICE: scraper-mcp — long-running MCP HTTP server
-  scraper-mcp:
+  scraper:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile
       target: app
     image: job-scraper:latest
-    container_name: job-scraper-mcp
-    command: ["python", "-m", "mcp_server.server"]
+    container_name: job-scraper
     restart: unless-stopped
     depends_on:
       mongo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health && curl -fs http://localhost:8090/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -55,39 +53,7 @@ services:
       - SCRAPER_CONCURRENCY
     networks:
       - default
-      - job-net # lets the job-agent backend reach MCP as http://job-scraper-mcp:8080/mcp
-
-  # SERVICE: scraper-ui — FastAPI + Vue control panel
-  scraper-ui:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile
-      target: app
-    image: job-scraper:latest
-    container_name: job-scraper-ui
-    command: ["python", "-m", "backend"]
-    restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')",
-        ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    environment:
-      - MONGO_URI=${MONGO_URI}
-      - MONGO_DB_NAME=${MONGO_DB_NAME:-job_scraper}
-      - MONGO_COLLECTION_NAME=${MONGO_COLLECTION_NAME:-scrape_runs}
-      - PROXY_URL
-      - SCRAPER_CONCURRENCY
+      - job-net
 
 networks:
   # shared with the job-agent backend; create once with: docker network create job-net

@@ -86,8 +86,8 @@ as `indonesia`) equals one part of the location.
 - **Loaded on first use.** The list is read the first time a location filter
   needs it. A run with no location filter never reads `wilayah`.
 - **Cached for the process.** After a successful load the copy stays in memory
-  until the process stops. `scraper-mcp` and `scraper-ui` each hold their own
-  copy, so restart both after reseeding `wilayah` (see
+  until the process stops. The MCP and UI processes each hold their own
+  copy, so restart the `job-scraper` container after reseeding `wilayah` (see
   [`deploy.md`](deploy.md#restart-after-reseeding)).
 - **Retried after a failed load.** If Mongo is unreachable or `wilayah` is
   empty, the filter falls back to plain substring matching and logs a warning.
@@ -153,8 +153,8 @@ is copied into every site that had no `filter` key (see
 
 For each site, the runner logs one line with how many jobs survived the
 recency cut and the filter together, split by why the others were dropped.
-Logs go to stdout only, so read them with `docker logs job-scraper-mcp` (MCP
-calls) or `docker logs job-scraper-ui` (runs started from the UI):
+Logs go to stdout only, so read them with `docker logs job-scraper` (MCP
+calls and runs started from the UI):
 
 ```
 [jobstreet:software-engineer] max_age=24h cutoff=2026-11-21T00:00:00+00:00 filter={'location': ['jakarta', 'bandung']} kept 1/5 (dropped 1 stale, 3 filter)
